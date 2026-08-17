@@ -30,7 +30,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 | Fase | Nome | Status |
 |---|---|---|
 | 1 | Scaffolding + tema | ✅ concluída |
-| 2 | D1 + Auth | ⬜ pendente |
+| 2 | D1 + Auth | ✅ concluída |
 | 3 | Usuários + conversas (REST) | ⬜ pendente |
 | 4 | Real-time core (DO + WebSocket) | ⬜ pendente |
 | 5 | Frontend do chat | ⬜ pendente |
@@ -92,7 +92,17 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Não fazer:** UI de login (fase 5), WebSocket, lookup de usuários.
 
-**Handoff:** _(lib de hash, nomes de migrations, formato de erro da API, como criar usuário, credenciais seed)_
+**Handoff (concluída 2026-08-17):**
+
+- **Hash:** PBKDF2-SHA-256 100k iterações via `crypto.subtle` nativo (`src/lib/password.ts`, formato `pbkdf2-sha256$<iter>$<salt b64>$<hash b64>`). Motivo: Workers capa PBKDF2 em 100k iterações e free tier tem 10ms CPU — scrypt/argon2 puro-JS/WASM estouram; 100k < OWASP 600k, trade-off aceito (instância fechada + rate limit), documentado no código. Sem lib externa de hash. Módulo roda em Workers **e** Node ≥24 — scripts CLI importam o mesmo arquivo (hash idêntico).
+- **Migrations:** `worker/migrations/0001_init.sql` (users, sessions, conversations, login_attempts). Aplicar: `npm run db:migrate` (= `wrangler d1 migrations apply goodchat --local`). Extras vs PRD §4.3: `username UNIQUE COLLATE NOCASE`; `conversations` com `CHECK (user_a < user_b)` + unique(user_a,user_b) — fase 3 deve ordenar o par antes de inserir; `sessions.token` guarda **SHA-256 hex do token**, nunca o token cru (leak de DB não vira sessão); `login_attempts(key,count,window_start)` pro rate limit.
+- **Sessão:** token opaco 256-bit hex no cookie `session=...; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=N`. Sliding 7d + cap 30d desde criação; refresh só persiste se ganhar ≥1h (evita write por request) — quando refresca, resposta traz novo `Set-Cookie`. `requireSession(request, db)` em `src/lib/session.ts` devolve `{user, refreshedCookie?}` ou `Response` 401 pronta — reusável pro upgrade WS (fase 4, lê header Cookie).
+- **Endpoints:** `POST /api/auth/login` ({username,password}, Zod) → 200 {user}+cookie; `POST /api/auth/logout` → 200 {ok}+cookie limpo (idempotente); `GET /api/auth/me` → {user} | 401. Shape de user público: `{id, username, display_name, avatar_url, created_at}` (timestamps em **ms**). Erros sempre `{error: <código>, message?}`: `invalid_request` 400, `invalid_credentials` 401, `unauthorized` 401, `rate_limited` 429 (+ header `Retry-After`), `not_found` 404.
+- **CORS mudou:** `Allow-Credentials: true` proíbe `*` literal com cookie — agora **reflete o Origin** da request (qualquer origem continua aceita) + `Vary: Origin`. Aplicado centralmente no `fetch` (`src/lib/http.ts`); handlers não põem CORS. Frontend usa `credentials: 'include'`.
+- **Rate limit:** janela fixa 15min em D1 — 5 falhas/conta, 20/IP (`CF-Connecting-IP`, fallback `unknown`). Bloqueado → 429 mesmo com senha certa; sucesso limpa contador da conta. `src/lib/ratelimit.ts`.
+- **Criar usuário:** só CLI, sem endpoint admin (menos superfície; decisão registrada) — `npm run user:create -- <username> <senha> [display name]` (username `^[a-z0-9_]{3,20}$`, senha ≥8). Seed: `npm run db:seed` (idempotente) cria **`alice` / `alice-goodchat`** e **`bob` / `bob-goodchat`**. Scripts em `worker/scripts/*.ts`, rodam com Node 24 (type stripping nativo, sem build); fora do tsconfig (typecheck cobre só `src/`). Setup zero: `db:migrate` + `db:seed` + `dev`. `ADMIN_SECRET` removido do `.env.example` — nenhum secret necessário nesta fase.
+- **Login username:** normalizado lowercase/trim no login; lookup case-insensitive (COLLATE NOCASE). Usuário inexistente responde igual a senha errada (sem enumeração).
+- **Testado:** fluxo completo via curl (login→me→logout→me 401), 5 falhas → 429 com senha certa, migrations+seed do zero após `rm -rf .wrangler/state`, user criado por CLI loga. Typecheck verde.
 
 ---
 
