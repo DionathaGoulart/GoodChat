@@ -1,34 +1,40 @@
 import { Agent } from 'agents'
+import { apiError, corsHeaders, json } from './lib/http'
+import { login, logout, me } from './routes/auth'
 
 // Placeholder Agent so the DO binding + SQLite migration are live from day one.
 // Real implementation (WebSocket protocol, message persistence) lands in phase 4.
 export class ConversationAgent extends Agent<Env> {}
 
-const CORS_HEADERS: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-}
+async function route(request: Request, env: Env, url: URL): Promise<Response> {
+  const { pathname } = url
+  const method = request.method
 
-function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
-  })
+  if (pathname === '/api/health' && method === 'GET') {
+    return json({ ok: true, service: 'goodchat-worker' })
+  }
+  if (pathname === '/api/auth/login' && method === 'POST') return login(request, env)
+  if (pathname === '/api/auth/logout' && method === 'POST') return logout(request, env)
+  if (pathname === '/api/auth/me' && method === 'GET') return me(request, env)
+
+  return apiError('not_found', 404)
 }
 
 export default {
-  async fetch(request, _env): Promise<Response> {
+  async fetch(request, env): Promise<Response> {
     const url = new URL(request.url)
+    const origin = request.headers.get('Origin')
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS })
+      return new Response(null, { status: 204, headers: corsHeaders(origin) })
     }
 
-    if (url.pathname === '/api/health' && request.method === 'GET') {
-      return json({ ok: true, service: 'goodchat-worker' })
+    const response = await route(request, env, url)
+    // CORS applied centrally so route handlers only worry about their payload.
+    const headers = new Headers(response.headers)
+    for (const [key, value] of Object.entries(corsHeaders(origin))) {
+      headers.set(key, value)
     }
-
-    return json({ error: 'not_found' }, 404)
+    return new Response(response.body, { status: response.status, headers })
   },
 } satisfies ExportedHandler<Env>
