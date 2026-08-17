@@ -31,7 +31,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 |---|---|---|
 | 1 | Scaffolding + tema | ✅ concluída |
 | 2 | D1 + Auth | ✅ concluída |
-| 3 | Usuários + conversas (REST) | ⬜ pendente |
+| 3 | Usuários + conversas (REST) | ✅ concluída |
 | 4 | Real-time core (DO + WebSocket) | ⬜ pendente |
 | 5 | Frontend do chat | ⬜ pendente |
 | 6 | Pipeline de mídia (B2) | ⬜ pendente |
@@ -123,7 +123,16 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Não fazer:** WebSocket, mensagens, UI.
 
-**Handoff:** _(algoritmo do conversation_id, shapes de resposta JSON, endpoints e exemplos curl)_
+**Handoff (concluída 2026-08-17):**
+
+- **conversation_id:** `SHA-256("v1:" + min(idA,idB) + ":" + max(idA,idB))` truncado a 128 bits = **32 hex chars**. Implementação em `worker/src/lib/conversation.ts`: `orderPair`, `conversationIdFor(a,b)` (qualquer ordem), e **`ensureConversation(db, a, b, lastMessageAt)`** — helper da criação lazy pra fase 4: `INSERT ... ON CONFLICT(id) DO UPDATE SET last_message_at = MAX(atual, novo)` (upsert único, idempotente, nunca retrocede timestamp; lança erro se a===b). Fase 4 chama ensureConversation a cada mensagem persistida (cobre criação + bump de `last_message_at` numa tacada).
+- **`GET /api/users/lookup?q=`** (autenticado): prefixo case-insensitive, aceita `@bob` ou `bob`, escapa wildcards de LIKE (`_`/`%`/`\`), **exclui o próprio usuário**, LIMIT 20, ordena por username. Resposta `{users: [<user público>]}`. `q` vazio → 400 `invalid_request`. Visibilidade Opção A confirmada (todos visíveis).
+- **`GET /api/conversations`** (autenticado): `{conversations: [{id, created_at, last_message_at, other_user: <user público>}]}` ordenado por `COALESCE(last_message_at, created_at) DESC`. Sem linhas → `{conversations: []}` 200. Preview de última mensagem fica pra fase 4/5 (vem do DO), como planejado.
+- **`POST /api/conversations/resolve`** (autenticado, body `{user_id}` Zod): devolve `{conversation_id, exists, other_user}` **sem criar nada** — `exists` indica se a linha já foi materializada por primeira mensagem. Próprio id → 400; user inexistente → 404 `not_found`.
+- Todos os endpoints autenticados propagam `refreshedCookie` do sliding session como `Set-Cookie` (padrão da fase 2 mantido).
+- **Rotas** registradas em `src/index.ts`; shape de user público e de erro idênticos à fase 2.
+- **Smoke test:** `npm run smoke:phase3` (`worker/scripts/smoke-phase3.ts`, Node puro, exige dev server na 8000 + seed) — cobre: 401 sem sessão, prefixo/`@`exato, exclusão de self, q vazio 400, resolve simétrico (alice→bob === bob→alice), self 400, ghost 404, lista vazia 200. Equivalentes curl documentados no header do script. Rodado: **all green**. Teste manual extra: linha inserida à mão → `exists: true` e lista populada dos dois lados (linha removida depois; `conversations` local está vazio).
+- **Decisões:** lookup exclui self (schema proíbe conversa consigo — `CHECK user_a < user_b`); prefixo `v1:` no hash permite migrar algoritmo sem colidir; sem rate limit nos endpoints novos (só sessão) — reavaliar se instância crescer.
 
 ---
 
