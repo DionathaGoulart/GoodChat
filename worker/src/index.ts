@@ -2,6 +2,7 @@ import { apiError, corsHeaders, json } from './lib/http'
 import { login, logout, me } from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
 import { createUploadUrl } from './routes/media'
+import { subscribePush, unsubscribePush, vapidPublicKey } from './routes/push'
 import { lookupUsers } from './routes/users'
 import { connectConversation } from './routes/ws'
 
@@ -24,6 +25,13 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
   }
   if (pathname === '/api/media/upload-url' && method === 'POST') {
     return createUploadUrl(request, env)
+  }
+  if (pathname === '/api/push/vapid-public-key' && method === 'GET') {
+    return vapidPublicKey(request, env)
+  }
+  if (pathname === '/api/push/subscribe' && method === 'POST') return subscribePush(request, env)
+  if (pathname === '/api/push/unsubscribe' && method === 'POST') {
+    return unsubscribePush(request, env)
   }
 
   return apiError('not_found', 404)

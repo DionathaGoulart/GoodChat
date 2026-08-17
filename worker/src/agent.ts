@@ -12,6 +12,7 @@
 
 import { Agent, type Connection, type ConnectionContext, type WSMessage } from 'agents'
 import { ensureConversation } from './lib/conversation'
+import { notifyUser, previewFor } from './lib/push'
 import {
   ClientEventSchema,
   STICKER_ID_RE,
@@ -258,6 +259,33 @@ export class ConversationAgent extends Agent<Env> {
       await ensureConversation(this.env.DB, userId, peerId, now)
     } catch (error) {
       console.error('ensureConversation failed', error)
+    }
+
+    // Web Push when the recipient has no live connection (phase 8). Off the
+    // frame-processing path — the push service round-trip must not block the
+    // sender's next frame. notifyUser never throws.
+    if (!peerOnline) {
+      this.ctx.waitUntil(this.pushToPeer(userId, peerId, event))
+    }
+  }
+
+  private async pushToPeer(
+    senderId: string,
+    peerId: string,
+    event: SendMessageEvent,
+  ): Promise<void> {
+    try {
+      const sender = await this.env.DB.prepare('SELECT username FROM users WHERE id = ?')
+        .bind(senderId)
+        .first<{ username: string }>()
+      await notifyUser(this.env, peerId, {
+        title: `@${sender?.username ?? 'goodchat'}`,
+        body: previewFor(event.msg_type, event.body),
+        url: `/#/t/${senderId}`,
+        tag: this.name,
+      })
+    } catch (error) {
+      console.error('pushToPeer failed', error instanceof Error ? error.message : error)
     }
   }
 

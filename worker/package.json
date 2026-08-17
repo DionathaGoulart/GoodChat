@@ -14,10 +14,14 @@
     "smoke:phase4": "node scripts/smoke-phase4.ts",
     "smoke:phase6": "node scripts/smoke-phase6.ts",
     "smoke:phase7": "node scripts/smoke-phase7.ts",
+    "smoke:phase8": "node scripts/smoke-phase8.ts",
+    "vapid:generate": "node scripts/vapid-generate.ts",
     "media:dev": "node scripts/media-dev-server.ts",
     "stickers:publish": "node scripts/publish-stickers.ts"
   },
   "dependencies": {
+    "@mmmike/web-push": "^1.3.0",
+    "@pushforge/builder": "^2.0.5",
     "agents": "^0.20.1",
     "aws4fetch": "^1.0.20",
     "zod": "^4.4.3"
