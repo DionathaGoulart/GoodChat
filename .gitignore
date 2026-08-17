@@ -8,3 +8,4 @@ dist/
 .DS_Store
 logs/
 *.log
+.media-dev/

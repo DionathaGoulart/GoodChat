@@ -11,10 +11,13 @@
     "db:seed": "node scripts/seed.ts",
     "user:create": "node scripts/create-user.ts",
     "smoke:phase3": "node scripts/smoke-phase3.ts",
-    "smoke:phase4": "node scripts/smoke-phase4.ts"
+    "smoke:phase4": "node scripts/smoke-phase4.ts",
+    "smoke:phase6": "node scripts/smoke-phase6.ts",
+    "media:dev": "node scripts/media-dev-server.ts"
   },
   "dependencies": {
     "agents": "^0.20.1",
+    "aws4fetch": "^1.0.20",
     "zod": "^4.4.3"
   },
   "devDependencies": {
