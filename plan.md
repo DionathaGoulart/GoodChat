@@ -36,7 +36,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 | 5 | Frontend do chat | ✅ concluída |
 | 6 | Pipeline de mídia (B2) | ✅ concluída |
 | 7 | Receipts, typing, emoji, stickers | ✅ concluída |
-| 8 | PWA + push (stretch) | ⬜ pendente |
+| 8 | PWA + push (stretch) | ✅ concluída |
 
 MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definition of Done completa: `inicial.md` §2.4 espelhada nos critérios das fases.
 
@@ -278,7 +278,20 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Critérios de aceite:** app instala (Lighthouse PWA pass); com app fechado, mensagem gera notificação em browser suportado; sem opt-in → nenhuma subscription criada.
 
-**Handoff:** _(estratégia do SW, tabela de subscriptions, suporte por browser)_
+**Handoff (concluída 2026-08-17):**
+
+- **Lib: `@mmmike/web-push` 1.3.0** (zero deps, WebCrypto puro, **RFC 8291 `aes128gcm`** + RFC 8292 VAPID, envia via `fetch` — mesmo pacote roda no workerd, no Node dos scripts e no browser via `/client`). O guia oficial CF Agents recomenda `web-push` clássico — descartado: depende de shims node:https/node:crypto e só fala o coding legado `aesgcm`; `@block65/webcrypto-web-push` e `@pushforge/builder` também são aesgcm legado (risco com o push service da Apple, que segue RFC 8291). Decisão registrada no commit.
+- **VAPID:** `npm run vapid:generate` (usa a própria lib; formato = mesmo do web-push CLI: b64url raw 65B pública / 32B privada). Keys em `worker/.dev.vars` (gitignored — **par dev já preenchido localmente**; outro dev roda vapid:generate e cola, receita no `.env.example`); prod = `wrangler secret put VAPID_PRIVATE_KEY` etc. **App não tem env de push** — busca a pública de `GET /api/push/vapid-public-key`. Rotacionar o par mata todas as subscriptions.
+- **D1:** migration `0002_push_subscriptions.sql` — `push_subscriptions(endpoint PK, user_id FK CASCADE, p256dh, auth, created_at)` + índice user_id. Endpoint é capability URL (quem tem, empurra push) — **nunca logar**; erros logam só status code.
+- **Endpoints** (`worker/src/routes/push.ts`): `GET /api/push/vapid-public-key` (503 `push_not_configured` sem env — feature desliga limpa); `POST /api/push/subscribe` (Zod; upsert por endpoint, re-vincula ao user atual; **endpoint precisa ser https** = guard SSRF — linha armazenada vira alvo de fetch outbound); `POST /api/push/unsubscribe` (só apaga linha própria; devolve `{removed}`).
+- **Disparo** (`agent.ts handleSend`): só quando `!peerOnline`, via `this.ctx.waitUntil(pushToPeer(...))` — round-trip ao push service (timeout 30s da lib) fora do caminho de frames. Payload `{title: '@<username>', body: preview PT-BR (mesmos rótulos da lista, 120 code points), url: '/#/t/<senderId>', tag: conversationId}`; ttl 24h, urgency high, **topic = tag** (32 hex ≤ cap de 32 — na fila do push service, push novo da mesma conversa substitui o antigo). `notifyUser` nunca lança; 404/410 → DELETE da linha; outros erros só logam.
+- **App:** `public/sw.js` (sem build): cache `goodchat-v1` — `/assets/` cache-first (hash do Vite), navegações network-first com shell cacheado como fallback offline, **nada de API** (cross-origin ignorado + `/api/` skip); `push` → `showNotification` (payload acima); `notificationclick` → foca janela existente + `navigate(url)`, senão `openWindow`. Registrado no boot do `main.tsx` (dev incluído — push testável em localhost). `manifest.webmanifest`: standalone, pt-BR, ícones 192/512 + maskable 512.
+- **Ícones:** `public/icon.svg` = master pixel-art (balão de fala crimson com prompt `>_`, família visual dos stickers; **borda desenhada com rects** — o renderer SVG do ImageMagick ignora stroke) → PNGs via `magick` (comandos comentados dentro do SVG); `icon-maskable.svg` = sem moldura, arte a 75% (safe zone). favicon de template Vite removido; `index.html` ganhou manifest + apple-touch-icon + `theme-color` light/dark (**hex literal** — meta tag não lê CSS var; desvio consciente da regra "hex só em palettes.css").
+- **Opt-in:** botão `notif on/off` no header da lista (`usePush` + `lib/push.ts`): `unsupported` → botão nem renderiza (iOS Safari em aba normal cai aqui), `denied` → disabled com title, `unavailable` = worker sem VAPID (503). Subscription **só** nasce do toggle (critério "sem opt-in" garantido por construção). **Logout chama `disablePush()` antes de `api.logout()`** — próxima conta no mesmo browser não recebe push da anterior. Edge aceito: a subscription do browser pertence à última conta que ligou o toggle.
+- **Teste:** `npm run smoke:phase8` — **21 checks all green**, idempotente. Parte A (sem servidor): fetch global mockado, envia com a lib e **decripta o corpo por RFC 8291 no script** (ECDH+HKDF+AES-GCM) → JSON byte-idêntico; headers aes128gcm/`vapid t=,k=`/ttl/urgency/topic; 410 → `false`. Parte B: REST completo (shape da key, 401/400, SSRF http→400, upsert, isolamento entre users, idempotência). Parte C: **par dedicado `smoke8_ana`/`smoke8_ben`** (alice/bob podem ter socket vivo no browser do dev, o que colocaria o peer online e silenciaria o push) — mensagem pra peer offline entrega `sent` com o branch de push ativo, e a linha sobrevive a falha de rede (só 404/410 podam).
+- **E2E Chrome real:** SW `activated`, manifest servido, botão ok nos dois temas, console limpo, clique dispara o prompt de permissão. **Prompt é UI do browser — a automação não alcança**; e2e completo da notificação = 1 clique manual em "Permitir" e mandar mensagem com a aba fechada (o wrangler dev alcança o FCM real de localhost). Fica como verificação manual pendente.
+- **Suporte por browser (task 3):** Chrome/Edge/Firefox/Opera/Samsung Internet — push com payload ok. Safari macOS 13+ (Safari 16+) — ok. **iOS 16.4+: só PWA instalada na home screen** (Compartilhar → Adicionar à Tela de Início); em aba normal não existe PushManager → nosso botão some sozinho. iOS/Safari 18.4+ tem Declarative Web Push — não usado (SW imperativo funciona nos dois). **UE/iOS: Apple removeu PWA standalone (DMA) → sem push.**
+- **Critério "Lighthouse PWA pass" ajustado:** Google removeu a categoria PWA do Lighthouse (out/2025). Substituto verificado: manifest válido + SW ativo (e2e acima); install real = botão "Instalar GoodChat" na omnibox do Chrome (manual, junto do teste de notificação).
 
 ---
 
@@ -292,4 +305,5 @@ Group chats · descoberta pública · voz/vídeo RTC · apps nativos · monetiza
 - **Domínio Cloudflare na frente do B2** (Bandwidth Alliance, egress grátis) — fase 6 serve via URL direta até existir DNS.
 - **Retenção/cleanup de mídia** (PRD §5): keys já têm prefixo mensal `media/<yyyy-mm>/` pra facilitar.
 - Lista de conversas não atualiza em tempo real (poll 15s) — fase 5.
+- **Push e2e manual (fase 8):** clicar "Permitir" no prompt de notificação (automação não alcança UI do browser), mandar mensagem com a destinatária sem aba aberta → notificação real via FCM; testar "Instalar GoodChat" na omnibox; testar home-screen PWA no iOS quando houver deploy https.
 - Edit/delete de mensagens (schema já tem `edited_at`/`deleted_at`) · E2EE (PRD fase 4) — só com pedido explícito.
