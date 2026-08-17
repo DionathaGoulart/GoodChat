@@ -44,7 +44,7 @@ export async function insertUser(
   const hash = await hashPassword(password)
   const conflict = ignoreExisting ? 'OR IGNORE ' : ''
   d1Execute(
-    `INSERT ${conflict}INTO users (id, username, display_name, avatar_url, password_hash, created_at, role) ` +
+    `INSERT ${conflict}INTO users (id, username, display_name, avatar_key, password_hash, created_at, role) ` +
       `VALUES (${sqlString(crypto.randomUUID())}, ${sqlString(canonical)}, ${sqlString(displayName)}, NULL, ${sqlString(hash)}, ${Date.now()}, ${sqlString(role)});`,
     { remote },
   )

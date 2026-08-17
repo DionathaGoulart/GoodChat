@@ -1,12 +1,16 @@
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import {
+  AVATAR_MIMES,
   DOWNLOAD_MAX_AGE_SECONDS,
+  MAX_AVATAR_BYTES,
   MAX_BYTES,
   MEDIA_PATH_PREFIX,
   MEDIA_TYPES,
   UPLOAD_URL_TTL_SECONDS,
+  avatarObjectKey,
   fetchObject,
+  isAvatarKey,
   isValidObjectKey,
   mediaConfig,
   objectKey,
@@ -23,10 +27,17 @@ import { requireSession, sessionHeaders, type AuthContext } from '../lib/session
 // Rate-limited per account: each call writes an index row and licenses up to
 // 32MB into the bucket, so an authenticated loop here is the cheapest way to
 // fill both D1 and B2.
+//
+// `purpose` picks which set of rules applies. A message attachment may be a
+// video and may be 32MB; a profile picture is a still image capped at 512KB and
+// lands under the `avatars/` prefix, which is what makes it readable by the
+// whole instance and invisible to the retention sweep (lib/media.ts). The
+// prefix is decided here and never taken from the client.
 
 const UploadRequestSchema = z.object({
   mime: z.string().min(1).max(128),
   size: z.number().int().positive(),
+  purpose: z.enum(['message', 'avatar']).default('message'),
 })
 
 export async function createUploadUrl(request: Request, env: Env): Promise<Response> {
@@ -44,14 +55,18 @@ export async function createUploadUrl(request: Request, env: Env): Promise<Respo
     return apiError('invalid_request', 400, 'expected { mime, size }')
   }
 
-  const { mime, size } = parsed.data
+  const { mime, size, purpose } = parsed.data
   const mediaType = MEDIA_TYPES[mime]
   if (!mediaType) return apiError('unsupported_media_type', 415, `mime ${mime} not allowed`)
-  if (size > MAX_BYTES[mediaType.kind]) {
+  if (purpose === 'avatar' && !AVATAR_MIMES.includes(mime as (typeof AVATAR_MIMES)[number])) {
+    return apiError('unsupported_media_type', 415, `avatar must be one of ${AVATAR_MIMES.join(', ')}`)
+  }
+  const maxBytes = purpose === 'avatar' ? MAX_AVATAR_BYTES : MAX_BYTES[mediaType.kind]
+  if (size > maxBytes) {
     return apiError(
       'payload_too_large',
       413,
-      `${mediaType.kind} must be <= ${MAX_BYTES[mediaType.kind]} bytes`,
+      `${purpose === 'avatar' ? 'avatar' : mediaType.kind} must be <= ${maxBytes} bytes`,
     )
   }
 
@@ -72,7 +87,7 @@ export async function createUploadUrl(request: Request, env: Env): Promise<Respo
     })
   }
 
-  const key = objectKey(mime)
+  const key = purpose === 'avatar' ? avatarObjectKey(mime) : objectKey(mime)
   // Indexed before the URL is handed out: an upload that never becomes a
   // message still leaves a row, which is exactly how the orphan sweep finds it.
   // `size` is the signed Content-Length, so it is also the stored size.
@@ -180,6 +195,12 @@ export async function serveMedia(
  * - `stickers/…` is shared instance content: any session reads it.
  * - An indexed object is readable by its uploader, and by both participants of
  *   the conversation that claimed it.
+ * - `avatars/…` that somebody adopted as their picture (claimed_at set by
+ *   PATCH /api/profile) is readable by any session: it is rendered in search
+ *   results, conversation tiles and thread headers, so scoping it to a
+ *   conversation would blank the avatar exactly where it is needed. An avatar
+ *   object nobody adopted stays private to its uploader — an upload that never
+ *   became a picture must not become a shared file drop.
  * - An object with no index row predates migration 0003. `MEDIA_LEGACY_READS`
  *   decides what happens to those: "allow" (default) keeps the old rule — any
  *   session plus an unguessable uuid key — so existing threads keep rendering;
@@ -190,8 +211,13 @@ async function canRead(env: Env, auth: AuthContext, key: string): Promise<boolea
   if (key.startsWith(STICKER_PREFIX)) return true
 
   const row = await findObject(env.DB, key)
-  if (!row) return env.MEDIA_LEGACY_READS !== 'deny'
+  // Avatars are three migrations younger than the index, so an `avatars/` key
+  // with no row is not legacy — it is a picture that was deleted (the row goes
+  // with the object). Letting it through the legacy door would keep serving a
+  // removed profile picture out of the edge cache.
+  if (!row) return isAvatarKey(key) ? false : env.MEDIA_LEGACY_READS !== 'deny'
   if (row.user_id === auth.user.id) return true
+  if (isAvatarKey(key)) return row.claimed_at !== null
   if (!row.conversation_id) return false
 
   const participant = await env.DB.prepare(
@@ -200,6 +226,22 @@ async function canRead(env: Env, auth: AuthContext, key: string): Promise<boolea
     .bind(row.conversation_id, auth.user.id)
     .first()
   return participant !== null
+}
+
+/**
+ * Drops the edge copy of one object. Objects are cached as immutable for a
+ * year, so a key that stops meaning what it meant — a deleted avatar, an object
+ * a reindex could resurrect — has to be evicted explicitly. Same key shape
+ * serveMedia stores: keys are URL-safe by construction (isValidObjectKey), so
+ * the path needs no encoding.
+ */
+export async function forgetCachedObject(origin: string, key: string): Promise<void> {
+  try {
+    await caches.default.delete(new Request(`${origin}${MEDIA_PATH_PREFIX}${key}`, { method: 'GET' }))
+  } catch (error) {
+    // Eviction is an optimisation: authorization already refuses the key.
+    console.error('media cache eviction failed', error)
+  }
 }
 
 /** Browser-facing copy: private caching (per user) plus any session refresh. */

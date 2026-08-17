@@ -58,7 +58,7 @@ export async function login(request: Request, env: Env): Promise<Response> {
   // An expired guest account is already gone as far as anyone can tell, even
   // if the sweep has not reached its data yet.
   const user = await env.DB.prepare(
-    `SELECT id, username, display_name, avatar_url, created_at, role,
+    `SELECT id, username, display_name, avatar_key, created_at, role,
             theme_mode, theme_light, theme_dark,
             is_temp, expires_at, password_hash
      FROM users
@@ -126,7 +126,7 @@ export async function createTempSession(request: Request, env: Env): Promise<Res
     id: account.id,
     username: account.username,
     display_name: null,
-    avatar_url: null,
+    avatar_key: null,
     created_at: now,
     role: 'user',
     theme_mode: null,

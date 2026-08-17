@@ -19,7 +19,12 @@ export interface SessionUser {
   id: string
   username: string
   display_name: string | null
-  avatar_url: string | null
+  /**
+   * Profile picture as a bucket object key (migration 0006), never a URL: the
+   * bucket is private, so the bytes come back through /api/media/<key> and the
+   * client is the side that knows which origin serves that path.
+   */
+  avatar_key: string | null
   created_at: number
   role: UserRole
   /** Account-level mode (migration 0005); null follows the OS preference. */
@@ -38,7 +43,8 @@ export interface PublicUser {
   id: string
   username: string
   display_name: string | null
-  avatar_url: string | null
+  /** Object key, as in SessionUser — readable by any session once adopted. */
+  avatar_key: string | null
   created_at: number
   /**
    * The account behind this row is gone and only its tombstone remains
@@ -47,7 +53,7 @@ export interface PublicUser {
   deleted?: boolean
 }
 
-export const PUBLIC_USER_COLUMNS = 'id, username, display_name, avatar_url, created_at'
+export const PUBLIC_USER_COLUMNS = 'id, username, display_name, avatar_key, created_at'
 
 export interface AuthContext {
   user: SessionUser
@@ -109,7 +115,7 @@ export async function requireSession(
   const row = await db
     .prepare(
       `SELECT s.created_at AS session_created_at, s.expires_at AS session_expires_at,
-              u.id, u.username, u.display_name, u.avatar_url, u.created_at,
+              u.id, u.username, u.display_name, u.avatar_key, u.created_at,
               u.role, u.theme_mode, u.theme_light, u.theme_dark,
               u.is_temp, u.expires_at AS account_expires_at
        FROM sessions s JOIN users u ON u.id = s.user_id
@@ -125,7 +131,7 @@ export async function requireSession(
       id: string
       username: string
       display_name: string | null
-      avatar_url: string | null
+      avatar_key: string | null
       created_at: number
       role: UserRole
       theme_mode: string | null
@@ -147,7 +153,7 @@ export async function requireSession(
       id: row.id,
       username: row.username,
       display_name: row.display_name,
-      avatar_url: row.avatar_url,
+      avatar_key: row.avatar_key,
       created_at: row.created_at,
       role: row.role,
       theme_mode: row.theme_mode,

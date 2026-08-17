@@ -20,7 +20,7 @@ interface ConversationRow {
   other_id: string
   other_username: string
   other_display_name: string | null
-  other_avatar_url: string | null
+  other_avatar_key: string | null
   other_created_at: number
   /** Set when the peer account is a tombstone (migration 0004). */
   other_deleted_at: number | null
@@ -33,7 +33,7 @@ export async function listConversations(request: Request, env: Env): Promise<Res
   const { results } = await env.DB.prepare(
     `SELECT c.id, c.created_at, c.last_message_at,
             u.id AS other_id, u.username AS other_username,
-            u.display_name AS other_display_name, u.avatar_url AS other_avatar_url,
+            u.display_name AS other_display_name, u.avatar_key AS other_avatar_key,
             u.created_at AS other_created_at, u.deleted_at AS other_deleted_at
      FROM conversations c
      JOIN users u ON u.id = CASE WHEN c.user_a = ?1 THEN c.user_b ELSE c.user_a END
@@ -60,7 +60,7 @@ export async function listConversations(request: Request, env: Env): Promise<Res
       id: row.other_id,
       username: row.other_username,
       display_name: row.other_display_name,
-      avatar_url: row.other_avatar_url,
+      avatar_key: row.other_avatar_key,
       created_at: row.other_created_at,
       // The thread survives its owner: the client renders it read-only.
       deleted: row.other_deleted_at !== null,

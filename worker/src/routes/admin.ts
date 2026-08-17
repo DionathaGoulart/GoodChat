@@ -271,7 +271,7 @@ export async function createAccount(request: Request, env: Env): Promise<Respons
 
   const id = crypto.randomUUID()
   await env.DB.prepare(
-    `INSERT INTO users (id, username, display_name, avatar_url, password_hash, created_at, role, created_by)
+    `INSERT INTO users (id, username, display_name, avatar_key, password_hash, created_at, role, created_by)
      VALUES (?1, ?2, ?3, NULL, ?4, ?5, 'user', ?6)`,
   )
     .bind(

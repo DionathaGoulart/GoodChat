@@ -17,7 +17,9 @@
 //   6. retention — deletes claimed media older than MEDIA_RETENTION_DAYS.
 //      OFF by default (unset/0): silently deleting a conversation's photos is
 //      a product decision, not a default. The bubbles degrade to an "expired"
-//      placeholder when the object is gone.
+//      placeholder when the object is gone. Profile pictures are exempt: they
+//      are not history, and a retention window that blanked everyone's avatar
+//      after N days would be a bug, not a policy.
 
 import { sweepExpiredTempAccounts, sweepOrphanTombstones } from './accounts'
 import { deleteObjects, mediaConfig } from './media'
@@ -92,6 +94,7 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
       env,
       `SELECT key FROM media_objects
        WHERE claimed_at IS NOT NULL AND created_at < ?1
+         AND key NOT LIKE 'avatars/%'
        ORDER BY created_at LIMIT ?2`,
       [now - retentionDays * 24 * 60 * 60 * 1000, MAX_DELETES_PER_RUN],
     )

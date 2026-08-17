@@ -20,6 +20,7 @@
     "smoke:phase8": "node scripts/smoke-phase8.ts",
     "smoke:phase9": "node scripts/smoke-phase9.ts",
     "smoke:phase10": "node scripts/smoke-phase10.ts",
+    "smoke:phase11": "node scripts/smoke-phase11.ts",
     "vapid:generate": "node scripts/vapid-generate.ts",
     "media:dev": "node scripts/media-dev-server.ts",
     "stickers:publish": "node scripts/publish-stickers.ts"

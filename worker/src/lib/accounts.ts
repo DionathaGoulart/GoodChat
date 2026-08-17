@@ -18,7 +18,9 @@
 //     the D1 row goes. This is the "two guests talked, the second one to
 //     expire takes the thread with it" case.
 //   - uploads that never became a message → always deleted, they are garbage
-//     by definition.
+//     by definition. Same for the profile picture: it belongs to the account,
+//     not to any thread, so nothing survives it — and leaving it behind would
+//     also pin the `users` row forever (see removeIfUnreferenced).
 //   - sessions and push subscriptions → always deleted, explicitly: the FK
 //     cascade never fires because the row survives as a tombstone.
 //
@@ -101,7 +103,7 @@ export async function createTempAccount(
       await db
         .prepare(
           `INSERT INTO users
-             (id, username, display_name, avatar_url, password_hash, created_at,
+             (id, username, display_name, avatar_key, password_hash, created_at,
               role, created_by, is_temp, expires_at)
            VALUES (?1, ?2, NULL, NULL, ?3, ?4, 'user', NULL, 1, ?5)`,
         )
@@ -170,7 +172,7 @@ export async function deleteAccountKeepingPeers(
     if (thread.peer_id !== null) orphanedPeers.add(thread.peer_id)
   }
 
-  report.media_deleted += await deleteUnclaimedUploads(env, userId)
+  report.media_deleted += await deletePersonalUploads(env, userId)
 
   // No cascade fires for a tombstone, and a live cookie must not outlive the
   // account it authenticates.
@@ -194,10 +196,15 @@ export async function deleteAccountKeepingPeers(
   return report
 }
 
-/** Uploads that never became a message: garbage regardless of who survives. */
-async function deleteUnclaimedUploads(env: Env, userId: string): Promise<number> {
+/**
+ * Objects that belong to the account rather than to a thread: uploads that
+ * never became a message, and the profile picture. Both are garbage regardless
+ * of who survives — nobody else's history references them.
+ */
+async function deletePersonalUploads(env: Env, userId: string): Promise<number> {
   const { results } = await env.DB.prepare(
-    'SELECT key FROM media_objects WHERE user_id = ? AND claimed_at IS NULL',
+    `SELECT key FROM media_objects
+     WHERE user_id = ? AND (claimed_at IS NULL OR key LIKE 'avatars/%')`,
   )
     .bind(userId)
     .all<{ key: string }>()
@@ -250,7 +257,7 @@ async function tombstone(db: D1Database, userId: string, now: number): Promise<v
       `UPDATE users SET
          username = ?2,
          display_name = NULL,
-         avatar_url = NULL,
+         avatar_key = NULL,
          password_hash = NULL,
          theme_mode = NULL,
          theme_light = NULL,

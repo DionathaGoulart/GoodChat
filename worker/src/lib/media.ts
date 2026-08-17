@@ -28,6 +28,14 @@ export const MAX_BYTES: Record<'image' | 'video', number> = {
   video: 32 * 1024 * 1024,
 }
 
+/**
+ * Profile pictures: still images only, and small. The client center-crops to a
+ * 512px square before uploading, so anything near this cap is a client that
+ * skipped the resize — a 40px avatar has no use for more.
+ */
+export const AVATAR_MIMES = ['image/webp', 'image/jpeg', 'image/png'] as const
+export const MAX_AVATAR_BYTES = 512 * 1024
+
 export const UPLOAD_URL_TTL_SECONDS = 600
 
 /** Objects are immutable (uuid keys, versioned sticker packs) — cache hard. */
@@ -35,7 +43,17 @@ export const DOWNLOAD_MAX_AGE_SECONDS = 31_536_000
 
 /** Path prefix the Worker serves objects from, and the only keys it accepts. */
 export const MEDIA_PATH_PREFIX = '/api/media/'
-const KEY_RE = /^(media|stickers)\/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/
+
+/**
+ * Avatars live under their own prefix because every rule that applies to them
+ * differs from a message attachment: who may read one (anybody in the instance,
+ * the picture is shown in search results and thread headers), and what the
+ * sweeps may delete (retention deletes conversation history, never a profile
+ * picture — see lib/cleanup.ts).
+ */
+export const AVATAR_PREFIX = 'avatars/'
+
+const KEY_RE = /^(media|stickers|avatars)\/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/
 
 export interface MediaConfig {
   keyId: string
@@ -67,6 +85,18 @@ export function isValidObjectKey(key: string): boolean {
 export function objectKey(mime: string, now = new Date()): string {
   const month = now.toISOString().slice(0, 7) // yyyy-mm
   return `media/${month}/${crypto.randomUUID()}.${MEDIA_TYPES[mime].ext}`
+}
+
+/**
+ * Avatar key. No month partition: an avatar is replaced, not accumulated, and
+ * nothing sweeps it by date — the partition would only be noise.
+ */
+export function avatarObjectKey(mime: string): string {
+  return `${AVATAR_PREFIX}${crypto.randomUUID()}.${MEDIA_TYPES[mime].ext}`
+}
+
+export function isAvatarKey(key: string): boolean {
+  return key.startsWith(AVATAR_PREFIX)
 }
 
 function s3Client(config: MediaConfig): AwsClient {
