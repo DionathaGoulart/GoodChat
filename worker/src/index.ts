@@ -1,12 +1,10 @@
-import { Agent } from 'agents'
 import { apiError, corsHeaders, json } from './lib/http'
 import { login, logout, me } from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
 import { lookupUsers } from './routes/users'
+import { connectConversation } from './routes/ws'
 
-// Placeholder Agent so the DO binding + SQLite migration are live from day one.
-// Real implementation (WebSocket protocol, message persistence) lands in phase 4.
-export class ConversationAgent extends Agent<Env> {}
+export { ConversationAgent } from './agent'
 
 async function route(request: Request, env: Env, url: URL): Promise<Response> {
   const { pathname } = url
@@ -30,6 +28,14 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url)
+
+    // WebSocket path bypasses the CORS wrapper below: a 101 upgrade response
+    // must be returned untouched (rebuilding it would drop the socket), and
+    // WS handshakes are not subject to CORS anyway.
+    if (url.pathname.startsWith('/api/ws/') && request.method === 'GET') {
+      return connectConversation(request, env, url)
+    }
+
     const origin = request.headers.get('Origin')
 
     if (request.method === 'OPTIONS') {
