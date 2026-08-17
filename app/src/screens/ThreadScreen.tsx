@@ -12,6 +12,7 @@ import { Avatar } from '../components/Avatar'
 import { Composer } from '../components/Composer'
 import { MessageBubble } from '../components/MessageBubble'
 import { RetroIconButton } from '../components/RetroIconButton'
+import { ThreadSkeleton } from '../components/Skeleton'
 import { WindowDots } from '../components/WindowDots'
 import { navigate } from '../lib/router'
 
@@ -72,10 +73,8 @@ export function ThreadScreen({ userId }: { userId: string }) {
 
   if (!resolved) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-3xl items-center justify-center p-6">
-        <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
-          abrindo conversa<span className="terminal-cursor">_</span>
-        </p>
+      <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col gap-4 p-4 sm:p-6">
+        <ThreadSkeleton />
       </main>
     )
   }

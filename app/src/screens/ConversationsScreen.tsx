@@ -8,6 +8,7 @@ import type { ConversationListItem } from '../lib/api'
 import { useSession } from '../hooks/useSession'
 import { useTheme } from '../hooks/useTheme'
 import { ConversationTile } from '../components/ConversationTile'
+import { ConversationListSkeleton } from '../components/Skeleton'
 import { GuestCredentialsCard, TempAccountBanner } from '../components/TempAccount'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { UserSearch } from '../components/UserSearch'
@@ -99,9 +100,7 @@ export function ConversationsScreen() {
       )}
 
       {conversations === null ? (
-        <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
-          carregando conversas<span className="terminal-cursor">_</span>
-        </p>
+        <ConversationListSkeleton />
       ) : conversations.length === 0 ? (
         <div className="animate-enter card card-border border-base-300 bg-base-200 retro-shadow">
           <div className="card-body gap-2">

@@ -3,6 +3,7 @@
 // the owner console only when the account actually carries the role (the
 // Worker enforces it too — this only keeps the screen from flashing).
 
+import { BootSkeleton } from './components/Skeleton'
 import { SessionProvider, useSession } from './hooks/useSession'
 import { navigate, useRoute } from './lib/router'
 import { AdminScreen } from './screens/AdminScreen'
@@ -15,15 +16,9 @@ function Screens() {
   const { status, isOwner } = useSession()
   const route = useRoute()
 
-  if (status === 'loading') {
-    return (
-      <main className="flex min-h-screen items-center justify-center">
-        <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
-          {'>'} goodchat_boot<span className="terminal-cursor">_</span>
-        </p>
-      </main>
-    )
-  }
+  // Only a cold start reaches this: with a cached account (hooks/useSession)
+  // the status is already 'authenticated' and the screen below paints at once.
+  if (status === 'loading') return <BootSkeleton />
   if (status === 'anonymous') return <LoginScreen />
   if (route.name === 'thread') return <ThreadScreen userId={route.userId} />
   if (route.name === 'settings') return <SettingsScreen />

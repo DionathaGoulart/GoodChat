@@ -14,6 +14,7 @@ import type { AdminConversation, AdminOverview, AdminUser } from '../lib/api'
 import { ApiError } from '../lib/api'
 import { useSession } from '../hooks/useSession'
 import { RetroIconButton } from '../components/RetroIconButton'
+import { CardListSkeleton, StatTilesSkeleton } from '../components/Skeleton'
 import { navigate } from '../lib/router'
 import { formatRemaining } from '../lib/time'
 
@@ -162,9 +163,7 @@ export function AdminScreen() {
           </div>
 
           {users === null ? (
-            <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
-              carregando<span className="terminal-cursor">_</span>
-            </p>
+            <CardListSkeleton label="carregando contas" rows={4} />
           ) : (
             <ul className="flex flex-col gap-3">
               {users.map((account) => (
@@ -214,13 +213,8 @@ export function AdminScreen() {
 }
 
 function OverviewPanel({ overview }: { overview: AdminOverview | null }) {
-  if (!overview) {
-    return (
-      <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
-        carregando totais<span className="terminal-cursor">_</span>
-      </p>
-    )
-  }
+  if (!overview) return <StatTilesSkeleton />
+
 
   // The gap between what the index knows and what the bucket holds is exactly
   // what a reindex would absorb — surface it instead of hiding the difference.
@@ -448,9 +442,7 @@ function ConversationsPanel({
         </div>
 
         {conversations === null ? (
-          <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
-            carregando<span className="terminal-cursor">_</span>
-          </p>
+          <CardListSkeleton label="carregando conversas" />
         ) : conversations.length === 0 ? (
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
             nenhuma conversa ainda
