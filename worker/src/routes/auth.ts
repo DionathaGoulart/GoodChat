@@ -1,12 +1,13 @@
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
-import { verifyPassword } from '../lib/password'
+import { burnPasswordTime, verifyPassword } from '../lib/password'
 import {
   clearCookie,
   createSession,
   readSessionCookie,
   requireSession,
   revokeSession,
+  sessionHeaders,
   type SessionUser,
 } from '../lib/session'
 import { checkLoginAllowed, clearLoginFailures, recordLoginFailure } from '../lib/ratelimit'
@@ -43,14 +44,18 @@ export async function login(request: Request, env: Env): Promise<Response> {
   }
 
   const user = await env.DB.prepare(
-    'SELECT id, username, display_name, avatar_url, created_at, password_hash FROM users WHERE username = ?',
+    `SELECT id, username, display_name, avatar_url, created_at, role, theme, password_hash
+     FROM users WHERE username = ? AND disabled_at IS NULL`,
   )
     .bind(username)
     .first<UserRow>()
 
+  // Always pay the KDF cost, even for an unknown or password-less account:
+  // a fast 401 vs a slow one is a user-enumeration oracle that the rate limit
+  // does not close (five probes are enough to classify a username).
   const valid = user?.password_hash
     ? await verifyPassword(parsed.data.password, user.password_hash)
-    : false
+    : await burnPasswordTime(parsed.data.password).then(() => false)
   if (!user || !valid) {
     await recordLoginFailure(env.DB, ip, username)
     return apiError('invalid_credentials', 401)
@@ -71,9 +76,5 @@ export async function logout(request: Request, env: Env): Promise<Response> {
 export async function me(request: Request, env: Env): Promise<Response> {
   const auth = await requireSession(request, env.DB)
   if (auth instanceof Response) return auth
-  return json(
-    { user: auth.user },
-    200,
-    auth.refreshedCookie ? { 'Set-Cookie': auth.refreshedCookie } : undefined,
-  )
+  return json({ user: auth.user }, 200, sessionHeaders(auth))
 }

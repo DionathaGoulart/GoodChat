@@ -12,7 +12,8 @@ import {
   objectKey,
   presignUpload,
 } from '../lib/media'
-import { requireSession } from '../lib/session'
+import { findObject, recordUpload } from '../lib/mediaIndex'
+import { requireSession, sessionHeaders, type AuthContext } from '../lib/session'
 
 // POST /api/media/upload-url (PRD §3.5): validates session + MIME allowlist +
 // size cap, then returns a presigned B2 PUT URL. The client must upload with
@@ -55,6 +56,10 @@ export async function createUploadUrl(request: Request, env: Env): Promise<Respo
   }
 
   const key = objectKey(mime)
+  // Indexed before the URL is handed out: an upload that never becomes a
+  // message still leaves a row, which is exactly how the orphan sweep finds it.
+  // `size` is the signed Content-Length, so it is also the stored size.
+  await recordUpload(env.DB, { key, userId: auth.user.id, mime, size })
   const uploadUrl = await presignUpload(config, key, mime, size)
   return json(
     {
@@ -67,15 +72,19 @@ export async function createUploadUrl(request: Request, env: Env): Promise<Respo
       expires_in: UPLOAD_URL_TTL_SECONDS,
     },
     200,
-    auth.refreshedCookie ? { 'Set-Cookie': auth.refreshedCookie } : undefined,
+    sessionHeaders(auth),
   )
 }
 
 // GET /api/media/<key>: authenticated read-through proxy for the private
 // bucket. The Worker signs the GET, streams the object back, and caches it at
 // the edge — B2 → Cloudflare egress is free, so only Worker requests are
-// spent. Access control is "any valid session + an unguessable key": the key
-// carries a uuid and the application key cannot list the bucket.
+// spent.
+//
+// Access control is membership, not obscurity: the media index (migration
+// 0003) says which conversation an object belongs to, and `conversations` says
+// whether the caller is one of its two participants. Authorization runs before
+// the cache lookup, so the shared edge copy never shortcuts the check.
 const PASSTHROUGH_HEADERS = [
   'Content-Type',
   'Content-Length',
@@ -85,6 +94,8 @@ const PASSTHROUGH_HEADERS = [
   'Last-Modified',
 ]
 
+const STICKER_PREFIX = 'stickers/'
+
 export async function serveMedia(
   request: Request,
   env: Env,
@@ -93,7 +104,7 @@ export async function serveMedia(
 ): Promise<Response> {
   const auth = await requireSession(request, env.DB)
   if (auth instanceof Response) return auth
-  const setCookie = auth.refreshedCookie
+  const setCookie = sessionHeaders(auth) as Record<string, string> | undefined
 
   let key: string
   try {
@@ -102,6 +113,11 @@ export async function serveMedia(
     return apiError('invalid_request', 400, 'malformed media key')
   }
   if (!isValidObjectKey(key)) return apiError('invalid_request', 400, 'invalid media key')
+
+  if (!(await canRead(env, auth, key))) {
+    // 404, not 403: whether a key exists is itself information.
+    return apiError('not_found', 404)
+  }
 
   const config = mediaConfig(env)
   if (!config) {
@@ -114,7 +130,7 @@ export async function serveMedia(
   const cacheKey = new Request(url.toString(), { method: 'GET' })
   if (!range) {
     const hit = await cache.match(cacheKey)
-    if (hit) return clientResponse(hit, setCookie)
+    if (hit) return clientResponse(hit, setCookie?.['Set-Cookie'])
   }
 
   const upstream = await fetchObject(config, key, range)
@@ -138,7 +154,35 @@ export async function serveMedia(
     cacheable.headers.set('Cache-Control', `public, max-age=${DOWNLOAD_MAX_AGE_SECONDS}, immutable`)
     ctx.waitUntil(cache.put(cacheKey, cacheable))
   }
-  return clientResponse(response, setCookie)
+  return clientResponse(response, setCookie?.['Set-Cookie'])
+}
+
+/**
+ * Membership check for one object key.
+ *
+ * - `stickers/…` is shared instance content: any session reads it.
+ * - An indexed object is readable by its uploader, and by both participants of
+ *   the conversation that claimed it.
+ * - An object with no index row predates migration 0003. `MEDIA_LEGACY_READS`
+ *   decides what happens to those: "allow" (default) keeps the old rule — any
+ *   session plus an unguessable uuid key — so existing threads keep rendering;
+ *   "deny" closes it. Run `POST /api/admin/media/reindex` once to backfill the
+ *   index from the Durable Objects, then flip it to "deny".
+ */
+async function canRead(env: Env, auth: AuthContext, key: string): Promise<boolean> {
+  if (key.startsWith(STICKER_PREFIX)) return true
+
+  const row = await findObject(env.DB, key)
+  if (!row) return env.MEDIA_LEGACY_READS !== 'deny'
+  if (row.user_id === auth.user.id) return true
+  if (!row.conversation_id) return false
+
+  const participant = await env.DB.prepare(
+    'SELECT 1 FROM conversations WHERE id = ?1 AND (user_a = ?2 OR user_b = ?2)',
+  )
+    .bind(row.conversation_id, auth.user.id)
+    .first()
+  return participant !== null
 }
 
 /** Browser-facing copy: private caching (per user) plus any session refresh. */

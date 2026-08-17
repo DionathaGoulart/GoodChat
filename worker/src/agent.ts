@@ -12,6 +12,7 @@
 
 import { Agent, type Connection, type ConnectionContext, type WSMessage } from 'agents'
 import { ensureConversation } from './lib/conversation'
+import { claimUpload } from './lib/mediaIndex'
 import { notifyUser, previewFor } from './lib/push'
 import {
   ClientEventSchema,
@@ -24,6 +25,27 @@ import {
 interface ConnState {
   userId: string
 }
+
+// Per-connection token buckets. An authenticated client is still untrusted:
+// without this, one socket can fill the DO's SQLite, burn CPU and fan out push
+// notifications as fast as it can write frames. Persisted messages are the
+// expensive kind; typing/read frames are cheap but still broadcast, so they
+// get a looser bucket of their own.
+//
+// State is in memory on purpose: a hibernating DO has no live socket to abuse,
+// and waking up with full buckets is the correct starting point.
+interface TokenBucket {
+  tokens: number
+  updatedAt: number
+}
+
+const RATE_LIMITS = {
+  message: { capacity: 20, perSecond: 2 },
+  signal: { capacity: 40, perSecond: 8 },
+} as const
+
+/** Consecutive refusals before the socket is closed rather than answered. */
+const MAX_RATE_VIOLATIONS = 20
 
 interface MessageRow {
   rowid: number
@@ -39,8 +61,26 @@ interface MessageRow {
 
 const HISTORY_LIMIT = 50
 
+/** Shape returned by GET /stats — consumed by routes/admin.ts. */
+export interface ConversationStats {
+  messages: number
+  body_bytes: number
+  storage_bytes: number
+  first_at: number | null
+  last_at: number | null
+  per_sender: { user_id: string; messages: number; body_bytes: number }[]
+  media: { key: string; user_id: string }[]
+  participants: string[]
+}
+
 export class ConversationAgent extends Agent<Env> {
   static override options = { hibernate: true }
+
+  /** connection id → its two buckets plus a violation counter. */
+  private readonly rateState = new Map<
+    string,
+    { message: TokenBucket; signal: TokenBucket; violations: number }
+  >()
 
   // Raw-JSON clients: suppress the SDK's cf_agent_* protocol frames
   // (identity/state/MCP) so the only traffic is our protocol.ts shapes.
@@ -75,10 +115,13 @@ export class ConversationAgent extends Agent<Env> {
   }
 
   // Internal HTTP surface (only reachable through Worker code — the public
-  // router never forwards plain HTTP here). GET /summary powers the
-  // conversation list: last message + unread count for the requesting user.
+  // router never forwards plain HTTP here).
+  //   GET  /summary  conversation list: last message + unread for one user
+  //   GET  /stats    owner panel: message/byte counts, media keys, disk size
+  //   POST /purge    owner action: wipe this conversation's history
   override async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
+
     if (request.method === 'GET' && url.pathname.endsWith('/summary')) {
       const userId = request.headers.get('x-goodchat-user-id')
       if (!userId) return new Response('unauthorized', { status: 401 })
@@ -95,7 +138,81 @@ export class ConversationAgent extends Agent<Env> {
         unread_count: unread[0].n,
       })
     }
+
+    if (request.method === 'GET' && url.pathname.endsWith('/stats')) {
+      return Response.json(this.stats())
+    }
+
+    if (request.method === 'POST' && url.pathname.endsWith('/purge')) {
+      return Response.json(this.purge())
+    }
+
     return new Response('not found', { status: 404 })
+  }
+
+  /**
+   * Storage accounting for one conversation. `storage_bytes` is the DO's real
+   * SQLite page count — the number that matters for cost — while the per-sender
+   * byte totals are message payload only, which is what attributes usage to an
+   * account. Media lives in the bucket and is counted from the D1 index, but
+   * the keys are reported here too so a purge can delete objects that predate
+   * that index.
+   */
+  private stats(): ConversationStats {
+    const totals = this.sql<{ n: number; bytes: number; first_at: number; last_at: number }>`
+      SELECT COUNT(*) AS n,
+             COALESCE(SUM(LENGTH(body)), 0) AS bytes,
+             COALESCE(MIN(created_at), 0) AS first_at,
+             COALESCE(MAX(created_at), 0) AS last_at
+      FROM messages
+    `
+    const perSender = this.sql<{ sender_id: string; n: number; bytes: number }>`
+      SELECT sender_id, COUNT(*) AS n, COALESCE(SUM(LENGTH(body)), 0) AS bytes
+      FROM messages GROUP BY sender_id
+    `
+    const media = this.sql<{ media_key: string; sender_id: string }>`
+      SELECT media_key, sender_id FROM messages WHERE media_key IS NOT NULL
+    `
+    let storageBytes = 0
+    try {
+      storageBytes = this.ctx.storage.sql.databaseSize
+    } catch {
+      // Not every runtime build exposes it; payload bytes are the fallback.
+      storageBytes = totals[0].bytes
+    }
+    return {
+      messages: totals[0].n,
+      body_bytes: totals[0].bytes,
+      storage_bytes: storageBytes,
+      first_at: totals[0].first_at || null,
+      last_at: totals[0].last_at || null,
+      per_sender: perSender.map((row) => ({
+        user_id: row.sender_id,
+        messages: row.n,
+        body_bytes: row.bytes,
+      })),
+      media: media.map((row) => ({ key: row.media_key, user_id: row.sender_id })),
+      participants: this.sql<{ user_id: string }>`SELECT user_id FROM participants`.map(
+        (row) => row.user_id,
+      ),
+    }
+  }
+
+  /**
+   * Wipes every message. `participants` survives so the pinned pair keeps
+   * rejecting outsiders on the next connect. Live sockets are told to reload
+   * their (now empty) history instead of being left showing deleted messages.
+   */
+  private purge(): { deleted: number; media_keys: string[] } {
+    const media = this.sql<{ media_key: string }>`
+      SELECT media_key FROM messages WHERE media_key IS NOT NULL
+    `
+    const before = this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM messages`
+    this.sql`DELETE FROM messages`
+    for (const conn of this.getConnections<ConnState>()) {
+      this.send(conn, { type: 'history', messages: [] })
+    }
+    return { deleted: before[0].n, media_keys: media.map((row) => row.media_key) }
   }
 
   override async onConnect(conn: Connection<ConnState>, ctx: ConnectionContext): Promise<void> {
@@ -172,6 +289,10 @@ export class ConversationAgent extends Agent<Env> {
     const event = ClientEventSchema.safeParse(parsed)
     if (!event.success) {
       this.send(conn, { type: 'error', error: 'invalid_message' })
+      return
+    }
+
+    if (!this.consumeToken(conn, event.data.type === 'send_message' ? 'message' : 'signal')) {
       return
     }
 
@@ -261,6 +382,17 @@ export class ConversationAgent extends Agent<Env> {
       console.error('ensureConversation failed', error)
     }
 
+    // Claim the object for this conversation: that is what turns the media
+    // proxy's check from "unguessable key" into "participant of this thread",
+    // and what takes the row out of the orphan sweep's reach.
+    if (event.media_key) {
+      this.ctx.waitUntil(
+        claimUpload(this.env.DB, event.media_key, userId, this.name, now).catch((error) => {
+          console.error('claimUpload failed', error)
+        }),
+      )
+    }
+
     // Web Push when the recipient has no live connection (phase 8). Off the
     // frame-processing path — the push service round-trip must not block the
     // sender's next frame. notifyUser never throws.
@@ -311,6 +443,54 @@ export class ConversationAgent extends Agent<Env> {
       up_to_message_id: upToMessageId,
       user_id: userId,
     })
+  }
+
+  override async onClose(conn: Connection<ConnState>): Promise<void> {
+    this.rateState.delete(conn.id)
+  }
+
+  /**
+   * Token bucket for one connection and one frame class. Returns false when
+   * the frame must be dropped — the client is told once per refusal, and a
+   * client that keeps hammering past MAX_RATE_VIOLATIONS gets disconnected
+   * instead of answered (an error frame per abusive frame is itself a cost).
+   */
+  private consumeToken(conn: Connection<ConnState>, kind: 'message' | 'signal'): boolean {
+    const now = Date.now()
+    let state = this.rateState.get(conn.id)
+    if (!state) {
+      state = {
+        message: { tokens: RATE_LIMITS.message.capacity, updatedAt: now },
+        signal: { tokens: RATE_LIMITS.signal.capacity, updatedAt: now },
+        violations: 0,
+      }
+      this.rateState.set(conn.id, state)
+    }
+
+    const limit = RATE_LIMITS[kind]
+    const bucket = state[kind]
+    const elapsedSeconds = Math.max(0, now - bucket.updatedAt) / 1000
+    bucket.tokens = Math.min(limit.capacity, bucket.tokens + elapsedSeconds * limit.perSecond)
+    bucket.updatedAt = now
+
+    if (bucket.tokens < 1) {
+      state.violations += 1
+      if (state.violations > MAX_RATE_VIOLATIONS) {
+        this.rateState.delete(conn.id)
+        conn.close(1008, 'rate limited')
+        return false
+      }
+      this.send(conn, {
+        type: 'error',
+        error: 'rate_limited',
+        message: 'muitas mensagens em pouco tempo',
+      })
+      return false
+    }
+
+    bucket.tokens -= 1
+    state.violations = 0
+    return true
   }
 
   /** The other pinned participant. Connections exist only after pinning. */

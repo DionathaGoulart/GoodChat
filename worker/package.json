@@ -12,11 +12,13 @@
     "db:migrate": "wrangler d1 migrations apply goodchat --local",
     "db:seed": "node scripts/seed.ts",
     "user:create": "node scripts/create-user.ts",
+    "user:role": "node scripts/set-role.ts",
     "smoke:phase3": "node scripts/smoke-phase3.ts",
     "smoke:phase4": "node scripts/smoke-phase4.ts",
     "smoke:phase6": "node scripts/smoke-phase6.ts",
     "smoke:phase7": "node scripts/smoke-phase7.ts",
     "smoke:phase8": "node scripts/smoke-phase8.ts",
+    "smoke:phase9": "node scripts/smoke-phase9.ts",
     "vapid:generate": "node scripts/vapid-generate.ts",
     "media:dev": "node scripts/media-dev-server.ts",
     "stickers:publish": "node scripts/publish-stickers.ts"

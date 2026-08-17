@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
-import { requireSession, type SessionUser } from '../lib/session'
+import { PUBLIC_USER_COLUMNS, requireSession, sessionHeaders, type PublicUser } from '../lib/session'
 
 // User discovery (PRD §3.2): exact/prefix match on @username only.
 // Visibility model is Option A — every account in the closed instance is
@@ -26,19 +26,16 @@ export async function lookupUsers(request: Request, env: Env, url: URL): Promise
 
   // "_" is a valid username char but a LIKE wildcard — escape it (and "%", "\").
   const pattern = `${q.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
+  // Disabled accounts are invisible: nobody can start a thread with one.
   const { results } = await env.DB.prepare(
-    `SELECT id, username, display_name, avatar_url, created_at
+    `SELECT ${PUBLIC_USER_COLUMNS}
      FROM users
-     WHERE username LIKE ?1 ESCAPE '\\' AND id != ?2
+     WHERE username LIKE ?1 ESCAPE '\\' AND id != ?2 AND disabled_at IS NULL
      ORDER BY username
      LIMIT ${MAX_RESULTS}`,
   )
     .bind(pattern, auth.user.id)
-    .all<SessionUser>()
+    .all<PublicUser>()
 
-  return json(
-    { users: results },
-    200,
-    auth.refreshedCookie ? { 'Set-Cookie': auth.refreshedCookie } : undefined,
-  )
+  return json({ users: results }, 200, sessionHeaders(auth))
 }

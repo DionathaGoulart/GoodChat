@@ -40,7 +40,11 @@ export async function connectConversation(
     return apiError('invalid_request', 400, 'cannot open a conversation with yourself')
   }
 
-  const other = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(withId).first()
+  const other = await env.DB.prepare(
+    'SELECT id FROM users WHERE id = ? AND disabled_at IS NULL',
+  )
+    .bind(withId)
+    .first()
   if (!other) return apiError('not_found', 404, 'user not found')
 
   if ((await conversationIdFor(auth.user.id, withId)) !== conversationId) {

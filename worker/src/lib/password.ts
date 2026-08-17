@@ -34,6 +34,21 @@ export async function verifyPassword(password: string, stored: string): Promise<
   return timingSafeEqual(expected, actual)
 }
 
+/**
+ * Same cost as verifyPassword, discarded result. Login calls this when the
+ * username does not exist so both branches take the same ~100k-iteration
+ * detour — otherwise the response time (≈1ms vs ≈50ms) enumerates accounts.
+ */
+export async function burnPasswordTime(password: string): Promise<void> {
+  await derive(password, DUMMY_SALT, ITERATIONS)
+}
+
+// Fixed salt on purpose: this derivation is never stored or compared, it only
+// has to cost the same as a real one.
+const DUMMY_SALT = new Uint8Array([
+  0x67, 0x6f, 0x6f, 0x64, 0x63, 0x68, 0x61, 0x74, 0x2d, 0x64, 0x75, 0x6d, 0x6d, 0x79, 0x2d, 0x73,
+])
+
 async function derive(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     'raw',

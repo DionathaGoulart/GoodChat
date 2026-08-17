@@ -9,7 +9,7 @@
 // Files land in worker/.media-dev/ (gitignored), so uploads survive restarts.
 // Also imported by smoke-phase6.ts, which starts it in-process.
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -18,8 +18,37 @@ const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, PUT, HEAD, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, PUT, DELETE, HEAD, OPTIONS',
   'Access-Control-Allow-Headers': '*',
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
+/** Every stored object under `dir`, as bucket-relative keys (skips *.meta.json). */
+async function walkKeys(dir: string, base: string): Promise<string[]> {
+  const keys: string[] = []
+  let entries
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return keys
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      keys.push(...(await walkKeys(full, base)))
+    } else if (!entry.name.endsWith('.meta.json')) {
+      keys.push(path.relative(base, full).split(path.sep).join('/'))
+    }
+  }
+  return keys
 }
 
 /** `/bucket/a/b.jpg` → safe relative path, or null for traversal attempts. */
@@ -36,7 +65,8 @@ export function startMediaDevServer(
   rootDir: string = DEFAULT_ROOT,
 ): Promise<http.Server> {
   const server = http.createServer(async (req, res) => {
-    const urlPath = (req.url ?? '/').split('?')[0]
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const urlPath = url.pathname
     const target = safePath(rootDir, urlPath)
 
     if (req.method === 'OPTIONS') {
@@ -44,9 +74,45 @@ export function startMediaDevServer(
       res.end()
       return
     }
+
+    // ListObjectsV2 on the bucket root (`GET /<bucket>?list-type=2&prefix=…`):
+    // the owner panel and the cleanup sweep read the bucket through it.
+    if (req.method === 'GET' && url.searchParams.get('list-type') === '2') {
+      const bucketDir = safePath(rootDir, urlPath)
+      const prefix = url.searchParams.get('prefix') ?? ''
+      const keys = bucketDir ? (await walkKeys(bucketDir, bucketDir)).sort() : []
+      const matching = keys.filter((key) => key.startsWith(prefix))
+      const contents = await Promise.all(
+        matching.map(async (key) => {
+          const info = await stat(path.join(bucketDir as string, key))
+          return (
+            `<Contents><Key>${xmlEscape(key)}</Key>` +
+            `<Size>${info.size}</Size>` +
+            `<LastModified>${new Date(info.mtimeMs).toISOString()}</LastModified></Contents>`
+          )
+        }),
+      )
+      const body =
+        `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>` +
+        `<IsTruncated>false</IsTruncated><KeyCount>${contents.length}</KeyCount>` +
+        `${contents.join('')}</ListBucketResult>`
+      res.writeHead(200, { ...CORS_HEADERS, 'Content-Type': 'application/xml' })
+      res.end(body)
+      return
+    }
+
     if (!target) {
       res.writeHead(400, CORS_HEADERS)
       res.end('bad key')
+      return
+    }
+
+    if (req.method === 'DELETE') {
+      // S3 semantics: deleting a missing key succeeds.
+      await rm(target, { force: true })
+      await rm(`${target}.meta.json`, { force: true })
+      res.writeHead(204, CORS_HEADERS)
+      res.end()
       return
     }
 

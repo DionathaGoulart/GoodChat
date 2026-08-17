@@ -118,3 +118,95 @@ export function fetchObject(
     headers: range ? { Range: range } : undefined,
   })
 }
+
+/** Concurrency for bulk deletes — B2 has no batch DELETE on the S3 API. */
+const DELETE_CONCURRENCY = 6
+
+/** True when the object is gone (404 counts: the goal is "not there"). */
+export async function deleteObject(config: MediaConfig, key: string): Promise<boolean> {
+  const response = await s3Client(config).fetch(
+    `${config.s3Endpoint}/${config.bucket}/${key}`,
+    { method: 'DELETE' },
+  )
+  return response.ok || response.status === 404
+}
+
+/**
+ * Deletes many keys with bounded concurrency; returns the ones that actually
+ * went away. A failed delete is left in the index so the next sweep retries.
+ */
+export async function deleteObjects(config: MediaConfig, keys: string[]): Promise<string[]> {
+  const deleted: string[] = []
+  for (let i = 0; i < keys.length; i += DELETE_CONCURRENCY) {
+    const batch = keys.slice(i, i + DELETE_CONCURRENCY)
+    const results = await Promise.all(
+      batch.map(async (key) => {
+        try {
+          return (await deleteObject(config, key)) ? key : null
+        } catch {
+          return null
+        }
+      }),
+    )
+    for (const key of results) if (key) deleted.push(key)
+  }
+  return deleted
+}
+
+export interface ListedObject {
+  key: string
+  size: number
+  lastModified: number
+}
+
+/**
+ * One page of ListObjectsV2. Used by the owner panel to report what the bucket
+ * really holds (objects predating the media index, or written out of band like
+ * the sticker pack) and by the reconcile sweep.
+ *
+ * The response is XML and the Workers runtime has no parser; the shape is a
+ * flat, attribute-free <Contents> list, so a scan over the tags is enough —
+ * keys are URL-safe by construction (isValidObjectKey) and cannot smuggle
+ * markup.
+ */
+export async function listObjects(
+  config: MediaConfig,
+  prefix: string,
+  continuationToken?: string,
+): Promise<{ objects: ListedObject[]; nextToken: string | null }> {
+  const url = new URL(`${config.s3Endpoint}/${config.bucket}`)
+  url.searchParams.set('list-type', '2')
+  url.searchParams.set('prefix', prefix)
+  url.searchParams.set('max-keys', '1000')
+  if (continuationToken) url.searchParams.set('continuation-token', continuationToken)
+
+  const response = await s3Client(config).fetch(url.toString(), { method: 'GET' })
+  if (!response.ok) throw new Error(`list objects failed (${response.status})`)
+  const xml = await response.text()
+
+  const objects: ListedObject[] = []
+  const contents = xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)
+  for (const [, block] of contents) {
+    const key = /<Key>([\s\S]*?)<\/Key>/.exec(block)?.[1]
+    if (!key) continue
+    objects.push({
+      key: decodeXmlEntities(key),
+      size: Number(/<Size>(\d+)<\/Size>/.exec(block)?.[1] ?? 0),
+      lastModified: Date.parse(/<LastModified>([\s\S]*?)<\/LastModified>/.exec(block)?.[1] ?? '') || 0,
+    })
+  }
+  const truncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml)
+  const nextToken = truncated
+    ? (/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(xml)?.[1] ?? null)
+    : null
+  return { objects, nextToken: nextToken ? decodeXmlEntities(nextToken) : null }
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&amp;', '&')
+}

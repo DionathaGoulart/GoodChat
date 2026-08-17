@@ -32,12 +32,20 @@
   ],
   // SPA served by the Worker itself (same origin as the API — the session
   // cookie is SameSite=Strict, so a separate frontend origin would never send
-  // it). /api/* always reaches the Worker script, everything else serves the
-  // Vite build with SPA fallback. Build the app before deploying (deploy:full).
+  // it). Every request runs the Worker script first: /api/* is routed, and
+  // everything else is fetched from the ASSETS binding and re-emitted with the
+  // security headers (an index.html delivered straight from the asset server
+  // would carry no CSP). Build the app before deploying (deploy:full).
   "assets": {
     "directory": "../app/dist",
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": true
+  },
+  // Maintenance sweep (src/lib/cleanup.ts): expired sessions, stale rate-limit
+  // counters, orphaned uploads, and media retention when it is enabled.
+  "triggers": {
+    "crons": ["17 * * * *"]
   },
   // Non-secret production config. Secrets (B2 keys, VAPID private key) go in
   // via `wrangler secret put`. These do NOT apply to local dev — .dev.vars does.
@@ -45,7 +53,19 @@
     "B2_BUCKET_NAME": "goodchat-media",
     "B2_S3_ENDPOINT": "https://s3.us-east-005.backblazeb2.com",
     "VAPID_PUBLIC_KEY": "BJGYYnihl2IiXX0tg_cyQemfkNKKEI5IxgX15d0QrH6dYcyJEXVTS3bVeiG_8ibELE0SoShEFk3XRy0dfcwUcnk",
-    "VAPID_SUBJECT": "mailto:dionatha.work@gmail.com"
+    "VAPID_SUBJECT": "mailto:dionatha.work@gmail.com",
+    // Extra browser origins allowed to call the API with credentials. Empty in
+    // production: the SPA is same-origin, so nothing else needs access.
+    "ALLOWED_ORIGINS": "",
+    // Delete claimed media older than this many days. "0" = keep forever.
+    // Turning it on makes old bubbles render the "mídia expirada" placeholder.
+    "MEDIA_RETENTION_DAYS": "0",
+    // Objects with no row in media_objects (uploaded before migration 0003):
+    // "allow" keeps the pre-0003 rule (any session + an unguessable key) so
+    // existing threads keep working. Run POST /api/admin/media/reindex once,
+    // confirm indexed_media_bytes matches bucket_bytes in the owner overview,
+    // then set this to "deny".
+    "MEDIA_LEGACY_READS": "allow"
   },
   "observability": {
     "enabled": true

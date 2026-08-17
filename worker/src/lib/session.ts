@@ -12,13 +12,30 @@ const REFRESH_MIN_GAIN_MS = 60 * 60 * 1000
 
 const COOKIE_NAME = 'session'
 
+export type UserRole = 'owner' | 'user'
+
+/** The account as its own session sees it (role and theme are private). */
 export interface SessionUser {
   id: string
   username: string
   display_name: string | null
   avatar_url: string | null
   created_at: number
+  role: UserRole
+  /** Account-level theme default; null follows the OS preference. */
+  theme: string | null
 }
+
+/** The subset other accounts are allowed to see (search results, peers). */
+export interface PublicUser {
+  id: string
+  username: string
+  display_name: string | null
+  avatar_url: string | null
+  created_at: number
+}
+
+export const PUBLIC_USER_COLUMNS = 'id, username, display_name, avatar_url, created_at'
 
 export interface AuthContext {
   user: SessionUser
@@ -44,6 +61,16 @@ export async function revokeSession(db: D1Database, token: string): Promise<void
   await db.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashToken(token)).run()
 }
 
+/** Every device of one account: password reset, admin disable, account delete. */
+export async function revokeAllSessions(db: D1Database, userId: string): Promise<void> {
+  await db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(userId).run()
+}
+
+/** Forwards the sliding-expiration refresh, when requireSession produced one. */
+export function sessionHeaders(auth: AuthContext): HeadersInit | undefined {
+  return auth.refreshedCookie ? { 'Set-Cookie': auth.refreshedCookie } : undefined
+}
+
 /**
  * Validates the session cookie on `request`. Returns the authenticated user
  * or a ready-to-return 401 Response. Works for REST and (later) WS upgrades —
@@ -57,12 +84,15 @@ export async function requireSession(
   if (!token) return apiError('unauthorized', 401)
 
   const tokenHash = await hashToken(token)
+  // `u.disabled_at IS NULL`: disabling an account revokes every live session at
+  // once, without a sweep over the sessions table.
   const row = await db
     .prepare(
       `SELECT s.created_at AS session_created_at, s.expires_at,
-              u.id, u.username, u.display_name, u.avatar_url, u.created_at
+              u.id, u.username, u.display_name, u.avatar_url, u.created_at,
+              u.role, u.theme
        FROM sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.token = ?`,
+       WHERE s.token = ? AND u.disabled_at IS NULL`,
     )
     .bind(tokenHash)
     .first<SessionUser & { session_created_at: number; expires_at: number }>()

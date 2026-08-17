@@ -2,7 +2,12 @@ import { getAgentByName } from 'agents'
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import { conversationIdFor } from '../lib/conversation'
-import { requireSession, type AuthContext, type SessionUser } from '../lib/session'
+import {
+  PUBLIC_USER_COLUMNS,
+  requireSession,
+  sessionHeaders,
+  type PublicUser,
+} from '../lib/session'
 import type { WireMessage } from '../protocol'
 
 // Conversations REST (PRD §3.3). Rows are created lazily on first message
@@ -55,7 +60,7 @@ export async function listConversations(request: Request, env: Env): Promise<Res
       display_name: row.other_display_name,
       avatar_url: row.other_avatar_url,
       created_at: row.other_created_at,
-    } satisfies SessionUser,
+    } satisfies PublicUser,
   }))
 
   return json({ conversations }, 200, sessionHeaders(auth))
@@ -85,10 +90,10 @@ export async function resolveConversation(request: Request, env: Env): Promise<R
   }
 
   const other = await env.DB.prepare(
-    'SELECT id, username, display_name, avatar_url, created_at FROM users WHERE id = ?',
+    `SELECT ${PUBLIC_USER_COLUMNS} FROM users WHERE id = ? AND disabled_at IS NULL`,
   )
     .bind(parsed.data.user_id)
-    .first<SessionUser>()
+    .first<PublicUser>()
   if (!other) return apiError('not_found', 404, 'user not found')
 
   const conversationId = await conversationIdFor(auth.user.id, other.id)
@@ -126,6 +131,3 @@ async function fetchSummary(
   }
 }
 
-function sessionHeaders(auth: AuthContext): HeadersInit | undefined {
-  return auth.refreshedCookie ? { 'Set-Cookie': auth.refreshedCookie } : undefined
-}
