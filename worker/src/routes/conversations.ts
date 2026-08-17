@@ -1,7 +1,9 @@
+import { getAgentByName } from 'agents'
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import { conversationIdFor } from '../lib/conversation'
 import { requireSession, type AuthContext, type SessionUser } from '../lib/session'
+import type { WireMessage } from '../protocol'
 
 // Conversations REST (PRD §3.3). Rows are created lazily on first message
 // (phase 4); these endpoints only read and resolve ids.
@@ -34,10 +36,19 @@ export async function listConversations(request: Request, env: Env): Promise<Res
     .bind(auth.user.id)
     .all<ConversationRow>()
 
-  const conversations = results.map((row) => ({
+  // Preview + unread live in each conversation's DO (phase-3 handoff deferred
+  // them here). Fetched in parallel; a failing DO degrades to nulls instead of
+  // breaking the list.
+  const summaries = await Promise.all(
+    results.map((row) => fetchSummary(env, row.id, auth.user.id)),
+  )
+
+  const conversations = results.map((row, i) => ({
     id: row.id,
     created_at: row.created_at,
     last_message_at: row.last_message_at,
+    last_message: summaries[i]?.last_message ?? null,
+    unread_count: summaries[i]?.unread_count ?? 0,
     other_user: {
       id: row.other_id,
       username: row.other_username,
@@ -90,6 +101,29 @@ export async function resolveConversation(request: Request, env: Env): Promise<R
     200,
     sessionHeaders(auth),
   )
+}
+
+interface ConversationSummary {
+  last_message: WireMessage | null
+  unread_count: number
+}
+
+async function fetchSummary(
+  env: Env,
+  conversationId: string,
+  userId: string,
+): Promise<ConversationSummary | null> {
+  try {
+    const agent = await getAgentByName(env.ConversationAgent, conversationId)
+    const response = await agent.fetch('https://do/summary', {
+      headers: { 'x-goodchat-user-id': userId },
+    })
+    if (!response.ok) return null
+    return await response.json<ConversationSummary>()
+  } catch (error) {
+    console.error('conversation summary failed', conversationId, error)
+    return null
+  }
 }
 
 function sessionHeaders(auth: AuthContext): HeadersInit | undefined {

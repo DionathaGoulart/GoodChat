@@ -72,6 +72,30 @@ export class ConversationAgent extends Agent<Env> {
     `
   }
 
+  // Internal HTTP surface (only reachable through Worker code — the public
+  // router never forwards plain HTTP here). GET /summary powers the
+  // conversation list: last message + unread count for the requesting user.
+  override async onRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    if (request.method === 'GET' && url.pathname.endsWith('/summary')) {
+      const userId = request.headers.get('x-goodchat-user-id')
+      if (!userId) return new Response('unauthorized', { status: 401 })
+      const last = this.sql<MessageRow>`
+        SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status
+        FROM messages WHERE deleted_at IS NULL ORDER BY rowid DESC LIMIT 1
+      `
+      const unread = this.sql<{ n: number }>`
+        SELECT COUNT(*) AS n FROM messages
+        WHERE sender_id != ${userId} AND status != 'read' AND deleted_at IS NULL
+      `
+      return Response.json({
+        last_message: last.length > 0 ? toWire(last[0]) : null,
+        unread_count: unread[0].n,
+      })
+    }
+    return new Response('not found', { status: 404 })
+  }
+
   override async onConnect(conn: Connection<ConnState>, ctx: ConnectionContext): Promise<void> {
     const userId = ctx.request.headers.get('x-goodchat-user-id')
     const peerId = ctx.request.headers.get('x-goodchat-peer-id')
