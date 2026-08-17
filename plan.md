@@ -35,7 +35,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 | 4 | Real-time core (DO + WebSocket) | ✅ concluída |
 | 5 | Frontend do chat | ✅ concluída |
 | 6 | Pipeline de mídia (B2) | ✅ concluída |
-| 7 | Receipts, typing, emoji, stickers | ⬜ pendente |
+| 7 | Receipts, typing, emoji, stickers | ✅ concluída |
 | 8 | PWA + push (stretch) | ⬜ pendente |
 
 MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definition of Done completa: `inicial.md` §2.4 espelhada nos critérios das fases.
@@ -251,7 +251,17 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Não fazer:** edição/deleção de mensagens (P1 separado — sugerir como fase extra se usuário quiser), E2EE.
 
-**Handoff:** _(lib de emoji, formato do manifest de stickers, mudanças no protocolo se houve)_
+**Handoff (concluída 2026-08-17):**
+
+- **Emoji: `emoji-picker-element` 1.29.1** (web component, shadow DOM) + `emoji-picker-element-data` 1.8.0 — dataset **self-hosted** (sem CDN): `import ... from 'emoji-picker-element-data/pt/cldr/data.json?url'` (Vite emite asset ~455KB, gzip 78KB, buscado só na 1ª abertura; lib cacheia em IndexedDB). Locale `pt` + i18n `emoji-picker-element/i18n/pt_BR.js`. Tudo lazy: `EmojiPicker.tsx` monta o componente via dynamic import na primeira abertura do dropdown e ele **fica montado** (reabertura instantânea). Tema: shadow DOM não vê tokens do daisyUI — classe `light`/`dark` pinada via `currentTheme()` (exportado de `useTheme.ts`) e **re-sincronizada** por MutationObserver em `data-theme` + listener de `prefers-color-scheme`; cores/geometria via API de CSS vars do componente (bloco `emoji-picker { ... }` no `index.css`, radius 0, borda 0 — o shell do popover já desenha o retro-border). Inserção **no caret** do textarea (selection sobrevive ao blur; restaurada pós-render), picker fica aberto pra inserir vários. Emoji inline = Unicode puro em `msg_type: 'text'` (o `msg_type: 'emoji'` do protocolo segue aceito, nunca emitido pela UI).
+- **Pickers = daisyUI focus dropdown** (`dropdown dropdown-top` + `dropdown-content`; fecha ao clicar fora/perder foco; sticker envia e fecha via `blur()`). Botões novos no composer: `:)` (emoji) e `▦` (stickers), mesmo tratamento do tile `+`.
+- **Stickers:** pack curado **v1** em `worker/assets/stickers/v1/` — 10 SVGs autorais (pixel-art por `<rect>` + texto terminal mono; placa cream + borda ink **baked** no asset, então funciona nos dois temas com o mesmo arquivo; app só adiciona `retro-shadow-sm`). Manifest: `{version, base: "stickers/v1", stickers: [{id, file, label}]}` em `manifest.json`. Publicação: `npm run stickers:publish` (PUT puro no fake-B2; `MEDIA_PUT_BASE` sobrescreve; **B2 real precisa de PUT assinado → `b2 sync`**, receita no `.env.example`). Client: `app/src/lib/stickers.ts` busca `<VITE_MEDIA_URL>/stickers/v1/manifest.json` (cache module-level, promise falha não envenena o cache), `useStickerPack()` hook; mensagem = `msg_type: 'sticker'`, `body` = id do asset (PRD §4.4); render **sem chrome de bolha** (só o asset + meta-linha), id desconhecido → fallback `[sticker]`, carregando → `skeleton`.
+- **Protocolo:** só endurecimento aditivo — `STICKER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/` exportado nos dois `protocol.ts`; DO rejeita sticker fora do padrão com `error: 'invalid_sticker'` (body vira segmento de URL no client — sem path traversal). Nenhum frame novo; `typing` da fase 4 usado como está.
+- **Typing:** `useConversation` ganhou `sendTyping()` (throttle leading 2.5s, **nunca enfileirado** — hint efêmero não sobrevive reconexão) e `peerTyping` (frame arma expiry de 4s; mensagem real do peer limpa na hora). Composer chama `onTyping` a cada change. Render: linha de altura fixa (`h-4`, zero layout shift) acima do composer — `@username digitando_` accent + `terminal-cursor`, `aria-live="polite"`.
+- **Receipts UI:** `MetaLine` no `MessageBubble` — bolha própria mostra `hh:mm · enviado|entregue|lido` (lido em `font-black`); recebida mostra só hora; `enviando_` mantido. `sendSticker(id)` reusa `sendEvent` → fila offline/dedup grátis.
+- **Bugs achados no e2e e corrigidos:** (1) tema salvo só era pinado no `<html>` pelo `useTheme`, que monta apenas na lista — a thread caía no `prefers-color-scheme` quando o SO virava dark; agora `applyStoredTheme()` roda no boot (`main.tsx`). (2) classe de tema do emoji picker congelava na 1ª abertura (ele fica montado) — resolvido pelo observer acima.
+- **Testado:** `npm run smoke:phase7` (17 checks — publish+roundtrip do pack com content-type, ids vs regex, typing peer-only sem eco nas próprias tabs, emoji byte-identical persistido, sticker online/offline/reconexão, 4 ids inválidos rejeitados sem vazar pro peer, read receipt em sticker) — **all green**, idempotente. E2E no Chrome real (alice UI + bob via scripts `ws`): typing aparece/some (expiry), receipts progridem até `lido` ao vivo, emoji picker (pt-BR, temado, insere no caret, multi-insert), sticker pela UI chega/persiste pós-reload, entrega offline de sticker vira `delivered` na reconexão, light+dark conferidos (stickers com placa cream “colada” no noir — efeito desejado).
+- **Pendências novas:** publicar `stickers/v1/` no B2 real quando o bucket existir (`b2 sync`, junto das pendências da fase 6); throttle 2.5s do typing < expiry 4s por design — se mudar um, manter `throttle < expiry`.
 
 ---
 
@@ -278,7 +288,7 @@ Group chats · descoberta pública · voz/vídeo RTC · apps nativos · monetiza
 
 ## Pendências acumuladas
 
-- **B2 real (fase 6):** criar bucket público + application key + CORS rules (receita no `worker/.env.example`), preencher `.dev.vars`/secrets e `VITE_MEDIA_URL`; validar contra o B2 real que a assinatura de content-length/content-type rejeita bytes divergentes.
+- **B2 real (fase 6):** criar bucket público + application key + CORS rules (receita no `worker/.env.example`), preencher `.dev.vars`/secrets e `VITE_MEDIA_URL`; validar contra o B2 real que a assinatura de content-length/content-type rejeita bytes divergentes. **+ fase 7:** publicar o pack `stickers/v1/` no bucket (`b2 sync worker/assets/stickers b2://<bucket>/stickers`).
 - **Domínio Cloudflare na frente do B2** (Bandwidth Alliance, egress grátis) — fase 6 serve via URL direta até existir DNS.
 - **Retenção/cleanup de mídia** (PRD §5): keys já têm prefixo mensal `media/<yyyy-mm>/` pra facilitar.
 - Lista de conversas não atualiza em tempo real (poll 15s) — fase 5.
