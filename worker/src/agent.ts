@@ -14,6 +14,7 @@ import { Agent, type Connection, type ConnectionContext, type WSMessage } from '
 import { ensureConversation } from './lib/conversation'
 import {
   ClientEventSchema,
+  STICKER_ID_RE,
   type SendMessageEvent,
   type ServerEvent,
   type WireMessage,
@@ -199,6 +200,10 @@ export class ConversationAgent extends Agent<Env> {
     }
     if (!textual && !event.media_key) {
       this.send(conn, { type: 'error', error: 'media_key_required' })
+      return
+    }
+    if (event.msg_type === 'sticker' && !STICKER_ID_RE.test(event.body)) {
+      this.send(conn, { type: 'error', error: 'invalid_sticker' })
       return
     }
 

@@ -23,6 +23,10 @@ export type MessageStatus = (typeof MESSAGE_STATUSES)[number]
 
 export const MAX_BODY_LENGTH = 4096
 
+// Sticker messages carry a pack asset id in `body` (PRD §4.4). The id is used
+// to build asset URLs client-side, so it is locked to a safe slug shape.
+export const STICKER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
 /** A persisted message on the wire (mirrors the DO's `messages` row). */
 export const WireMessageSchema = z.object({
   id: z.string(),
