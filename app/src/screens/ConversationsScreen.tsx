@@ -5,21 +5,27 @@
 import { useCallback, useEffect, useState } from 'react'
 import { listConversations } from '../lib/api'
 import type { ConversationListItem } from '../lib/api'
-import { usePush } from '../hooks/usePush'
 import { useSession } from '../hooks/useSession'
 import { useTheme } from '../hooks/useTheme'
 import { ConversationTile } from '../components/ConversationTile'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { UserSearch } from '../components/UserSearch'
+import { navigate } from '../lib/router'
 
 const POLL_MS = 15_000
 
 export function ConversationsScreen() {
-  const { user, logout } = useSession()
+  const { user, setTheme } = useSession()
   const { theme, toggle } = useTheme()
-  const push = usePush()
   const [conversations, setConversations] = useState<ConversationListItem[] | null>(null)
   const [failed, setFailed] = useState(false)
+
+  // The header toggle is a shortcut for the setting: flip locally for an
+  // instant response, then persist it to the account. A failed write is not
+  // worth an error banner here — the settings screen owns that feedback.
+  const flipTheme = useCallback(() => {
+    void setTheme(toggle())
+  }, [setTheme, toggle])
 
   const refresh = useCallback(() => {
     listConversations()
@@ -62,40 +68,20 @@ export function ConversationsScreen() {
           )}
         </div>
         <div className="flex gap-2">
-          {push.state !== 'unsupported' && (
-            <RetroIconButton
-              onClick={push.toggle}
-              disabled={push.state === 'loading' || push.state === 'denied' || push.busy}
-              aria-label="notificações push"
-              aria-pressed={push.state === 'on'}
-              className={push.state === 'on' ? 'bg-accent text-accent-content' : ''}
-              title={
-                push.state === 'denied'
-                  ? 'permissão de notificação bloqueada no navegador'
-                  : push.state === 'unavailable'
-                    ? 'push não configurado no servidor'
-                    : push.state === 'on'
-                      ? 'desativar notificações'
-                      : 'ativar notificações'
-              }
-            >
-              {push.busy || push.state === 'loading'
-                ? 'notif …'
-                : push.state === 'on'
-                  ? 'notif on'
-                  : push.state === 'denied'
-                    ? 'notif ✕'
-                    : 'notif off'}
-            </RetroIconButton>
-          )}
           <RetroIconButton
-            onClick={toggle}
+            onClick={flipTheme}
             aria-label="alternar tema"
             title={theme === 'goodchat-light' ? 'modo escuro' : 'modo claro'}
           >
             {theme === 'goodchat-light' ? 'dark' : 'light'}
           </RetroIconButton>
-          <RetroIconButton onClick={() => void logout()}>sair</RetroIconButton>
+          <RetroIconButton
+            onClick={() => navigate({ name: 'settings' })}
+            aria-label="configurações"
+            title="configurações, notificações e sessão"
+          >
+            config
+          </RetroIconButton>
         </div>
       </header>
 

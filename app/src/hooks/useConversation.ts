@@ -134,6 +134,7 @@ export function useConversation(
     let disposed = false
     let attempt = 0
     let timer: number | undefined
+    let flushTimer: number | undefined
     dispatch({ type: 'reset' })
     pendingRef.current.clear()
     lastReadSentRef.current = null
@@ -179,8 +180,48 @@ export function useConversation(
           return
         case 'error':
           console.warn('ws error frame', event.error, event.message)
+          // The server dropped that frame instead of processing it. Whatever
+          // is still pending has to be offered again, after the bucket has had
+          // time to refill — otherwise a long offline queue would sit at
+          // 'sending' forever.
+          if (event.error === 'rate_limited') scheduleFlush(2000)
           return
       }
+    }
+
+    // Pending sends are flushed a few at a time. The server rate-limits each
+    // connection (20 messages burst, 2/s sustained), so dumping a 30-message
+    // offline queue in one go would get the tail refused. 4 per 2.5s is 1.6/s,
+    // deliberately under the refill rate, so a long queue drains without ever
+    // tripping the limit. Resending is safe by construction: the DO dedups on
+    // (sender, client_id), so a frame that did land is acked, not duplicated.
+    const FLUSH_CHUNK = 4
+    const FLUSH_INTERVAL_MS = 2500
+
+    // Cursor over the queue rather than always restarting from the head: an
+    // ack that is slow to arrive must not keep the first chunk hogging every
+    // window while the tail never gets offered.
+    let flushCursor = 0
+
+    const flushPending = () => {
+      flushTimer = undefined
+      const ws = wsRef.current
+      if (disposed || ws?.readyState !== WebSocket.OPEN) return
+      const queued = [...pendingRef.current.values()]
+      if (queued.length === 0) {
+        flushCursor = 0
+        return
+      }
+      if (flushCursor >= queued.length) flushCursor = 0
+      const batch = queued.slice(flushCursor, flushCursor + FLUSH_CHUNK)
+      for (const event of batch) ws.send(JSON.stringify(event))
+      flushCursor += batch.length
+      if (queued.length > batch.length) scheduleFlush(FLUSH_INTERVAL_MS)
+    }
+
+    const scheduleFlush = (delayMs: number) => {
+      if (disposed || flushTimer !== undefined || pendingRef.current.size === 0) return
+      flushTimer = window.setTimeout(flushPending, delayMs)
     }
 
     const connect = () => {
@@ -194,7 +235,10 @@ export function useConversation(
         // A receipt sent on a dying socket may be lost — resend after reconnect.
         lastReadSentRef.current = null
         setConnection('online')
-        for (const event of pendingRef.current.values()) ws.send(JSON.stringify(event))
+        window.clearTimeout(flushTimer)
+        flushTimer = undefined
+        flushCursor = 0
+        flushPending()
       }
       ws.onmessage = (raw: MessageEvent) => {
         if (typeof raw.data !== 'string') return
@@ -221,6 +265,7 @@ export function useConversation(
     return () => {
       disposed = true
       window.clearTimeout(timer)
+      window.clearTimeout(flushTimer)
       window.clearTimeout(typingTimerRef.current)
       wsRef.current?.close()
       wsRef.current = null

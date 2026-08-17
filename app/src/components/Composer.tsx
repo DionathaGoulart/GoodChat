@@ -9,16 +9,7 @@
 import { useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent } from 'react'
 import { MAX_BODY_LENGTH } from '../lib/protocol'
-import {
-  IMAGE_MIMES,
-  MAX_VIDEO_BYTES,
-  MAX_VIDEO_SECONDS,
-  MediaError,
-  VIDEO_MIMES,
-  compressImage,
-  uploadMedia,
-  videoDurationSeconds,
-} from '../lib/media'
+import { IMAGE_MIMES, MediaError, VIDEO_MIMES, prepareMedia, uploadMedia } from '../lib/media'
 import type { UploadHandle } from '../lib/media'
 import { ApiError } from '../lib/api'
 import { EmojiPicker } from './EmojiPicker'
@@ -28,6 +19,12 @@ interface Attachment {
   name: string
   phase: 'processando' | 'enviando'
   progress: number
+}
+
+/** "2.4mb" — compression feedback is only meaningful in whole-ish numbers. */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}mb`
+  return `${Math.max(1, Math.round(bytes / 1024))}kb`
 }
 
 const TOOL_BUTTON_CLASS =
@@ -47,6 +44,8 @@ export function Composer({
   const [body, setBody] = useState('')
   const [attachment, setAttachment] = useState<Attachment | null>(null)
   const [mediaError, setMediaError] = useState<string | null>(null)
+  /** "12.4mb → 3.1mb" after a compression that actually won. */
+  const [savings, setSavings] = useState<string | null>(null)
   // Lazy-mount flags: picker content only exists after the first open.
   const [emojiOpened, setEmojiOpened] = useState(false)
   const [stickersOpened, setStickersOpened] = useState(false)
@@ -99,34 +98,28 @@ export function Composer({
     event.target.value = '' // allow re-selecting the same file
     if (!file || attachment) return
     setMediaError(null)
+    setSavings(null)
 
     try {
-      let blob: Blob
-      let mime: string
-      let kind: 'image' | 'video'
-      if (IMAGE_MIMES.includes(file.type)) {
-        kind = 'image'
-        setAttachment({ name: file.name, phase: 'processando', progress: 0 })
-        ;({ blob, mime } = await compressImage(file))
-      } else if (VIDEO_MIMES.includes(file.type)) {
-        kind = 'video'
-        if (file.size > MAX_VIDEO_BYTES) throw new MediaError('vídeo muito grande (máx 32mb)')
-        setAttachment({ name: file.name, phase: 'processando', progress: 0 })
-        const duration = await videoDurationSeconds(file)
-        if (duration > MAX_VIDEO_SECONDS) throw new MediaError('vídeo muito longo (máx 60s)')
-        blob = file
-        mime = file.type
-      } else {
-        throw new MediaError('formato não suportado (jpg/png/webp/gif/mp4/webm)')
+      // Compression is the slow phase for video (it runs in real time), so it
+      // reports progress of its own instead of a spinner.
+      setAttachment({ name: file.name, phase: 'processando', progress: 0 })
+      const prepared = await prepareMedia(file, (fraction) =>
+        setAttachment((current) =>
+          current ? { ...current, phase: 'processando', progress: fraction } : current,
+        ),
+      )
+      if (prepared.blob.size < prepared.originalSize) {
+        setSavings(`${formatBytes(prepared.originalSize)} → ${formatBytes(prepared.blob.size)}`)
       }
 
       setAttachment({ name: file.name, phase: 'enviando', progress: 0 })
-      const handle = uploadMedia(blob, mime, (fraction) =>
+      const handle = uploadMedia(prepared.blob, prepared.mime, (fraction) =>
         setAttachment((current) => (current ? { ...current, progress: fraction } : current)),
       )
       uploadRef.current = handle
       const { key } = await handle.promise
-      onSendMedia(kind, key)
+      onSendMedia(prepared.kind, key)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         // user cancelled — no error line
@@ -157,17 +150,17 @@ export function Composer({
         <div className="animate-enter retro-border flex items-center gap-3 bg-base-200 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em]">
           <span className="truncate opacity-60">{attachment.name}</span>
           <span className="shrink-0">
-            {attachment.phase === 'processando' ? (
+            {attachment.phase === 'processando' && attachment.progress === 0 ? (
               <>
                 processando<span className="terminal-cursor">_</span>
               </>
             ) : (
-              `upload: ${Math.round(attachment.progress * 100)}%`
+              `${attachment.phase === 'processando' ? 'comprimindo' : 'upload'}: ${Math.round(attachment.progress * 100)}%`
             )}
           </span>
           <progress
             className="progress h-2 w-24 shrink-0"
-            value={attachment.phase === 'enviando' ? attachment.progress : undefined}
+            value={attachment.progress > 0 ? attachment.progress : undefined}
             max={1}
           />
           <button
@@ -182,6 +175,11 @@ export function Composer({
       {mediaError && (
         <p className="animate-enter border-2 border-error bg-error/10 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
           {mediaError}
+        </p>
+      )}
+      {savings && !attachment && (
+        <p className="animate-enter font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
+          comprimido: {savings}
         </p>
       )}
       <form

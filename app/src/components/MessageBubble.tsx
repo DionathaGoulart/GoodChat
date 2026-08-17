@@ -6,7 +6,7 @@
 // chrome entirely — the asset carries its own baked plate. Own messages show
 // the delivery state (sent/delivered/read) in the mono meta line.
 
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import type { ThreadMessage } from '../hooks/useConversation'
 import { mediaUrl } from '../lib/media'
 import { stickerAssetUrl, useStickerPack } from '../lib/stickers'
@@ -52,15 +52,29 @@ function MetaLine({ message, mine, className = '' }: {
 
 function MediaContent({ message }: { message: ThreadMessage }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
+  // The object can be gone for good: media retention deleted it, or the owner
+  // purged the thread. The message row survives either way, so the bubble has
+  // to say so instead of showing a broken frame.
+  const [gone, setGone] = useState(false)
   if (!message.media_key) return null
   const src = mediaUrl(message.media_key)
+
+  if (gone) {
+    return (
+      <span className="retro-border bg-base-200 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
+        [mídia indisponível]
+      </span>
+    )
+  }
 
   if (message.msg_type === 'video') {
     return (
       <video
         controls
+        playsInline
         preload="metadata"
         src={src}
+        onError={() => setGone(true)}
         className="max-h-64 w-full min-w-48 bg-base-300/20"
       />
     )
@@ -71,6 +85,7 @@ function MediaContent({ message }: { message: ThreadMessage }) {
         src={src}
         alt="imagem"
         loading="lazy"
+        onError={() => setGone(true)}
         className="max-h-64 w-auto cursor-zoom-in"
         onClick={() => dialogRef.current?.showModal()}
       />

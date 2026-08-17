@@ -1,26 +1,38 @@
 // Session context: checks GET /api/auth/me on load (persistent cookie
-// session), exposes login/logout. `status` drives the App's screen switch.
+// session), exposes login/logout and the account-level theme preference.
+// `status` drives the App's screen switch.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import * as api from '../lib/api'
-import type { PublicUser } from '../lib/api'
+import type { SessionUser } from '../lib/api'
 import { disablePush } from '../lib/push'
+import { applyTheme, type ThemePreference } from './useTheme'
 
 type SessionStatus = 'loading' | 'anonymous' | 'authenticated'
 
 interface SessionContextValue {
   status: SessionStatus
-  user: PublicUser | null
+  user: SessionUser | null
+  isOwner: boolean
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  /** Persists the theme on the account; the DOM is updated immediately. */
+  setTheme: (preference: ThemePreference) => Promise<void>
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null)
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<SessionStatus>('loading')
-  const [user, setUser] = useState<PublicUser | null>(null)
+  const [user, setUser] = useState<SessionUser | null>(null)
+
+  // The account preference is the source of truth: it overwrites whatever the
+  // boot-time local copy pinned, including unpinning it back to "system".
+  const adopt = useCallback((next: SessionUser) => {
+    setUser(next)
+    applyTheme(next.theme)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -28,7 +40,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       .me()
       .then(({ user }) => {
         if (cancelled) return
-        setUser(user)
+        adopt(user)
         setStatus('authenticated')
       })
       .catch(() => {
@@ -37,13 +49,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [adopt])
 
-  const login = useCallback(async (username: string, password: string) => {
-    const { user } = await api.login(username, password)
-    setUser(user)
-    setStatus('authenticated')
-  }, [])
+  const login = useCallback(
+    async (username: string, password: string) => {
+      const { user } = await api.login(username, password)
+      adopt(user)
+      setStatus('authenticated')
+    },
+    [adopt],
+  )
 
   const logout = useCallback(async () => {
     try {
@@ -59,9 +74,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const setTheme = useCallback(async (preference: ThemePreference) => {
+    // Optimistic: the switch has to feel instant, and a failed write only
+    // costs the cross-device sync, which the next successful one repairs.
+    applyTheme(preference)
+    setUser((current) => (current ? { ...current, theme: preference } : current))
+    await api.updateSettings(preference)
+  }, [])
+
   const value = useMemo(
-    () => ({ status, user, login, logout }),
-    [status, user, login, logout],
+    () => ({
+      status,
+      user,
+      isOwner: user?.role === 'owner',
+      login,
+      logout,
+      setTheme,
+    }),
+    [status, user, login, logout, setTheme],
   )
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
