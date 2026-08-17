@@ -1,9 +1,13 @@
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import {
+  DOWNLOAD_MAX_AGE_SECONDS,
   MAX_BYTES,
+  MEDIA_PATH_PREFIX,
   MEDIA_TYPES,
   UPLOAD_URL_TTL_SECONDS,
+  fetchObject,
+  isValidObjectKey,
   mediaConfig,
   objectKey,
   presignUpload,
@@ -57,10 +61,90 @@ export async function createUploadUrl(request: Request, env: Env): Promise<Respo
       key,
       upload_url: uploadUrl,
       headers: { 'Content-Type': mime },
-      public_url: `${config.publicBaseUrl}/${key}`,
+      // Same-origin read path — the bucket is private, so this is the only
+      // way to get the bytes back (see serveMedia).
+      public_url: `${MEDIA_PATH_PREFIX}${key}`,
       expires_in: UPLOAD_URL_TTL_SECONDS,
     },
     200,
     auth.refreshedCookie ? { 'Set-Cookie': auth.refreshedCookie } : undefined,
   )
+}
+
+// GET /api/media/<key>: authenticated read-through proxy for the private
+// bucket. The Worker signs the GET, streams the object back, and caches it at
+// the edge — B2 → Cloudflare egress is free, so only Worker requests are
+// spent. Access control is "any valid session + an unguessable key": the key
+// carries a uuid and the application key cannot list the bucket.
+const PASSTHROUGH_HEADERS = [
+  'Content-Type',
+  'Content-Length',
+  'Content-Range',
+  'Accept-Ranges',
+  'ETag',
+  'Last-Modified',
+]
+
+export async function serveMedia(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const auth = await requireSession(request, env.DB)
+  if (auth instanceof Response) return auth
+  const setCookie = auth.refreshedCookie
+
+  let key: string
+  try {
+    key = decodeURIComponent(url.pathname.slice(MEDIA_PATH_PREFIX.length))
+  } catch {
+    return apiError('invalid_request', 400, 'malformed media key')
+  }
+  if (!isValidObjectKey(key)) return apiError('invalid_request', 400, 'invalid media key')
+
+  const config = mediaConfig(env)
+  if (!config) {
+    return apiError('media_not_configured', 503, 'B2 env vars missing (see .env.example)')
+  }
+
+  const range = request.headers.get('Range')
+  const cache = caches.default
+  // Ranged reads are never cached (partial bodies); the full object is.
+  const cacheKey = new Request(url.toString(), { method: 'GET' })
+  if (!range) {
+    const hit = await cache.match(cacheKey)
+    if (hit) return clientResponse(hit, setCookie)
+  }
+
+  const upstream = await fetchObject(config, key, range)
+  if (!upstream.ok && upstream.status !== 206) {
+    // Do not leak B2's XML error body.
+    return apiError(upstream.status === 404 ? 'not_found' : 'media_unavailable', upstream.status)
+  }
+
+  const headers = new Headers()
+  for (const name of PASSTHROUGH_HEADERS) {
+    const value = upstream.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+  headers.set('Accept-Ranges', upstream.headers.get('Accept-Ranges') ?? 'bytes')
+  headers.set('X-Content-Type-Options', 'nosniff')
+
+  const response = new Response(upstream.body, { status: upstream.status, headers })
+  if (!range && upstream.status === 200) {
+    // The edge copy is shared: public caching, and never a Set-Cookie.
+    const cacheable = response.clone()
+    cacheable.headers.set('Cache-Control', `public, max-age=${DOWNLOAD_MAX_AGE_SECONDS}, immutable`)
+    ctx.waitUntil(cache.put(cacheKey, cacheable))
+  }
+  return clientResponse(response, setCookie)
+}
+
+/** Browser-facing copy: private caching (per user) plus any session refresh. */
+function clientResponse(response: Response, cookie: string | undefined): Response {
+  const headers = new Headers(response.headers)
+  headers.set('Cache-Control', `private, max-age=${DOWNLOAD_MAX_AGE_SECONDS}, immutable`)
+  if (cookie) headers.set('Set-Cookie', cookie)
+  return new Response(response.body, { status: response.status, headers })
 }

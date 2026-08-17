@@ -204,15 +204,40 @@ try {
   })
   check('PUT to presigned URL → 200', put.status === 200, put.status)
 
-  const served = await fetch(grant.body.public_url)
+  check(
+    'public_url points at the Worker proxy, not the bucket',
+    grant.body.public_url === `/api/media/${key}`,
+    grant.body.public_url,
+  )
+
+  const anonRead = await fetch(`${API}/api/media/${key}`)
+  check('GET media without a session → 401', anonRead.status === 401, anonRead.status)
+
+  const served = await fetch(`${API}/api/media/${key}`, { headers: { Cookie: alice } })
   const servedBytes = Buffer.from(await served.arrayBuffer())
   check(
-    'GET public_url serves the exact bytes + content-type',
+    'GET media with a session serves the exact bytes + content-type',
     served.status === 200 &&
       served.headers.get('content-type') === 'image/png' &&
       servedBytes.equals(bytes),
     { status: served.status, contentType: served.headers.get('content-type') },
   )
+
+  const ranged = await fetch(`${API}/api/media/${key}`, {
+    headers: { Cookie: alice, Range: 'bytes=0-3' },
+  })
+  const rangedBytes = Buffer.from(await ranged.arrayBuffer())
+  check(
+    'Range request is forwarded to the bucket (206 + partial body)',
+    ranged.status === 206 && rangedBytes.equals(bytes.subarray(0, 4)),
+    { status: ranged.status, length: rangedBytes.byteLength },
+  )
+
+  // Percent-encoded so fetch does not normalise the traversal away client-side.
+  const traversal = await fetch(`${API}/api/media/media/%2e%2e%2f%2e%2e%2fetc/passwd`, {
+    headers: { Cookie: alice },
+  })
+  check('key outside media//stickers/ → 400', traversal.status === 400, traversal.status)
 
   // --- WS: image message delivered in real time with the media key ---
   const bobClient = await Client.connect(wsPath(aliceId), bob)

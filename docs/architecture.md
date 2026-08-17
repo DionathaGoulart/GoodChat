@@ -13,7 +13,8 @@ Browser ---https---> Cloudflare Worker (single origin)
                       |- /*      SPA static assets (Vite build, SPA fallback)
                       |- D1: users, sessions, conversations, push_subscriptions
                       |- Web Push -> FCM / Mozilla autopush / Apple
-Browser ---PUT/GET--> Backblaze B2 (public bucket, presigned uploads)
+Browser ---PUT-----> Backblaze B2 (private bucket, presigned uploads)
+Worker  ---GET-----> Backblaze B2 (signed reads, streamed back to the browser)
 ```
 
 Design goals: 50-300ms end-to-end message latency, zero idle cost
@@ -38,6 +39,7 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/conversations/resolve`  | yes  | Deterministic conversation id, no side effects |
 | GET    | `/api/ws/:conversationId?with=` | yes | WebSocket upgrade, forwarded to the DO |
 | POST   | `/api/media/upload-url`       | yes  | Presigned B2 PUT for a validated file  |
+| GET    | `/api/media/<key>`            | yes  | Signed read-through proxy for the private bucket |
 | GET    | `/api/push/vapid-public-key`  | no   | Public VAPID key for subscribing       |
 | POST   | `/api/push/subscribe`         | yes  | Upsert a push subscription             |
 | POST   | `/api/push/unsubscribe`       | yes  | Remove own push subscription           |
@@ -115,13 +117,25 @@ Messages are kept in the DO's internal SQLite, one table per PRD 4.4.
 3. Client compresses images in the browser (canvas, WebP with JPEG
    fallback, target ~1.5MB, GIFs pass through), validates video duration
    (max 60s), uploads directly to the bucket with XHR progress.
-4. The message carries only the object key; bubbles render from the public
-   bucket URL. Bytes never pass through the Worker in either direction.
+4. The message carries only the object key; bubbles render from
+   `/api/media/<key>`. Upload bytes never touch the Worker.
+5. Reads do: the bucket is private, so `GET /api/media/<key>` checks the
+   session cookie, signs a GET against B2 and streams the object back,
+   forwarding `Range` so video seeking keeps working. Successful full
+   responses are stored in the Cloudflare edge cache (`caches.default`,
+   immutable), so a repeated view costs one Worker request and no B2 read.
+   B2 → Cloudflare egress is free (Bandwidth Alliance), so the proxy adds
+   no bandwidth cost.
 
-Keys are `media/<yyyy-mm>/<uuid>.<ext>`: unguessable (capability URL on a
-public bucket) and prefixed by month to make future retention trivial.
+Keys are `media/<yyyy-mm>/<uuid>.<ext>`: prefixed by month to make future
+retention trivial, and unguessable — which matters because the access rule
+is "any valid session", not "a participant of that conversation" (the
+message rows live inside each Durable Object, so the Worker cannot check
+membership without asking the DO). The bucket being private is what keeps a
+leaked key from outliving the session check.
+
 Local development uses a fake-B2 stub (`npm run media:dev`), so no B2
-account is required. The presign code is generic S3, so Cloudflare R2 works
+account is required. The signing code is generic S3, so Cloudflare R2 works
 with the same environment variables.
 
 ### Stickers

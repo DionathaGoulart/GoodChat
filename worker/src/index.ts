@@ -1,14 +1,20 @@
 import { apiError, corsHeaders, json } from './lib/http'
+import { MEDIA_PATH_PREFIX } from './lib/media'
 import { login, logout, me } from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
-import { createUploadUrl } from './routes/media'
+import { createUploadUrl, serveMedia } from './routes/media'
 import { subscribePush, unsubscribePush, vapidPublicKey } from './routes/push'
 import { lookupUsers } from './routes/users'
 import { connectConversation } from './routes/ws'
 
 export { ConversationAgent } from './agent'
 
-async function route(request: Request, env: Env, url: URL): Promise<Response> {
+async function route(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const { pathname } = url
   const method = request.method
 
@@ -26,6 +32,9 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
   if (pathname === '/api/media/upload-url' && method === 'POST') {
     return createUploadUrl(request, env)
   }
+  if (pathname.startsWith(MEDIA_PATH_PREFIX) && method === 'GET') {
+    return serveMedia(request, env, url, ctx)
+  }
   if (pathname === '/api/push/vapid-public-key' && method === 'GET') {
     return vapidPublicKey(request, env)
   }
@@ -38,7 +47,7 @@ async function route(request: Request, env: Env, url: URL): Promise<Response> {
 }
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url)
 
     // WebSocket path bypasses the CORS wrapper below: a 101 upgrade response
@@ -54,7 +63,7 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) })
     }
 
-    const response = await route(request, env, url)
+    const response = await route(request, env, url, ctx)
     // CORS applied centrally so route handlers only worry about their payload.
     const headers = new Headers(response.headers)
     for (const [key, value] of Object.entries(corsHeaders(origin))) {

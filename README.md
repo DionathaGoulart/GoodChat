@@ -10,10 +10,13 @@ with native web push notifications, all within free tiers.
   at-least-once semantics (client-side dedup by message id)
 - Delivery states (sent, delivered, read) and a typing indicator
 - Media messages: images and short videos, compressed in the browser and
-  uploaded directly to object storage (bytes never touch the server)
+  uploaded directly to object storage (upload bytes never touch the
+  server); the bucket stays private and reads are proxied by the Worker
+  behind the session cookie
 - Curated retro sticker pack and an emoji picker (pt-BR, self-hosted data)
 - Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login,
-  account creation via admin CLI only (no public sign-up)
+  case-insensitive usernames, account creation via admin CLI only (no
+  public sign-up)
 - Installable PWA: service worker, offline shell, VAPID web push with
   explicit opt-in
 - Retro design system: daisyUI 5 custom themes (light and dark), JetBrains
@@ -27,7 +30,7 @@ with native web push notifications, all within free tiers.
 | Backend   | Cloudflare Workers, Agents SDK (Durable Objects), TypeScript   |
 | Realtime  | WebSockets with Hibernation (one Durable Object per chat)      |
 | Database  | Cloudflare D1 (metadata) plus per-conversation DO SQLite       |
-| Storage   | Backblaze B2, S3-compatible presigned uploads (R2 compatible)  |
+| Storage   | Backblaze B2 (private), presigned S3 uploads + proxied reads   |
 | Push      | Web Push (RFC 8291/8292) via @mmmike/web-push                  |
 | Validation| Zod at every API and protocol boundary                         |
 
@@ -39,7 +42,8 @@ Browser ---https---> Cloudflare Worker
                       |- /*      SPA (static assets, single origin)
                       |- D1: users, sessions, conversations, push subscriptions
                       |- Web Push -> FCM / Mozilla / Apple
-Browser ---PUT/GET--> Backblaze B2 (public bucket, presigned uploads)
+Browser ---PUT-----> Backblaze B2 (private bucket, presigned uploads)
+Worker  ---GET-----> Backblaze B2 (signed reads, streamed at /api/media/<key>)
 ```
 
 Full details in [docs/architecture.md](docs/architecture.md).
@@ -89,7 +93,7 @@ Worker (`cd worker`):
 | `npm run dev`           | Dev server on port 8000                        |
 | `npm run db:migrate`    | Apply D1 migrations (local)                    |
 | `npm run db:seed`       | Seed test users (idempotent)                   |
-| `npm run user:create`   | Create an account: `-- <user> <pass> [name]`   |
+| `npm run user:create`   | Create an account: `-- [--remote] <user> <pass> [name]` |
 | `npm run media:dev`     | Fake-B2 media store on port 9000               |
 | `npm run stickers:publish` | Publish sticker pack to the media store     |
 | `npm run vapid:generate`| Generate a VAPID key pair for web push         |

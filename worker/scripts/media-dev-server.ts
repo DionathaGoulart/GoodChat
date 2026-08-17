@@ -69,11 +69,19 @@ export function startMediaDevServer(
         const meta = JSON.parse(await readFile(`${target}.meta.json`, 'utf8')) as {
           contentType: string
         }
-        const body = await readFile(target)
-        res.writeHead(200, {
+        const full = await readFile(target)
+        // Range support mirrors B2: the Worker proxies video seeks through.
+        const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
+        const start = range?.[1] ? Number(range[1]) : 0
+        const end = range?.[2] ? Math.min(Number(range[2]), full.byteLength - 1) : full.byteLength - 1
+        const partial = range !== null && start <= end && start < full.byteLength
+        const body = partial ? full.subarray(start, end + 1) : full
+        res.writeHead(partial ? 206 : 200, {
           ...CORS_HEADERS,
           'Content-Type': meta.contentType,
           'Content-Length': body.byteLength,
+          'Accept-Ranges': 'bytes',
+          ...(partial ? { 'Content-Range': `bytes ${start}-${end}/${full.byteLength}` } : {}),
         })
         res.end(req.method === 'HEAD' ? undefined : body)
       } catch {

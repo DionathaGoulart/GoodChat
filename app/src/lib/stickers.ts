@@ -28,7 +28,9 @@ let cached: Promise<StickerPack> | null = null
 
 function fetchPack(): Promise<StickerPack> {
   if (!cached) {
-    cached = fetch(mediaUrl(`${PACK_BASE}/manifest.json`))
+    // credentials: the media proxy is session-authenticated (and in dev the
+    // Worker sits on another port, where "same-origin" would drop the cookie).
+    cached = fetch(mediaUrl(`${PACK_BASE}/manifest.json`), { credentials: 'include' })
       .then((response) => {
         if (!response.ok) throw new Error(`manifest fetch failed (${response.status})`)
         return response.json() as Promise<StickerManifest>

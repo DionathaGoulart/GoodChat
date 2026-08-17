@@ -3,11 +3,14 @@
 // Worker), then reference the object key in a WS message. Server-side caps in
 // worker/src/lib/media.ts are mirrored here for UX-side validation only — the
 // Worker + the signed Content-Type/Content-Length are the real enforcement.
+//
+// Reads go the other way: the bucket is private, so every GET goes through
+// the Worker's /api/media/<key> proxy, which checks the session cookie.
 
 import { requestUploadUrl } from './api'
 
 export const MEDIA_URL: string =
-  import.meta.env.VITE_MEDIA_URL ?? 'http://localhost:9000/goodchat-media'
+  import.meta.env.VITE_MEDIA_URL ?? 'http://localhost:8000/api/media'
 
 export function mediaUrl(key: string): string {
   return `${MEDIA_URL}/${key}`
