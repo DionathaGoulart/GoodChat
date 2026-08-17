@@ -14,6 +14,10 @@ interface __BaseEnv_Env {
 	ALLOWED_ORIGINS: string;
 	MEDIA_RETENTION_DAYS: string;
 	MEDIA_LEGACY_READS: string;
+	TEMP_ACCOUNTS_ENABLED: string;
+	TEMP_ACCOUNT_TTL_HOURS: string;
+	TEMP_ACCOUNTS_MAX: string;
+	TEMP_ACCOUNTS_PER_IP_HOUR: string;
 	ConversationAgent: DurableObjectNamespace<import("./src/index").ConversationAgent>;
 }
 declare namespace Cloudflare {
@@ -28,7 +32,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "B2_KEY_ID" | "B2_APPLICATION_KEY" | "B2_BUCKET_NAME" | "B2_S3_ENDPOINT" | "VAPID_PUBLIC_KEY" | "VAPID_PRIVATE_KEY" | "VAPID_SUBJECT" | "ALLOWED_ORIGINS" | "MEDIA_RETENTION_DAYS" | "MEDIA_LEGACY_READS">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "B2_KEY_ID" | "B2_APPLICATION_KEY" | "B2_BUCKET_NAME" | "B2_S3_ENDPOINT" | "VAPID_PUBLIC_KEY" | "VAPID_PRIVATE_KEY" | "VAPID_SUBJECT" | "ALLOWED_ORIGINS" | "MEDIA_RETENTION_DAYS" | "MEDIA_LEGACY_READS" | "TEMP_ACCOUNTS_ENABLED" | "TEMP_ACCOUNT_TTL_HOURS" | "TEMP_ACCOUNTS_MAX" | "TEMP_ACCOUNTS_PER_IP_HOUR">> {}
 }
 
 // Begin runtime types

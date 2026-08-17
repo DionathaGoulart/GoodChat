@@ -13,11 +13,16 @@ import {
   presignUpload,
 } from '../lib/media'
 import { findObject, recordUpload } from '../lib/mediaIndex'
+import { HOUR_MS, UPLOAD_QUOTA_PER_HOUR, consumeQuota } from '../lib/ratelimit'
 import { requireSession, sessionHeaders, type AuthContext } from '../lib/session'
 
 // POST /api/media/upload-url (PRD §3.5): validates session + MIME allowlist +
 // size cap, then returns a presigned B2 PUT URL. The client must upload with
 // exactly the declared Content-Type/Content-Length — both are signed.
+//
+// Rate-limited per account: each call writes an index row and licenses up to
+// 32MB into the bucket, so an authenticated loop here is the cheapest way to
+// fill both D1 and B2.
 
 const UploadRequestSchema = z.object({
   mime: z.string().min(1).max(128),
@@ -53,6 +58,18 @@ export async function createUploadUrl(request: Request, env: Env): Promise<Respo
   const config = mediaConfig(env)
   if (!config) {
     return apiError('media_not_configured', 503, 'B2 env vars missing (see .env.example)')
+  }
+
+  const quota = await consumeQuota(
+    env.DB,
+    `upload:${auth.user.id}`,
+    UPLOAD_QUOTA_PER_HOUR,
+    HOUR_MS,
+  )
+  if (!quota.allowed) {
+    return apiError('rate_limited', 429, 'too many uploads, try again later', {
+      'Retry-After': String(quota.retryAfterSeconds),
+    })
   }
 
   const key = objectKey(mime)

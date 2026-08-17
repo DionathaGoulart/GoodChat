@@ -26,11 +26,14 @@ export async function lookupUsers(request: Request, env: Env, url: URL): Promise
 
   // "_" is a valid username char but a LIKE wildcard — escape it (and "%", "\").
   const pattern = `${q.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
-  // Disabled accounts are invisible: nobody can start a thread with one.
+  // Disabled accounts are invisible: nobody can start a thread with one. Same
+  // for tombstones (migration 0004) — the row only exists to name a thread the
+  // other side kept, not to be found or talked to.
   const { results } = await env.DB.prepare(
     `SELECT ${PUBLIC_USER_COLUMNS}
      FROM users
-     WHERE username LIKE ?1 ESCAPE '\\' AND id != ?2 AND disabled_at IS NULL
+     WHERE username LIKE ?1 ESCAPE '\\' AND id != ?2
+       AND disabled_at IS NULL AND deleted_at IS NULL
      ORDER BY username
      LIMIT ${MAX_RESULTS}`,
   )

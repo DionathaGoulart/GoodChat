@@ -24,6 +24,12 @@ import {
 
 interface ConnState {
   userId: string
+  /**
+   * The peer's account is gone (a tombstone — see migration 0004). The thread
+   * is still readable, but there is nobody left to answer, so sends are
+   * refused instead of piling up messages no one will ever collect.
+   */
+  readonly?: boolean
 }
 
 // Per-connection token buckets. An authenticated client is still untrusted:
@@ -119,6 +125,7 @@ export class ConversationAgent extends Agent<Env> {
   //   GET  /summary  conversation list: last message + unread for one user
   //   GET  /stats    owner panel: message/byte counts, media keys, disk size
   //   POST /purge    owner action: wipe this conversation's history
+  //   POST /destroy  no participant left: wipe the history and the storage
   override async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
 
@@ -145,6 +152,10 @@ export class ConversationAgent extends Agent<Env> {
 
     if (request.method === 'POST' && url.pathname.endsWith('/purge')) {
       return Response.json(this.purge())
+    }
+
+    if (request.method === 'POST' && url.pathname.endsWith('/destroy')) {
+      return Response.json(await this.wipe())
     }
 
     return new Response('not found', { status: 404 })
@@ -215,6 +226,30 @@ export class ConversationAgent extends Agent<Env> {
     return { deleted: before[0].n, media_keys: media.map((row) => row.media_key) }
   }
 
+  /**
+   * Last participant gone: nothing here is reachable anymore. The messages go
+   * the same way a purge takes them (so the caller gets the media keys to
+   * delete from the bucket), then the whole storage goes, `participants`
+   * included — a fresh DO under this name would start empty anyway.
+   *
+   * Not the SDK's own `destroy()`: that one aborts the isolate on the next
+   * tick, which would race the response this route still has to return.
+   */
+  private async wipe(): Promise<{ deleted: number; media_keys: string[] }> {
+    const result = this.purge()
+    for (const conn of this.getConnections<ConnState>()) {
+      conn.close(1000, 'conversation removed')
+    }
+    try {
+      await this.ctx.storage.deleteAll()
+    } catch (error) {
+      // The purge already emptied the messages; a runtime without deleteAll
+      // only leaves empty tables behind, not data.
+      console.error('storage deleteAll failed', this.name, error)
+    }
+    return result
+  }
+
   override async onConnect(conn: Connection<ConnState>, ctx: ConnectionContext): Promise<void> {
     const userId = ctx.request.headers.get('x-goodchat-user-id')
     const peerId = ctx.request.headers.get('x-goodchat-peer-id')
@@ -235,7 +270,8 @@ export class ConversationAgent extends Agent<Env> {
       }
     }
 
-    conn.setState({ userId })
+    // Set by routes/ws.ts when the peer account no longer exists.
+    conn.setState({ userId, readonly: ctx.request.headers.get('x-goodchat-readonly') === '1' })
 
     // Offline delivery: everything addressed to me that is still 'sent'
     // becomes 'delivered' now; the sender's live connections hear about it.
@@ -315,6 +351,15 @@ export class ConversationAgent extends Agent<Env> {
     userId: string,
     event: SendMessageEvent,
   ): Promise<void> {
+    if (conn.state?.readonly) {
+      this.send(conn, {
+        type: 'error',
+        error: 'peer_unavailable',
+        message: 'esta conta não existe mais',
+      })
+      return
+    }
+
     const textual = event.msg_type === 'text' || event.msg_type === 'emoji' || event.msg_type === 'sticker'
     if (textual && event.body.trim() === '') {
       this.send(conn, { type: 'error', error: 'empty_body' })

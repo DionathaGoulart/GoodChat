@@ -22,6 +22,8 @@ interface ConversationRow {
   other_display_name: string | null
   other_avatar_url: string | null
   other_created_at: number
+  /** Set when the peer account is a tombstone (migration 0004). */
+  other_deleted_at: number | null
 }
 
 export async function listConversations(request: Request, env: Env): Promise<Response> {
@@ -32,7 +34,7 @@ export async function listConversations(request: Request, env: Env): Promise<Res
     `SELECT c.id, c.created_at, c.last_message_at,
             u.id AS other_id, u.username AS other_username,
             u.display_name AS other_display_name, u.avatar_url AS other_avatar_url,
-            u.created_at AS other_created_at
+            u.created_at AS other_created_at, u.deleted_at AS other_deleted_at
      FROM conversations c
      JOIN users u ON u.id = CASE WHEN c.user_a = ?1 THEN c.user_b ELSE c.user_a END
      WHERE c.user_a = ?1 OR c.user_b = ?1
@@ -60,6 +62,8 @@ export async function listConversations(request: Request, env: Env): Promise<Res
       display_name: row.other_display_name,
       avatar_url: row.other_avatar_url,
       created_at: row.other_created_at,
+      // The thread survives its owner: the client renders it read-only.
+      deleted: row.other_deleted_at !== null,
     } satisfies PublicUser,
   }))
 
@@ -72,6 +76,10 @@ const ResolveSchema = z.object({ user_id: z.string().min(1).max(64) })
  * POST /api/conversations/resolve — deterministic id for "me + user_id",
  * without creating anything. `exists` tells whether the row was already
  * materialized by a first message.
+ *
+ * A tombstoned peer (migration 0004) resolves only when the thread already
+ * exists, and comes back flagged: the client opens it read-only. Starting a
+ * new conversation with a deleted account is a 404, same as a disabled one.
  */
 export async function resolveConversation(request: Request, env: Env): Promise<Response> {
   const auth = await requireSession(request, env.DB)
@@ -89,20 +97,30 @@ export async function resolveConversation(request: Request, env: Env): Promise<R
     return apiError('invalid_request', 400, 'cannot start a conversation with yourself')
   }
 
-  const other = await env.DB.prepare(
-    `SELECT ${PUBLIC_USER_COLUMNS} FROM users WHERE id = ? AND disabled_at IS NULL`,
+  const row = await env.DB.prepare(
+    `SELECT ${PUBLIC_USER_COLUMNS}, disabled_at, deleted_at FROM users WHERE id = ?`,
   )
     .bind(parsed.data.user_id)
-    .first<PublicUser>()
-  if (!other) return apiError('not_found', 404, 'user not found')
+    .first<PublicUser & { disabled_at: number | null; deleted_at: number | null }>()
+  if (!row) return apiError('not_found', 404, 'user not found')
 
-  const conversationId = await conversationIdFor(auth.user.id, other.id)
+  const deleted = row.deleted_at !== null
+  if (!deleted && row.disabled_at !== null) return apiError('not_found', 404, 'user not found')
+
+  const conversationId = await conversationIdFor(auth.user.id, row.id)
   const existing = await env.DB.prepare('SELECT 1 FROM conversations WHERE id = ?')
     .bind(conversationId)
     .first()
+  if (deleted && existing === null) return apiError('not_found', 404, 'user not found')
 
+  const { disabled_at, deleted_at, ...publicUser } = row
   return json(
-    { conversation_id: conversationId, exists: existing !== null, other_user: other },
+    {
+      conversation_id: conversationId,
+      exists: existing !== null,
+      other_user: { ...publicUser, deleted } satisfies PublicUser,
+      readonly: deleted,
+    },
     200,
     sessionHeaders(auth),
   )

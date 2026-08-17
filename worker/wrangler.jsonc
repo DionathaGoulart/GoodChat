@@ -60,6 +60,15 @@
     // Delete claimed media older than this many days. "0" = keep forever.
     // Turning it on makes old bubbles render the "mídia expirada" placeholder.
     "MEDIA_RETENTION_DAYS": "0",
+    // Guest accounts (POST /api/auth/temp, lib/accounts.ts). "false" closes the
+    // instance back down: no public way in, invite-only again.
+    "TEMP_ACCOUNTS_ENABLED": "true",
+    // How long a guest account lives before it and its data are deleted.
+    "TEMP_ACCOUNT_TTL_HOURS": "5",
+    // Ceiling on guest accounts alive at once, and how many one address may
+    // create per hour. Both exist because the endpoint is unauthenticated.
+    "TEMP_ACCOUNTS_MAX": "100",
+    "TEMP_ACCOUNTS_PER_IP_HOUR": "3",
     // Objects with no row in media_objects (uploaded before migration 0003):
     // "allow" keeps the pre-0003 rule (any session + an unguessable key) so
     // existing threads keep working. Run POST /api/admin/media/reindex once,

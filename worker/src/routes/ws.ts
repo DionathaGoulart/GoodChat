@@ -40,15 +40,31 @@ export async function connectConversation(
     return apiError('invalid_request', 400, 'cannot open a conversation with yourself')
   }
 
+  // A tombstone (migration 0004) is not an account anymore, but the thread it
+  // leaves behind still belongs to whoever survived it: the socket opens in
+  // read-only mode so the history loads and nothing new can be sent. Without an
+  // existing conversation there is nothing to read, and the peer stays a 404.
   const other = await env.DB.prepare(
-    'SELECT id FROM users WHERE id = ? AND disabled_at IS NULL',
+    'SELECT id, disabled_at, deleted_at FROM users WHERE id = ?',
   )
     .bind(withId)
-    .first()
+    .first<{ id: string; disabled_at: number | null; deleted_at: number | null }>()
   if (!other) return apiError('not_found', 404, 'user not found')
+
+  const readonly = other.deleted_at !== null
+  if (!readonly && other.disabled_at !== null) {
+    return apiError('not_found', 404, 'user not found')
+  }
 
   if ((await conversationIdFor(auth.user.id, withId)) !== conversationId) {
     return apiError('forbidden', 403, 'conversation id does not match this user pair')
+  }
+
+  if (readonly) {
+    const exists = await env.DB.prepare('SELECT 1 FROM conversations WHERE id = ?')
+      .bind(conversationId)
+      .first()
+    if (!exists) return apiError('not_found', 404, 'user not found')
   }
 
   const agent = await getAgentByName(env.ConversationAgent, conversationId)
@@ -57,5 +73,6 @@ export async function connectConversation(
   const forwarded = new Request(request)
   forwarded.headers.set('x-goodchat-user-id', auth.user.id)
   forwarded.headers.set('x-goodchat-peer-id', withId)
+  forwarded.headers.set('x-goodchat-readonly', readonly ? '1' : '0')
   return agent.fetch(forwarded)
 }

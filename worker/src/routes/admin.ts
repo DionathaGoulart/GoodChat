@@ -18,11 +18,13 @@
 import { getAgentByName } from 'agents'
 import { z } from 'zod'
 import type { ConversationStats } from '../agent'
+import { sweepOrphanTombstones } from '../lib/accounts'
 import { runCleanup } from '../lib/cleanup'
 import { apiError, json } from '../lib/http'
 import { deleteObjects, listObjects, mediaConfig } from '../lib/media'
 import { forgetKeys, keysForUser, usageByUser } from '../lib/mediaIndex'
 import { hashPassword } from '../lib/password'
+import { destroyConversation, purgeConversationHistory } from '../lib/purge'
 import {
   requireSession,
   revokeAllSessions,
@@ -53,6 +55,11 @@ interface UserRow {
   role: string
   created_by: string | null
   disabled_at: number | null
+  /** Guest account (migration 0004): 1 when temporary. */
+  is_temp: number
+  expires_at: number | null
+  /** Set on a tombstone: the account is gone, the row names old threads. */
+  deleted_at: number | null
 }
 
 interface ConversationRow {
@@ -107,6 +114,10 @@ export async function listAccounts(request: Request, env: Env): Promise<Response
       role: user.role,
       created_by: user.created_by,
       disabled: user.disabled_at !== null,
+      is_temp: user.is_temp === 1,
+      expires_at: user.expires_at,
+      /** Tombstone: kept only so a surviving thread still has a name. */
+      deleted: user.deleted_at !== null,
       conversations: conversationCount,
       messages,
       /** Message payload attributed to this account (D1/DO side). */
@@ -159,24 +170,31 @@ export async function overview(request: Request, env: Env): Promise<Response> {
 
   const conversations = await allConversations(env)
   const stats = await collectStats(env, conversations)
+  const now = Date.now()
   const counts = await env.DB.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM users) AS users,
-       (SELECT COUNT(*) FROM users WHERE disabled_at IS NOT NULL) AS disabled_users,
+       (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) AS users,
+       (SELECT COUNT(*) FROM users WHERE disabled_at IS NOT NULL AND deleted_at IS NULL) AS disabled_users,
+       (SELECT COUNT(*) FROM users WHERE is_temp = 1 AND deleted_at IS NULL AND expires_at > ?1) AS temp_users,
+       (SELECT COUNT(*) FROM users WHERE deleted_at IS NOT NULL) AS tombstones,
        (SELECT COUNT(*) FROM sessions) AS sessions,
        (SELECT COUNT(*) FROM media_objects) AS media_objects,
        (SELECT COALESCE(SUM(size), 0) FROM media_objects) AS media_bytes,
        (SELECT COUNT(*) FROM media_objects WHERE claimed_at IS NULL) AS unclaimed_objects,
        (SELECT COALESCE(SUM(size), 0) FROM media_objects WHERE claimed_at IS NULL) AS unclaimed_bytes`,
-  ).first<{
-    users: number
-    disabled_users: number
-    sessions: number
-    media_objects: number
-    media_bytes: number
-    unclaimed_objects: number
-    unclaimed_bytes: number
-  }>()
+  )
+    .bind(now)
+    .first<{
+      users: number
+      disabled_users: number
+      temp_users: number
+      tombstones: number
+      sessions: number
+      media_objects: number
+      media_bytes: number
+      unclaimed_objects: number
+      unclaimed_bytes: number
+    }>()
 
   const bucket = await bucketTotals(env)
 
@@ -184,6 +202,10 @@ export async function overview(request: Request, env: Env): Promise<Response> {
     {
       users: counts?.users ?? 0,
       disabled_users: counts?.disabled_users ?? 0,
+      /** Guest accounts alive right now — the TEMP_ACCOUNTS_MAX cap's input. */
+      temp_users: counts?.temp_users ?? 0,
+      /** Deleted accounts still naming a thread somebody else kept. */
+      tombstones: counts?.tombstones ?? 0,
       sessions: counts?.sessions ?? 0,
       conversations: conversations.length,
       messages: stats.reduce((sum, entry) => sum + (entry.stats?.messages ?? 0), 0),
@@ -313,8 +335,13 @@ export async function updateAccount(
 
 /**
  * DELETE /api/admin/users/:id — removes the account and everything it owns:
- * conversation histories it took part in, its bucket objects, sessions and
- * push subscriptions (the last two cascade from the foreign key).
+ * every conversation it took part in, its bucket objects, sessions and push
+ * subscriptions (the last two cascade from the foreign key).
+ *
+ * This is the blunt one, on purpose: the owner asking for an account to
+ * disappear takes the other side's copy of those threads with it. The guest
+ * expiry (lib/accounts.ts) is the careful one — it keeps every conversation
+ * whose other participant is still around.
  */
 export async function deleteAccount(
   request: Request,
@@ -327,20 +354,41 @@ export async function deleteAccount(
   const target = await manageableTarget(env, owner.auth, userId)
   if (target instanceof Response) return target
 
-  const purged = await purgeUserHistory(env, target.id)
+  const { results } = await env.DB.prepare(
+    'SELECT id FROM conversations WHERE user_a = ?1 OR user_b = ?1',
+  )
+    .bind(target.id)
+    .all<{ id: string }>()
+
+  const totals: PurgeResult = {
+    conversations_purged: 0,
+    messages_deleted: 0,
+    media_deleted: 0,
+  }
+  for (const row of results) {
+    const result = await destroyConversation(env, row.id)
+    totals.conversations_purged += 1
+    totals.messages_deleted += result.messages_deleted
+    totals.media_deleted += result.media_deleted
+  }
+
+  // Whatever the conversations did not cover: uploads that never became a
+  // message, and objects from threads purged earlier.
   const ownKeys = await keysForUser(env.DB, target.id)
   const config = mediaConfig(env)
   if (config && ownKeys.length > 0) {
-    await forgetKeys(env.DB, await deleteObjects(config, ownKeys))
+    const deleted = await deleteObjects(config, ownKeys)
+    await forgetKeys(env.DB, deleted)
+    totals.media_deleted += deleted.length
   }
 
-  await env.DB.prepare('DELETE FROM conversations WHERE user_a = ?1 OR user_b = ?1')
-    .bind(target.id)
-    .run()
   await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(target.id).run()
+  // The peers of the destroyed threads may have been tombstones kept alive
+  // only by them.
+  const tombstonesRemoved = await sweepOrphanTombstones(env, 50)
 
   return json(
-    { ok: true, ...purged, media_deleted: purged.media_deleted + ownKeys.length },
+    { ok: true, ...totals, tombstones_removed: tombstonesRemoved },
     200,
     sessionHeaders(owner.auth),
   )
@@ -479,7 +527,8 @@ async function manageableTarget(
 
 function allUsers(env: Env): Promise<UserRow[]> {
   return env.DB.prepare(
-    `SELECT id, username, display_name, created_at, role, created_by, disabled_at
+    `SELECT id, username, display_name, created_at, role, created_by, disabled_at,
+            is_temp, expires_at, deleted_at
      FROM users ORDER BY username`,
   )
     .all<UserRow>()
@@ -552,48 +601,6 @@ async function purgeUserHistory(env: Env, userId: string): Promise<PurgeResult> 
     total.media_deleted += result.media_deleted
   }
   return total
-}
-
-/**
- * Wipes one conversation: the DO's messages first (it hands back the media
- * keys it referenced), then the bucket objects, then the index rows for the
- * keys the bucket confirmed gone. The D1 `conversations` row stays — the pair
- * can keep talking, they just have no history.
- */
-async function purgeConversationHistory(
-  env: Env,
-  conversationId: string,
-): Promise<{ messages_deleted: number; media_deleted: number }> {
-  let messagesDeleted = 0
-  const keys = new Set<string>()
-
-  try {
-    const agent = await getAgentByName(env.ConversationAgent, conversationId)
-    const response = await agent.fetch('https://do/purge', { method: 'POST' })
-    if (response.ok) {
-      const result = await response.json<{ deleted: number; media_keys: string[] }>()
-      messagesDeleted = result.deleted
-      for (const key of result.media_keys) keys.add(key)
-    }
-  } catch (error) {
-    console.error('conversation purge failed', conversationId, error)
-  }
-
-  // The index catches objects the DO no longer remembers (a previous partial
-  // purge, or an upload claimed by a message that was already gone).
-  const { results } = await env.DB.prepare(
-    'SELECT key FROM media_objects WHERE conversation_id = ?',
-  )
-    .bind(conversationId)
-    .all<{ key: string }>()
-  for (const row of results) keys.add(row.key)
-
-  const config = mediaConfig(env)
-  if (!config || keys.size === 0) return { messages_deleted: messagesDeleted, media_deleted: 0 }
-
-  const deleted = await deleteObjects(config, [...keys])
-  await forgetKeys(env.DB, deleted)
-  return { messages_deleted: messagesDeleted, media_deleted: deleted.length }
 }
 
 /** Walks the whole `media/` prefix. Only the overview pays for this. */

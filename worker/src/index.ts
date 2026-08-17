@@ -13,7 +13,8 @@ import {
   runCleanupNow,
   updateAccount,
 } from './routes/admin'
-import { login, logout, me } from './routes/auth'
+import { tempAccountConfig } from './lib/accounts'
+import { createTempSession, login, logout, me } from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
 import { createUploadUrl, serveMedia } from './routes/media'
 import { subscribePush, unsubscribePush, vapidPublicKey } from './routes/push'
@@ -70,9 +71,16 @@ async function route(
   const method = request.method
 
   if (pathname === '/api/health' && method === 'GET') {
-    return json({ ok: true, service: 'goodchat-worker' })
+    // `temp_accounts` is what the login screen asks before offering the guest
+    // button — the only piece of instance config a stranger may read.
+    return json({
+      ok: true,
+      service: 'goodchat-worker',
+      temp_accounts: tempAccountConfig(env).enabled,
+    })
   }
   if (pathname === '/api/auth/login' && method === 'POST') return login(request, env)
+  if (pathname === '/api/auth/temp' && method === 'POST') return createTempSession(request, env)
   if (pathname === '/api/auth/logout' && method === 'POST') return logout(request, env)
   if (pathname === '/api/auth/me' && method === 'GET') return me(request, env)
   if (pathname === '/api/settings' && method === 'PATCH') return updateSettings(request, env)
