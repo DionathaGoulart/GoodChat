@@ -1,6 +1,6 @@
 GoodChat Attribution License v1.0
 
-Copyright (c) 2026 DionathaGoulart <dionatha.work@gmail.com>
+Copyright (c) 2026 Dionatha Goulart <dionatha.work@gmail.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to use,
@@ -16,7 +16,7 @@ including for commercial purposes, subject to all of the following conditions.
    b. Any public source repository containing the Software or a derivative
       work must credit the original author in its README (or equivalent
       top-level documentation) with the text "Based on GoodChat by
-      DionathaGoulart" linking to https://github.com/DionathaGoulart.
+      Dionatha Goulart" linking to https://dionatha.com.br.
 
 2. Visible attribution in deployments
 
@@ -24,7 +24,7 @@ including for commercial purposes, subject to all of the following conditions.
    work (website, web application, installed PWA, or any other end-user
    facing product) must display the following credit:
 
-      "Built with GoodChat by DionathaGoulart"
+      "Built with GoodChat by Dionatha Goulart"
 
    and this credit must:
 
@@ -39,7 +39,7 @@ including for commercial purposes, subject to all of the following conditions.
       not be hidden, obscured, blurred, rendered at reduced opacity below
       60%, or otherwise made illegible);
 
-   d. link to https://github.com/DionathaGoulart whenever the medium
+   d. link to https://dionatha.com.br whenever the medium
       supports hyperlinks; and
 
    e. be present at minimum on the application's main screen or landing

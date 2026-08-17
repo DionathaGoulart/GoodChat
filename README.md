@@ -144,15 +144,15 @@ is given. In short:
 
 - Keep the copyright notice and license in the source code.
 - Public repositories of forks must credit "Based on GoodChat by
-  DionathaGoulart" in their README.
-- Deployed products must show "Built with GoodChat by DionathaGoulart" in
+  Dionatha Goulart" in their README.
+- Deployed products must show "Built with GoodChat by Dionatha Goulart" in
   a persistent footer, at 12px minimum, legible, linking to
-  https://github.com/DionathaGoulart:
+  https://dionatha.com.br:
 
 ```html
 <footer>
-  <a href="https://github.com/DionathaGoulart">
-    Built with GoodChat by DionathaGoulart
+  <a href="https://dionatha.com.br">
+    Built with GoodChat by Dionatha Goulart
   </a>
 </footer>
 ```
