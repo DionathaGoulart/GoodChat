@@ -95,8 +95,12 @@ export async function notifyUser(
 export function previewFor(msgType: MessageType, body: string): string {
   switch (msgType) {
     case 'text':
-    case 'emoji':
-      return body.length > 120 ? `${body.slice(0, 119)}…` : body
+    case 'emoji': {
+      // Truncate by code point — a bare .slice() could split an emoji's
+      // surrogate pair and leak U+FFFD into the notification.
+      const points = [...body]
+      return points.length > 120 ? `${points.slice(0, 119).join('')}…` : body
+    }
     case 'image':
       return '[imagem]'
     case 'video':
