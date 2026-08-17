@@ -93,6 +93,21 @@ export function resolveConversation(userId: string): Promise<ResolveResult> {
   })
 }
 
+export interface UploadUrlResult {
+  key: string
+  upload_url: string
+  headers: Record<string, string>
+  public_url: string
+  expires_in: number
+}
+
+export function requestUploadUrl(mime: string, size: number): Promise<UploadUrlResult> {
+  return call('/api/media/upload-url', {
+    method: 'POST',
+    body: JSON.stringify({ mime, size }),
+  })
+}
+
 /** ws(s):// endpoint for a conversation (cookie rides the handshake). */
 export function wsUrl(conversationId: string, otherUserId: string): string {
   const base = API_URL.replace(/^http/, 'ws')

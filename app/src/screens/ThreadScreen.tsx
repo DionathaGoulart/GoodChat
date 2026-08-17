@@ -92,7 +92,7 @@ function LiveThread({
   otherUser: PublicUser
   myId: string
 }) {
-  const { messages, connection, send, markRead } = useConversation(
+  const { messages, connection, send, sendMedia, markRead } = useConversation(
     conversationId,
     otherUser.id,
     myId,
@@ -172,7 +172,7 @@ function LiveThread({
         ))}
       </div>
 
-      <Composer onSend={send} />
+      <Composer onSend={send} onSendMedia={sendMedia} />
     </main>
   )
 }

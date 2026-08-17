@@ -105,6 +105,7 @@ export function useConversation(
   messages: ThreadMessage[]
   connection: ConnectionState
   send: (body: string) => void
+  sendMedia: (msgType: 'image' | 'video', mediaKey: string) => void
   markRead: (upToMessageId: string) => void
 } {
   const [messages, dispatch] = useReducer(reduce, [])
@@ -205,13 +206,14 @@ export function useConversation(
     }
   }, [conversationId, otherUserId, myId, setConnection])
 
-  const send = useCallback(
-    (body: string) => {
+  const sendEvent = useCallback(
+    (msgType: WireMessage['msg_type'], body: string, mediaKey: string | null) => {
       const event: SendMessageEvent = {
         type: 'send_message',
         client_id: crypto.randomUUID(),
-        msg_type: 'text',
+        msg_type: msgType,
         body,
+        ...(mediaKey ? { media_key: mediaKey } : {}),
       }
       pendingRef.current.set(event.client_id, event)
       dispatch({
@@ -220,9 +222,9 @@ export function useConversation(
           id: null,
           client_id: event.client_id,
           sender_id: myId,
-          msg_type: 'text',
+          msg_type: msgType,
           body,
-          media_key: null,
+          media_key: mediaKey,
           created_at: Date.now(),
           status: 'sending',
         },
@@ -234,6 +236,15 @@ export function useConversation(
     [myId],
   )
 
+  const send = useCallback((body: string) => sendEvent('text', body, null), [sendEvent])
+
+  // Media is already sitting in B2 when this fires — the message only
+  // references the object key, so the optimistic bubble renders the real file.
+  const sendMedia = useCallback(
+    (msgType: 'image' | 'video', mediaKey: string) => sendEvent(msgType, '', mediaKey),
+    [sendEvent],
+  )
+
   const markRead = useCallback((upToMessageId: string) => {
     if (lastReadSentRef.current === upToMessageId) return
     const ws = wsRef.current
@@ -242,5 +253,5 @@ export function useConversation(
     ws.send(JSON.stringify({ type: 'read_receipt', up_to_message_id: upToMessageId }))
   }, [])
 
-  return { messages, connection: connectionRef.current, send, markRead }
+  return { messages, connection: connectionRef.current, send, sendMedia, markRead }
 }
