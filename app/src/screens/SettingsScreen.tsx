@@ -18,6 +18,7 @@ import {
 } from '../lib/themes'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { PaletteSwatch } from '../components/PaletteSwatch'
+import { ProfileCard } from '../components/ProfileCard'
 import { TempAccountBanner } from '../components/TempAccount'
 import { navigate } from '../lib/router'
 
@@ -75,6 +76,8 @@ export function SettingsScreen() {
 
       <TempAccountBanner />
 
+      <ProfileCard />
+
       {error && (
         <p className="border-2 border-error bg-error/10 p-3 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
           {error}
@@ -118,20 +121,14 @@ export function SettingsScreen() {
           </div>
 
           <PaletteGroup
-            title="paleta clara"
-            active={mode === 'light'}
-            options={LIGHT_PALETTES}
-            selected={prefs.light}
+            title={mode === 'dark' ? 'paleta escura' : 'paleta clara'}
+            options={mode === 'dark' ? DARK_PALETTES : LIGHT_PALETTES}
+            selected={mode === 'dark' ? prefs.dark : prefs.light}
             disabled={saving}
-            onPick={(id) => id !== prefs.light && save({ ...prefs, light: id })}
-          />
-          <PaletteGroup
-            title="paleta escura"
-            active={mode === 'dark'}
-            options={DARK_PALETTES}
-            selected={prefs.dark}
-            disabled={saving}
-            onPick={(id) => id !== prefs.dark && save({ ...prefs, dark: id })}
+            onPick={(id) => {
+              const current = mode === 'dark' ? prefs.dark : prefs.light
+              if (id !== current) save({ ...prefs, [mode]: id })
+            }}
           />
         </div>
       </section>
@@ -210,21 +207,20 @@ export function SettingsScreen() {
 }
 
 /**
- * One mode's palette shelf. Both shelves are always shown, even though only
- * one is on screen right now: picking the dark palette while sitting in the
- * light one is the normal case, and hiding it behind the mode switch would
- * mean toggling the whole app just to preview a color.
+ * The palette shelf of the mode that is on screen — only that one. Each mode
+ * keeps its own palette, and showing both shelves at once meant four of the
+ * swatches previewed colors the app was not going to use until the mode
+ * changed: the mode buttons above are the way to reach the other shelf, and
+ * flipping them shows the palette applied instead of guessed.
  */
 function PaletteGroup({
   title,
-  active,
   options,
   selected,
   disabled,
   onPick,
 }: {
   title: string
-  active: boolean
   options: readonly PaletteOption[]
   selected: string
   disabled: boolean
@@ -236,11 +232,9 @@ function PaletteGroup({
         <h3 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
           {title}
         </h3>
-        {active && (
-          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">
-            em uso agora
-          </span>
-        )}
+        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">
+          em uso agora
+        </span>
       </div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {options.map((palette) => {

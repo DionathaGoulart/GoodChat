@@ -40,6 +40,15 @@ const IMAGE_TARGET_BYTES = 600 * 1024
 const IMAGE_MAX_DIMENSION = 1600
 const QUALITY_STEPS = [0.85, 0.72, 0.58, 0.45]
 
+/**
+ * Avatar: center-cropped square, since every frame that renders one is square.
+ * 512px covers the largest use (the settings preview) on a 2x screen; the
+ * worker refuses anything over MAX_AVATAR_BYTES.
+ */
+const AVATAR_DIMENSION = 512
+const AVATAR_TARGET_BYTES = 160 * 1024
+export const MAX_AVATAR_BYTES = 512 * 1024
+
 /** Video transcode target: 720p at ~1.5 Mbps + 96 kbps audio. */
 const VIDEO_MAX_DIMENSION = 1280
 const VIDEO_BITS_PER_SECOND = 1_500_000
@@ -118,6 +127,54 @@ export async function compressImage(file: File): Promise<{ blob: Blob; mime: str
     }
   }
   throw new MediaError('falha ao comprimir a imagem')
+}
+
+/**
+ * Profile picture: square, small, still. GIFs and videos are refused here
+ * rather than animated in a 40px frame; everything else is cropped from the
+ * center (the part of a photo a face is in) and re-encoded like any image.
+ */
+export async function compressAvatar(file: File): Promise<{ blob: Blob; mime: string }> {
+  if (!IMAGE_MIMES.includes(file.type) || file.type === 'image/gif') {
+    throw new MediaError('foto de perfil aceita jpg, png ou webp')
+  }
+
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    throw new MediaError('não deu pra ler a imagem')
+  }
+  const side = Math.min(bitmap.width, bitmap.height)
+  const canvas = document.createElement('canvas')
+  canvas.width = AVATAR_DIMENSION
+  canvas.height = AVATAR_DIMENSION
+  canvas
+    .getContext('2d')
+    ?.drawImage(
+      bitmap,
+      (bitmap.width - side) / 2,
+      (bitmap.height - side) / 2,
+      side,
+      side,
+      0,
+      0,
+      AVATAR_DIMENSION,
+      AVATAR_DIMENSION,
+    )
+  bitmap.close()
+
+  for (const mime of ['image/webp', 'image/jpeg']) {
+    for (const quality of QUALITY_STEPS) {
+      const blob = await toBlob(canvas, mime, quality)
+      if (!blob) break // encoder unsupported — try the next mime
+      const last = quality === QUALITY_STEPS[QUALITY_STEPS.length - 1]
+      if (blob.size <= AVATAR_TARGET_BYTES || (last && blob.size <= MAX_AVATAR_BYTES)) {
+        return { blob, mime }
+      }
+    }
+  }
+  throw new MediaError('falha ao comprimir a foto')
 }
 
 /** Empty canvas sized to fit `maxDimension`, aspect preserved. */
@@ -431,12 +488,13 @@ export function uploadMedia(
   blob: Blob,
   mime: string,
   onProgress: (fraction: number) => void,
+  purpose: 'message' | 'avatar' = 'message',
 ): UploadHandle {
   const xhr = new XMLHttpRequest()
   let aborted = false
 
   const promise = (async () => {
-    const target = await requestUploadUrl(mime, blob.size)
+    const target = await requestUploadUrl(mime, blob.size, purpose)
     if (aborted) throw new DOMException('upload cancelado', 'AbortError')
     await new Promise<void>((resolve, reject) => {
       xhr.open('PUT', target.upload_url)
@@ -462,4 +520,18 @@ export function uploadMedia(
       xhr.abort()
     },
   }
+}
+
+/**
+ * Picks a file, crops it and uploads it as a profile picture. Returns the key
+ * for PATCH /api/profile — until that call lands the object is an unclaimed
+ * upload, which the worker's orphan sweep removes on its own.
+ */
+export async function uploadAvatar(
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<string> {
+  const { blob, mime } = await compressAvatar(file)
+  const { key } = await uploadMedia(blob, mime, onProgress, 'avatar').promise
+  return key
 }
