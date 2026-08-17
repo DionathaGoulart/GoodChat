@@ -33,7 +33,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 | 2 | D1 + Auth | ✅ concluída |
 | 3 | Usuários + conversas (REST) | ✅ concluída |
 | 4 | Real-time core (DO + WebSocket) | ✅ concluída |
-| 5 | Frontend do chat | ⬜ pendente |
+| 5 | Frontend do chat | ✅ concluída |
 | 6 | Pipeline de mídia (B2) | ⬜ pendente |
 | 7 | Receipts, typing, emoji, stickers | ⬜ pendente |
 | 8 | PWA + push (stretch) | ⬜ pendente |
@@ -189,7 +189,17 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Não fazer:** upload de mídia, emoji picker, receipts/typing na UI.
 
-**Handoff:** _(árvore de componentes, hooks criados — useSession/useWebSocket, rotas, como rodar e2e manual, dívidas visuais)_
+**Handoff (concluída 2026-08-17):**
+
+- **Worker ganhou preview/unread** (adiado da fase 3 "vem do DO"): `ConversationAgent.onRequest` interno `GET /summary` (header `x-goodchat-user-id`; só alcançável via código do Worker — router público não encaminha HTTP puro pro DO) devolve `{last_message, unread_count}` (exclui `deleted_at`); `GET /api/conversations` agora enriquece cada linha via `getAgentByName(...).fetch('https://do/summary')` em paralelo, degradando pra `last_message: null / unread_count: 0` se um DO falhar. Unread = mensagens do peer com `status != 'read'`.
+- **Estrutura do app:** `src/lib/` — `api.ts` (client REST, `credentials: include`, classe `ApiError {code,status}`, `wsUrl()`), `protocol.ts` (**cópia literal** de `worker/src/protocol.ts` + header avisando; manter em sync — app agora depende de `zod`), `router.ts` (hash router mínimo: `#/` lista, `#/t/<userId>` thread; login não é rota — renderiza quando sessão anônima). `src/hooks/` — `useSession.tsx` (context provider; `me` na carga, login/logout), `useTheme.ts`, `useConversation.ts`. `src/screens/` — `LoginScreen`, `ConversationsScreen`, `ThreadScreen`. `src/components/` — `Avatar`, `WindowDots`, `RetroIconButton` (tile compacto pra toolbar — btn-goodchat é tamanho CTA), `MessageBubble`, `Composer`, `UserSearch`, `ConversationTile`.
+- **useConversation** (coração): reconnect com backoff exponencial + jitter (0.5s→10s); frame `history` no (re)connect substitui estado servidor **mantendo e reenviando** otimistas não-ackados (dedup server por client_id — at-least-once); echo do próprio `message` = ack (status local `'sending'` → server status); `message_status` só **sobe** status (rank sending<sent<delivered<read — cobre corrida status-antes-do-echo); `read_receipt` do peer marca minhas mensagens read; typing ignorado (fase 7). `send()` gera `client_id` UUID, otimista imediato, fila se socket fechado (flush no onopen). `markRead(upToId)` deduplica por ref e re-envia após reconexão (ref zerada no onopen).
+- **Read receipt já é DISPARADO na fase 5** (ThreadScreen, quando aba visível — `visibilitychange` ouvido): sem isso a badge de não lidas nunca zeraria. O que fica pra fase 7 é *renderizar* receipts/typing (bolha própria mostra só `enviando_` → hora).
+- **Tema:** `index.html` **não pina mais** `data-theme` — sem escolha salva, `prefersdark` do daisyUI decide; toggle grava `localStorage['goodchat-theme']` e seta o atributo. Entrada nova: `@utility animate-enter` (fade+slide 8px, 200ms, cubic-bezier ease-out, zero overshoot).
+- **Lista:** polling 15s **só com aba visível** + refresh no `visibilitychange`; preview de mídia vira `[imagem]`/`[vídeo]`/`[sticker]`/`[arquivo]`.
+- **E2E validado no Chrome real** (alice no browser, bob via script `ws` Node): login→lista→thread; tempo real nos 2 sentidos; XSS (`<script>`, `<img onerror>`) renderiza como texto (React escapa; nunca HTML cru); refresh mantém sessão+rota+histórico; entrega offline chega na reconexão; badge 5→0 após leitura; light+dark conferidos. **Pegadinha de automação:** janela do Chrome da extensão fica `visibilityState: 'hidden'` → poll e markRead (corretamente) não disparam; pra testar via automação, forjar `Object.defineProperty(document,'visibilityState',{value:'visible'})` + dispatch `visibilitychange`.
+- **Rodar e2e manual:** worker `npm run dev` (8000) + `db:migrate`+`db:seed`; app `npm run dev` (5173); dois browsers/perfis com `alice`/`alice-goodchat` e `bob`/`bob-goodchat`.
+- **Dívidas:** lista não atualiza em tempo real (só poll 15s) — candidato fase 7+/DO de presença; sem separador de dia na thread; smoke:phase3 falha 1 check (`exists:false`) se rodado após smoke:phase4 no mesmo estado — limpar `.wrangler/state` antes; aviso oxlint fast-refresh em `useSession.tsx` (provider+hook no mesmo arquivo, aceito).
 
 ---
 
