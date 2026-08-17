@@ -14,6 +14,11 @@ export interface PublicUser {
   display_name: string | null
   avatar_url: string | null
   created_at: number
+  /**
+   * The account is gone (a temporary one that expired, or one the owner
+   * removed). The thread stays readable, but nothing can be sent to it.
+   */
+  deleted?: boolean
 }
 
 export type Theme = 'goodchat-light' | 'goodchat-dark'
@@ -24,6 +29,9 @@ export interface SessionUser extends PublicUser {
   role: Role
   /** Account-level default; null follows the OS preference. */
   theme: Theme | null
+  /** Guest account: it and its data are deleted at `expires_at`. */
+  is_temp: boolean
+  expires_at: number | null
 }
 
 export interface ConversationListItem {
@@ -39,6 +47,8 @@ export interface ResolveResult {
   conversation_id: string
   exists: boolean
   other_user: PublicUser
+  /** The peer no longer exists: history only, the composer is closed. */
+  readonly: boolean
 }
 
 /** Uniform worker error shape: { error: <code>, message? }. */
@@ -81,6 +91,28 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function login(username: string, password: string): Promise<{ user: SessionUser }> {
   return call('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+}
+
+export interface TempAccountResult {
+  user: SessionUser
+  /** Shown once, right after signup — the worker never returns it again. */
+  password: string
+}
+
+/** Guest signup: a throwaway account that deletes itself when it expires. */
+export function createTempAccount(): Promise<TempAccountResult> {
+  return call('/api/auth/temp', { method: 'POST' })
+}
+
+export interface HealthResult {
+  ok: boolean
+  service: string
+  /** Whether this instance offers guest accounts at all. */
+  temp_accounts: boolean
+}
+
+export function health(): Promise<HealthResult> {
+  return call('/api/health')
 }
 
 export function logout(): Promise<{ ok: boolean }> {
@@ -148,6 +180,10 @@ export function pushUnsubscribe(endpoint: string): Promise<{ ok: boolean; remove
 export interface AdminOverview {
   users: number
   disabled_users: number
+  /** Guest accounts alive right now. */
+  temp_users: number
+  /** Deleted accounts still naming a thread someone else kept. */
+  tombstones: number
   sessions: number
   conversations: number
   messages: number
@@ -171,6 +207,10 @@ export interface AdminUser {
   role: Role
   created_by: string | null
   disabled: boolean
+  is_temp: boolean
+  expires_at: number | null
+  /** Tombstone: the account is gone, the row only names old threads. */
+  deleted: boolean
   conversations: number
   messages: number
   /** Message payload attributed to this account. */
@@ -198,6 +238,7 @@ export interface PurgeResult {
   messages_deleted?: number
   media_deleted?: number
   conversations_purged?: number
+  tombstones_removed?: number
 }
 
 export function adminOverview(): Promise<AdminOverview> {
@@ -245,6 +286,9 @@ export function adminPurgeConversation(id: string): Promise<PurgeResult> {
 export interface CleanupReport {
   sessions_deleted: number
   login_attempts_deleted: number
+  temp_accounts_deleted: number
+  temp_conversations_deleted: number
+  tombstones_removed: number
   orphan_media_deleted: number
   expired_media_deleted: number
 }

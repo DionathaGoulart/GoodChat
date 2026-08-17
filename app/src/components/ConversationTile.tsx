@@ -40,7 +40,9 @@ export function ConversationTile({ item }: { item: ConversationListItem }) {
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
           <span className="truncate text-sm font-black uppercase tracking-tight">
-            {item.other_user.display_name ?? item.other_user.username}
+            {item.other_user.deleted
+              ? 'conta expirada'
+              : (item.other_user.display_name ?? item.other_user.username)}
           </span>
           <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
             {formatWhen(item.last_message_at)}

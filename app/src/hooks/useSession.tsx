@@ -16,6 +16,14 @@ interface SessionContextValue {
   user: SessionUser | null
   isOwner: boolean
   login: (username: string, password: string) => Promise<void>
+  /** Guest signup: creates a throwaway account and signs in with it. */
+  loginAsGuest: () => Promise<void>
+  /**
+   * The guest password, held in memory for this tab only: the worker returns
+   * it once at signup and never again, so the app has one chance to show it.
+   */
+  guestCredentials: { username: string; password: string } | null
+  forgetGuestCredentials: () => void
   logout: () => Promise<void>
   /** Persists the theme on the account; the DOM is updated immediately. */
   setTheme: (preference: ThemePreference) => Promise<void>
@@ -26,6 +34,10 @@ const SessionContext = createContext<SessionContextValue | null>(null)
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<SessionStatus>('loading')
   const [user, setUser] = useState<SessionUser | null>(null)
+  const [guestCredentials, setGuestCredentials] = useState<{
+    username: string
+    password: string
+  } | null>(null)
 
   // The account preference is the source of truth: it overwrites whatever the
   // boot-time local copy pinned, including unpinning it back to "system".
@@ -60,6 +72,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [adopt],
   )
 
+  const loginAsGuest = useCallback(async () => {
+    const { user, password } = await api.createTempAccount()
+    setGuestCredentials({ username: user.username, password })
+    adopt(user)
+    setStatus('authenticated')
+  }, [adopt])
+
+  const forgetGuestCredentials = useCallback(() => setGuestCredentials(null), [])
+
   const logout = useCallback(async () => {
     try {
       // Push subscriptions are per-account: drop this browser's one on logout
@@ -70,6 +91,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } finally {
       // Cookie is gone (or was already invalid) — drop local state either way.
       setUser(null)
+      setGuestCredentials(null)
       setStatus('anonymous')
     }
   }, [])
@@ -88,10 +110,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       user,
       isOwner: user?.role === 'owner',
       login,
+      loginAsGuest,
+      guestCredentials,
+      forgetGuestCredentials,
       logout,
       setTheme,
     }),
-    [status, user, login, logout, setTheme],
+    [
+      status,
+      user,
+      login,
+      loginAsGuest,
+      guestCredentials,
+      forgetGuestCredentials,
+      logout,
+      setTheme,
+    ],
   )
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }

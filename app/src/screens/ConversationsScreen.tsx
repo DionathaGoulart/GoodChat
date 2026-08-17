@@ -8,6 +8,7 @@ import type { ConversationListItem } from '../lib/api'
 import { useSession } from '../hooks/useSession'
 import { useTheme } from '../hooks/useTheme'
 import { ConversationTile } from '../components/ConversationTile'
+import { GuestCredentialsCard, TempAccountBanner } from '../components/TempAccount'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { UserSearch } from '../components/UserSearch'
 import { navigate } from '../lib/router'
@@ -84,6 +85,9 @@ export function ConversationsScreen() {
           </RetroIconButton>
         </div>
       </header>
+
+      <TempAccountBanner />
+      <GuestCredentialsCard />
 
       <UserSearch />
 

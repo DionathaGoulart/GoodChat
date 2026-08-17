@@ -11,6 +11,7 @@ import type { Theme } from '../lib/api'
 import { usePush } from '../hooks/usePush'
 import { useSession } from '../hooks/useSession'
 import { RetroIconButton } from '../components/RetroIconButton'
+import { TempAccountBanner } from '../components/TempAccount'
 import { navigate } from '../lib/router'
 
 type Preference = Theme | 'system'
@@ -62,6 +63,8 @@ export function SettingsScreen() {
         </div>
         <RetroIconButton onClick={() => navigate({ name: 'list' })}>← voltar</RetroIconButton>
       </header>
+
+      <TempAccountBanner />
 
       {error && (
         <p className="border-2 border-error bg-error/10 p-3 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">

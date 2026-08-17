@@ -15,6 +15,7 @@ import { ApiError } from '../lib/api'
 import { useSession } from '../hooks/useSession'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { navigate } from '../lib/router'
+import { formatRemaining } from '../lib/time'
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} gb`
@@ -214,6 +215,11 @@ function OverviewPanel({ overview }: { overview: AdminOverview | null }) {
 
   const tiles: { label: string; value: string; hint?: string }[] = [
     { label: 'contas', value: String(overview.users), hint: `${overview.disabled_users} desativadas` },
+    {
+      label: 'convidados',
+      value: String(overview.temp_users),
+      hint: `${overview.tombstones} contas expiradas ainda citadas`,
+    },
     { label: 'conversas', value: String(overview.conversations), hint: `${overview.messages} mensagens` },
     { label: 'banco (dos)', value: formatBytes(overview.do_storage_bytes) },
     {
@@ -287,9 +293,18 @@ function AccountRow({
                 owner
               </span>
             )}
-            {account.disabled && (
-              <span className="ml-2 bg-error px-2 py-0.5 text-[10px] text-error-content">
-                desativada
+            {account.deleted ? (
+              <span className="ml-2 bg-base-300 px-2 py-0.5 text-[10px]">expirada</span>
+            ) : (
+              account.disabled && (
+                <span className="ml-2 bg-error px-2 py-0.5 text-[10px] text-error-content">
+                  desativada
+                </span>
+              )
+            )}
+            {account.is_temp && !account.deleted && account.expires_at !== null && (
+              <span className="ml-2 bg-warning px-2 py-0.5 text-[10px] text-warning-content">
+                convidada · {formatRemaining(account.expires_at, Date.now())}
               </span>
             )}
           </p>

@@ -1,26 +1,46 @@
 // Login (phase-2 endpoint). Card retro-border + retro-shadow, status tokens
 // for errors, session persisted in the HttpOnly cookie set by the worker.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { ApiError } from '../lib/api'
+import { ApiError, health } from '../lib/api'
 import { useSession } from '../hooks/useSession'
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.code === 'invalid_credentials') return 'usuário ou senha inválidos'
     if (error.code === 'rate_limited') return 'muitas tentativas — aguarde alguns minutos'
+    if (error.code === 'temp_accounts_full') return 'limite de convidados atingido — tente mais tarde'
+    if (error.code === 'temp_accounts_disabled') return 'convidados desativados nesta instância'
     if (error.code === 'network_error') return 'servidor inacessível — backend na porta 8000?'
   }
   return 'erro inesperado ao entrar'
 }
 
 export function LoginScreen() {
-  const { login } = useSession()
+  const { login, loginAsGuest } = useSession()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [guestSubmitting, setGuestSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The instance decides whether guests exist at all (TEMP_ACCOUNTS_ENABLED);
+  // a dead button would be worse than no button.
+  const [guestsOffered, setGuestsOffered] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    health()
+      .then((result) => {
+        if (!cancelled) setGuestsOffered(result.temp_accounts)
+      })
+      .catch(() => {
+        // Offline or old worker: fall back to the invite-only screen.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -32,6 +52,18 @@ export function LoginScreen() {
     } catch (err) {
       setError(errorMessage(err))
       setSubmitting(false)
+    }
+  }
+
+  const onGuest = async () => {
+    if (guestSubmitting) return
+    setGuestSubmitting(true)
+    setError(null)
+    try {
+      await loginAsGuest()
+    } catch (err) {
+      setError(errorMessage(err))
+      setGuestSubmitting(false)
     }
   }
 
@@ -104,8 +136,35 @@ export function LoginScreen() {
           </div>
         </form>
 
+        {guestsOffered && (
+          <section className="mt-4 retro-border bg-base-200 p-4">
+            <p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-accent">
+              {'>'} sem conta?
+            </p>
+            <p className="mt-1 text-sm leading-relaxed opacity-70">
+              Entre como convidado: a conta dura 5 horas e depois some, levando junto
+              as conversas que só existirem nela.
+            </p>
+            <button
+              type="button"
+              onClick={() => void onGuest()}
+              disabled={guestSubmitting || submitting}
+              className="btn btn-goodchat mt-3 w-full retro-shadow-sm transition-all duration-300 hover:-translate-y-1 hover:retro-shadow active:translate-y-0 disabled:opacity-60"
+            >
+              {guestSubmitting ? (
+                <>
+                  criando conta<span className="terminal-cursor">_</span>
+                </>
+              ) : (
+                'Entrar como convidado'
+              )}
+            </button>
+          </section>
+        )}
+
         <p className="mt-4 font-mono text-[8px] uppercase tracking-[0.2em] opacity-40 md:text-[10px]">
-          contas criadas pelo operador · sem sign-up público
+          contas permanentes criadas pelo operador
+          {guestsOffered ? ' · convidados expiram em 5h' : ' · sem sign-up público'}
         </p>
       </div>
     </main>

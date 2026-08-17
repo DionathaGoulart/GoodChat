@@ -26,6 +26,7 @@ export function ThreadScreen({ userId }: { userId: string }) {
   const [resolved, setResolved] = useState<{
     conversationId: string
     otherUser: PublicUser
+    readonly: boolean
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -36,7 +37,12 @@ export function ThreadScreen({ userId }: { userId: string }) {
     resolveConversation(userId)
       .then((result) => {
         if (cancelled) return
-        setResolved({ conversationId: result.conversation_id, otherUser: result.other_user })
+        setResolved({
+          conversationId: result.conversation_id,
+          otherUser: result.other_user,
+          // The peer's account is gone: history stays, the composer closes.
+          readonly: result.readonly,
+        })
       })
       .catch((err: unknown) => {
         if (cancelled) return
@@ -79,6 +85,7 @@ export function ThreadScreen({ userId }: { userId: string }) {
       conversationId={resolved.conversationId}
       otherUser={resolved.otherUser}
       myId={user.id}
+      readonly={resolved.readonly}
     />
   )
 }
@@ -87,10 +94,12 @@ function LiveThread({
   conversationId,
   otherUser,
   myId,
+  readonly,
 }: {
   conversationId: string
   otherUser: PublicUser
   myId: string
+  readonly: boolean
 }) {
   const { messages, connection, peerTyping, send, sendMedia, sendSticker, sendTyping, markRead } =
     useConversation(conversationId, otherUser.id, myId)
@@ -134,10 +143,10 @@ function LiveThread({
         <Avatar user={otherUser} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-black uppercase tracking-tight">
-            {otherUser.display_name ?? otherUser.username}
+            {readonly ? 'conta expirada' : (otherUser.display_name ?? otherUser.username)}
           </p>
           <p className="truncate font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
-            @{otherUser.username}
+            {readonly ? 'somente leitura' : `@${otherUser.username}`}
           </p>
         </div>
         <p
@@ -182,12 +191,18 @@ function LiveThread({
         )}
       </p>
 
-      <Composer
-        onSend={send}
-        onSendMedia={sendMedia}
-        onSendSticker={sendSticker}
-        onTyping={sendTyping}
-      />
+      {readonly ? (
+        <p className="retro-border shrink-0 bg-base-200 p-3 text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
+          esta conta não existe mais — o histórico fica, mas não dá pra responder
+        </p>
+      ) : (
+        <Composer
+          onSend={send}
+          onSendMedia={sendMedia}
+          onSendSticker={sendSticker}
+          onTyping={sendTyping}
+        />
+      )}
     </main>
   )
 }
