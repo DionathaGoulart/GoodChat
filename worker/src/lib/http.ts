@@ -34,15 +34,20 @@ function isAllowedOrigin(origin: string, selfOrigin: string, env: Env): boolean 
   return configured?.includes(origin) ?? false
 }
 
-// Content-Security-Policy for the SPA document and its assets. Everything is
-// same-origin (the Worker serves the build), so 'self' covers scripts, styles,
-// fonts, the service worker and the WebSocket. Exceptions:
+// Content-Security-Policy for the SPA document and its assets. Nearly
+// everything is same-origin (the Worker serves the build), so 'self' covers
+// scripts, styles, fonts, the service worker and the WebSocket. Exceptions:
 //   - style-src 'unsafe-inline': React writes inline style attributes and
 //     daisyUI/emoji-picker set inline custom properties. CSP3 has no way to
 //     allow attribute styles without this; script-src stays strict, which is
 //     where the XSS risk actually lives.
 //   - img-src/media-src blob: — object URLs for upload previews and the
 //     in-browser video transcode.
+//   - connect-src <B2 endpoint>: uploads go straight from the browser to a
+//     presigned PUT, so the bytes never pass through the Worker (lib/media.ts).
+//     Reads come back through /api/media/, so only the upload host is listed,
+//     and it comes from the env var rather than a literal — a different bucket
+//     region would otherwise silently break every upload.
 // frame-ancestors 'none' is the clickjacking fix; there is no reason to embed
 // a chat in someone else's page.
 const CSP_DIRECTIVES = [
@@ -58,8 +63,17 @@ const CSP_DIRECTIVES = [
   "font-src 'self'",
   "worker-src 'self'",
   "manifest-src 'self'",
-  "connect-src 'self'",
 ]
+
+/** Origin of the B2 S3 endpoint, or null when it is unset or unparseable. */
+function uploadOrigin(env: Env | undefined): string | null {
+  if (!env?.B2_S3_ENDPOINT) return null
+  try {
+    return new URL(env.B2_S3_ENDPOINT).origin
+  } catch {
+    return null
+  }
+}
 
 /** Headers every response carries, document or API. */
 const BASE_SECURITY_HEADERS: Record<string, string> = {
@@ -78,14 +92,23 @@ const BASE_SECURITY_HEADERS: Record<string, string> = {
  */
 export function applySecurityHeaders(
   headers: Headers,
-  { document = false, https = false }: { document?: boolean; https?: boolean } = {},
+  {
+    document = false,
+    https = false,
+    env,
+  }: { document?: boolean; https?: boolean; env?: Env } = {},
 ): void {
   for (const [name, value] of Object.entries(BASE_SECURITY_HEADERS)) headers.set(name, value)
   if (https) {
     headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
   }
   if (document) {
-    const directives = https ? [...CSP_DIRECTIVES, 'upgrade-insecure-requests'] : CSP_DIRECTIVES
+    const upload = uploadOrigin(env)
+    const directives = [
+      ...CSP_DIRECTIVES,
+      upload ? `connect-src 'self' ${upload}` : "connect-src 'self'",
+      ...(https ? ['upgrade-insecure-requests'] : []),
+    ]
     headers.set('Content-Security-Policy', directives.join('; '))
   }
 }

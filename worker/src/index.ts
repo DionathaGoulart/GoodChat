@@ -131,7 +131,7 @@ export default {
     if (!url.pathname.startsWith('/api/')) {
       const asset = await env.ASSETS.fetch(request)
       const headers = new Headers(asset.headers)
-      applySecurityHeaders(headers, { document: true, https })
+      applySecurityHeaders(headers, { document: true, https, env })
       return new Response(asset.body, {
         status: asset.status,
         statusText: asset.statusText,

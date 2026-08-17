@@ -92,6 +92,14 @@ try {
   check('SPA document carries a CSP', csp.includes("default-src 'self'"), csp.slice(0, 40))
   check('CSP forbids framing (clickjacking)', csp.includes("frame-ancestors 'none'"))
   check('CSP keeps script-src strict', csp.includes("script-src 'self'") && !csp.includes("script-src 'self' 'unsafe"))
+  // Without the B2 origin here every presigned upload dies in the browser
+  // before it reaches the network — the failure is invisible server-side.
+  check(
+    'CSP lets the browser reach the upload endpoint',
+    csp.includes(`connect-src 'self' http://localhost:${MEDIA_PORT}`),
+    csp.match(/connect-src[^;]*/)?.[0],
+  )
+  check('CSP keeps font-src same-origin', csp.includes("font-src 'self'"))
   check('document sets Referrer-Policy', doc.headers.get('Referrer-Policy') === 'no-referrer')
 
   const health = await fetch(`${API}/api/health`)
