@@ -139,6 +139,19 @@
   opacity: 0.3;
 }
 
+/* Entrance: quick fade + small slide, ease-out, zero overshoot (team rule:
+   elements arrive and stop — no spring/bounce). */
+@utility animate-enter {
+  animation: goodchat-enter 0.2s cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+@keyframes goodchat-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
 /* Button variants extend daisyUI's btn through its own tokens, so btn keeps
    providing focus/active/disabled behavior (styleguide §6 technique). */
 @utility btn-goodchat {
