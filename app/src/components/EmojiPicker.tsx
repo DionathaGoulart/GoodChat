@@ -17,6 +17,9 @@ export function EmojiPicker({ onPick }: { onPick: (unicode: string) => void }) {
 
   useEffect(() => {
     let disposed = false
+    let observer: MutationObserver | undefined
+    let media: MediaQueryList | undefined
+    let mediaListener: (() => void) | undefined
     const host = hostRef.current
     Promise.all([
       import('emoji-picker-element'),
@@ -30,9 +33,20 @@ export function EmojiPicker({ onPick }: { onPick: (unicode: string) => void }) {
           locale: 'pt',
           i18n: i18n.default,
         })
-        // Shadow DOM cannot see daisyUI tokens — pin light/dark explicitly
-        // (mounted per open, so a theme toggle re-resolves next time).
-        picker.classList.add(currentTheme() === 'goodchat-dark' ? 'dark' : 'light')
+        // Shadow DOM cannot see daisyUI tokens — pin light/dark explicitly,
+        // and keep it in sync: the element stays mounted after the first
+        // open, so a later theme toggle (or an OS scheme flip) must re-pin.
+        const applyPickerTheme = () => {
+          const dark = currentTheme() === 'goodchat-dark'
+          picker.classList.toggle('dark', dark)
+          picker.classList.toggle('light', !dark)
+        }
+        applyPickerTheme()
+        observer = new MutationObserver(applyPickerTheme)
+        observer.observe(document.documentElement, { attributeFilter: ['data-theme'] })
+        media = window.matchMedia('(prefers-color-scheme: dark)')
+        media.addEventListener('change', applyPickerTheme)
+        mediaListener = applyPickerTheme
         picker.addEventListener('emoji-click', (event) => {
           if (event.detail.unicode) onPickRef.current(event.detail.unicode)
         })
@@ -44,6 +58,8 @@ export function EmojiPicker({ onPick }: { onPick: (unicode: string) => void }) {
       })
     return () => {
       disposed = true
+      observer?.disconnect()
+      if (media && mediaListener) media.removeEventListener('change', mediaListener)
       host?.replaceChildren()
     }
   }, [])

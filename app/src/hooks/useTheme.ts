@@ -24,6 +24,15 @@ export function currentTheme(): Theme {
   return storedTheme() ?? systemTheme()
 }
 
+/** Pin a stored choice on <html> at boot. Without this, screens that never
+ * mount useTheme (e.g. the thread) would follow prefers-color-scheme and
+ * ignore the user's explicit toggle. No stored choice → attribute stays off
+ * and daisyUI keeps resolving by system preference. */
+export function applyStoredTheme(): void {
+  const stored = storedTheme()
+  if (stored) document.documentElement.setAttribute('data-theme', stored)
+}
+
 export function useTheme(): { theme: Theme; toggle: () => void } {
   const [theme, setTheme] = useState<Theme>(() => storedTheme() ?? systemTheme())
 
