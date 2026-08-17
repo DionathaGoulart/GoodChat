@@ -158,7 +158,22 @@ On the production URL, in order:
       installed app, enable notifications (iOS 16.4+, not in the EU)
 - [ ] `npx wrangler tail` shows no errors while testing
 
-## 7. Optional: custom domain
+## 7. CI/CD
+
+`.github/workflows/deploy.yml` runs on every push to `main`: install,
+typecheck (app and worker), lint, build, then `wrangler deploy`. A commit
+that does not compile fails the workflow instead of reaching production.
+
+One-time setup: create an API token (dash → My Profile → API Tokens →
+"Edit Cloudflare Workers" template, plus D1:Edit) and store it as the
+repository secret `CLOUDFLARE_API_TOKEN` (GitHub → Settings → Secrets and
+variables → Actions). Until the secret exists the checks still run and the
+deploy step is skipped, so the workflow never fails for a missing token.
+
+Manual deploys keep working (`npm run deploy:full`); the workflow only
+builds and deploys what is committed.
+
+## 8. Optional: custom domain
 
 Everything works on `workers.dev`. A custom domain on Cloudflare adds:
 
@@ -169,7 +184,7 @@ Media needs nothing extra: reads already go Worker → B2, which is
 Bandwidth Alliance traffic (no egress charge) and never exposes the bucket
 host to the browser.
 
-## 8. Operations and limits
+## 9. Operations and limits
 
 | Resource               | Free tier (per day unless noted)   | Notes                              |
 | ---------------------- | ---------------------------------- | ---------------------------------- |
@@ -190,7 +205,7 @@ host to the browser.
 - D1 backup: `npx wrangler d1 export goodchat --remote` on occasion. D1
   Time Travel also provides 30 days of point-in-time restore.
 
-## 9. Known gaps
+## 10. Known gaps
 
 Pending items, none blocking a first deploy beyond the setup above:
 
@@ -203,6 +218,4 @@ Pending items, none blocking a first deploy beyond the setup above:
 3. The conversation list refreshes by polling (15s, visible tabs only),
    not in real time.
 4. Rate limiting exists on login only; other endpoints rely on sessions.
-5. No CI/CD; deploys are manual. Optional: connect the repo to GitHub and
-   use Workers Builds.
-6. Message edit/delete, group chats and E2EE are out of scope by design.
+5. Message edit/delete, group chats and E2EE are out of scope by design.

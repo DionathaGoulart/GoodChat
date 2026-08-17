@@ -136,8 +136,9 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 
 Everything runs within Cloudflare and Backblaze free tiers. The SPA is
 served by the Worker itself on a single origin (required by the strict
-session cookie). See [docs/deployment.md](docs/deployment.md) for the
-step-by-step guide.
+session cookie). Pushes to `main` are typechecked, linted and built by
+`.github/workflows/deploy.yml` before `wrangler deploy` runs. See
+[docs/deployment.md](docs/deployment.md) for the step-by-step guide.
 
 ## License
 

@@ -4,9 +4,11 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
-  // Custom domain on the dionatha.com.br zone. Wrangler manages the DNS
-  // record; the workers.dev URL keeps working as a fallback.
+  // Custom domain on the dionatha.com.br zone (wrangler manages the DNS
+  // record). One canonical origin on purpose: the session cookie is scoped
+  // per origin, so a second URL would mean a second, confusing login.
   "routes": [{ "pattern": "goodchat.dionatha.com.br", "custom_domain": true }],
+  "workers_dev": false,
   "durable_objects": {
     "bindings": [
       {

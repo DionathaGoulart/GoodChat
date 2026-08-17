@@ -1,0 +1,63 @@
+# CI + deploy: every push to main is typechecked, linted and built before
+# wrangler ships it. A broken commit fails here instead of in production.
+#
+# Requires the repository secret CLOUDFLARE_API_TOKEN (dash → My Profile →
+# API Tokens → "Edit Cloudflare Workers" template, plus D1:Edit). Without it
+# the checks still run and the deploy step is skipped.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            worker/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix app
+          npm ci --prefix worker
+
+      - name: Typecheck app
+        run: npm run typecheck --prefix app
+
+      - name: Lint app
+        run: npm run lint --prefix app
+
+      - name: Typecheck worker
+        run: npm run typecheck --prefix worker
+
+      - name: Build app
+        run: npm run build --prefix app
+
+      - name: Check deploy credentials
+        id: creds
+        run: echo "present=${{ secrets.CLOUDFLARE_API_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy worker
+        if: steps.creds.outputs.present == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: worker
+          command: deploy
+
+      - name: Deploy skipped
+        if: steps.creds.outputs.present != 'true'
+        run: echo "CLOUDFLARE_API_TOKEN not set — checks passed, deploy skipped."
