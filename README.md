@@ -15,9 +15,11 @@ with native web push notifications, all within free tiers.
   which checks that the caller is a participant of the conversation the
   object belongs to
 - Curated retro sticker pack and an emoji picker (pt-BR, self-hosted data)
-- Settings screen: ten color palettes (four light, six dark) plus a
-  light/dark/system mode, stored on the account so the choice follows the
-  person across devices instead of living in one browser
+- Settings screen: a profile card (display name and picture), ten color
+  palettes (four light, six dark) plus a light/dark/system mode. All of it is
+  stored on the account, so the choices follow the person across devices
+  instead of living in one browser; the palette shelf shows the palettes of
+  the mode that is on screen
 - Owner console: accounts, storage per account (message bytes and bucket
   bytes), history purges, and on-demand maintenance
 - Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login
@@ -33,7 +35,8 @@ with native web push notifications, all within free tiers.
   explicit opt-in
 - Retro design system: ten daisyUI 5 custom themes sharing one geometry,
   JetBrains Mono, hard shadows, square corners, scanline and terminal cursor
-  motifs
+  motifs, and skeleton placeholders shaped like the content they stand in for
+  (list, thread, console) so a wait never shifts the layout
 
 ## Tech stack
 
@@ -120,7 +123,7 @@ Worker (`cd worker`):
 | `npm run media:dev`     | Fake-B2 media store on port 9000               |
 | `npm run stickers:publish` | Publish sticker pack to the media store     |
 | `npm run vapid:generate`| Generate a VAPID key pair for web push         |
-| `npm run smoke:phase3..10` | Smoke test suites (see Testing)             |
+| `npm run smoke:phase3..11` | Smoke test suites (see Testing)             |
 | `npm run typecheck`     | TypeScript check                               |
 | `npm run deploy:full`   | Build the app and deploy the Worker            |
 
@@ -146,6 +149,7 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase8`  | Web push: aes128gcm roundtrip with decrypt, REST, trigger  |
 | `smoke:phase9`  | Security headers, CORS, login timing, settings, owner console |
 | `smoke:phase10` | Guest accounts: quotas, expiry, deletion keeping the peer's history |
+| `smoke:phase11` | Profile: display name, avatar upload rules, adoption, read access, replacement |
 
 ## Documentation
 

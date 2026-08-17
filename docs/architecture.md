@@ -36,6 +36,7 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/auth/logout`            | no   | Revoke session (idempotent)            |
 | GET    | `/api/auth/me`                | yes  | Current user (includes `role` and the three theme fields) |
 | PATCH  | `/api/settings`               | yes  | Account preferences (`theme_mode`, `theme_light`, `theme_dark` — all three per call) |
+| PATCH  | `/api/profile`                | yes  | Own display name and/or picture (`display_name`, `avatar_key` — both optional, `null` clears) |
 | GET    | `/api/users/lookup?q=`        | yes  | Prefix search by username              |
 | GET    | `/api/conversations`          | yes  | List with preview and unread count     |
 | POST   | `/api/conversations/resolve`  | yes  | Deterministic conversation id, no side effects |
@@ -178,11 +179,15 @@ Messages are kept in the DO's internal SQLite, one table per PRD 4.4.
 
 ### Media pipeline
 
-1. Client requests `POST /api/media/upload-url` with MIME and size.
+1. Client requests `POST /api/media/upload-url` with MIME, size and `purpose`
+   (`message`, the default, or `avatar`).
 2. Worker validates session, MIME allowlist (`image/jpeg png webp gif`,
    `video/mp4 webm`) and size caps (8MB image, 32MB video), then returns a
    presigned S3-compatible PUT (aws4fetch). Content-Type and Content-Length
    are part of the signature, so the storage itself rejects mismatched bytes.
+   An avatar is narrower on both axes — `image/jpeg png webp` only, 512KB —
+   and gets a key under `avatars/` instead of `media/<yyyy-mm>/`. The prefix
+   is chosen by the Worker, never sent by the client.
 3. The presign is recorded in `media_objects` *before* the URL is handed
    out. That single row is what later authorizes the read, attributes the
    bytes to an account, and lets the sweep recognise an upload no message
@@ -200,6 +205,25 @@ Messages are kept in the DO's internal SQLite, one table per PRD 4.4.
    Cloudflare edge cache (`caches.default`, immutable), so a repeated view
    costs one Worker request and no B2 read. B2 → Cloudflare egress is free
    (Bandwidth Alliance), so the proxy adds no bandwidth cost.
+
+Profile pictures ride the same pipeline with different rules at every step:
+
+- the object lives under `avatars/`, and `users.avatar_key` points at it
+  (migration 0006 renamed `avatar_url`, which had never been written — the
+  bucket is private, so a row can only hold a key, not a URL);
+- `PATCH /api/profile` is what adopts an uploaded key: it accepts only an
+  `avatars/` object this account presigned, and claims the index row.
+  Without that check `avatar_key` would publish arbitrary bucket objects to
+  the whole instance;
+- read access is by adoption, not by conversation: a claimed avatar is
+  readable by any session (it is rendered in search results, tiles and thread
+  headers), an unclaimed one only by its uploader;
+- the sweeps treat it as personal, not historical: retention skips
+  `avatars/%`, the orphan sweep still collects avatars nobody adopted, and
+  deleting an account takes its picture (which is also what lets the `users`
+  row be hard-deleted instead of lingering as a tombstone);
+- replacing or removing a picture deletes the old object, forgets its index
+  row and evicts the edge copy, since objects are cached as immutable.
 
 Compression, in `app/src/lib/media.ts`:
 
@@ -277,15 +301,23 @@ fetches the manifest once and renders stickers without bubble chrome.
   router (`#/` list, `#/t/<userId>` thread, `#/config`, `#/admin`), media
   compression and transcoding, push opt-in flow, sticker manifest client.
 - `src/hooks`: `useSession` (context provider, `me` on load, owns the
-  account theme), `useConversation` (the core: WebSocket with exponential
+  account theme and profile, and boots stale-while-revalidate from the local
+  account copy in `lib/accountCache.ts` so a reload paints the app instead of
+  a boot screen), `useConversation` (the core: WebSocket with exponential
   backoff and jitter, history resync on reconnect, optimistic sends with
   client_id dedup, status rank so out-of-order frames never downgrade,
   offline queue, read receipts, typing with throttle), `useTheme`,
   `usePush`.
 - `src/screens`: Login, Conversations (search, previews, unread badges,
   visible-only 15s poll), Thread (bubbles, receipts, typing line, composer
-  with attach, emoji and sticker pickers), Settings (theme, push, session),
-  Admin (owner only).
+  with attach, emoji and sticker pickers), Settings (profile, theme, push,
+  session), Admin (owner only).
+- Loading feedback: every wait that has a known shape renders a skeleton of
+  that shape (`src/components/Skeleton.tsx`) instead of a line of text — the
+  conversation list, the thread being resolved, the owner console's totals
+  and lists, and the cold-start boot. Motion is daisyUI's ambient sweep; one
+  `role="status"` per screen names the wait and the boxes stay
+  `aria-hidden`.
 - Theming: every color exists once as a `--palette-*` token in
   `src/styles/palettes.css`; the ten daisyUI themes in
   `src/styles/themes.css` and the utilities consume tokens only. No hex
@@ -293,8 +325,10 @@ fetches the manifest once and renders stickers without bubble chrome.
   only, no springs or overshoot.
 - Palettes: the preference is a mode (`light` / `dark` / null = follow the
   OS) plus which palette each mode uses — four light, six dark, catalogued
-  in `src/lib/themes.ts` and offered by the settings screen. The header
-  button only moves the mode; each mode keeps its own palette. Ids are the
+  in `src/lib/themes.ts` and offered by the settings screen, which shows the
+  shelf of the mode that is on screen — flipping the mode shows the other
+  shelf, applied instead of previewed. The header button only moves the mode;
+  each mode keeps its own palette. Ids are the
   Portfolio terminal palettes, so a palette means the same thing in both
   apps. It resolves in order account → local copy → catalog default: the
   account value is the source of truth and the local copy only exists so the
@@ -313,7 +347,7 @@ D1 (metadata):
 
 | Table                | Purpose                                             |
 | -------------------- | --------------------------------------------------- |
-| `users`              | id, unique case-insensitive username, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
+| `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
 | `conversations`      | Deterministic id, ordered pair, last_message_at     |
 | `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads) |

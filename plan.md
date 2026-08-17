@@ -38,6 +38,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 | 7 | Receipts, typing, emoji, stickers | ✅ concluída |
 | 8 | PWA + push (stretch) | ✅ concluída |
 | 10 | Contas temporárias (convidados) | ✅ concluída |
+| 11 | Perfil, cache local e skeletons | ✅ concluída |
 
 MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definition of Done completa: `inicial.md` §2.4 espelhada nos critérios das fases.
 
@@ -314,6 +315,25 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 ---
 
+## Fase 11 — Perfil, cache local e skeletons
+
+**Objetivo:** deixar a conta parecer com a pessoa (nome + foto), fazer o app abrir sem tela de boot, e trocar os "carregando_" por skeletons.
+
+**Handoff (concluída 2026-08-17):**
+
+- **Paleta só do modo em uso** (`SettingsScreen`): antes as duas prateleiras apareciam juntas; agora aparece a do modo que está na tela, e os botões de modo acima são o caminho pra outra — assim a paleta é vista **aplicada**, não adivinhada. Sumiu o rótulo condicional "em uso agora" (a prateleira visível é sempre a em uso).
+- **Migration `0006_profile.sql`:** `users.avatar_url` → `avatar_key`. A coluna existia desde a 0001 e nunca foi escrita; o que a linha guarda é **chave de objeto** (`avatars/<uuid>.<ext>`), igual `media_key` de mensagem — o bucket é privado, então URL não cabe numa linha do D1 (quem sabe a origem é o cliente: `VITE_MEDIA_URL` em dev, mesma origem em prod). Renomeada em vez de somada porque toda linha ainda tinha NULL.
+- **`PATCH /api/profile`** (`routes/profile.ts`): `display_name` e `avatar_key`, os dois opcionais e independentes — o form do nome e o seletor de foto disparam separados, então um write completo (como em `/api/settings`) faria um upload falho parecer rename perdido. Vazio/`null` limpa o nome (a UI volta pro @username). Não sobe bytes: o cliente faz PUT presignado e manda só a chave.
+- **Regra de adoção (o coração da fase):** a chave tem que ser objeto `avatars/` **presignado por esta conta**. Sem essa checagem, `avatar_key` viraria um jeito de publicar qualquer objeto do bucket pra instância inteira, porque avatar adotado é legível por qualquer sessão. Adotar = `claimed_at` (sai do alcance da varredura de órfãos) e é o que libera a leitura pros outros; avatar não adotado só o dono lê. Trocar/remover apaga o objeto anterior do bucket, esquece a linha do índice e **despeja a cópia do edge cache** (objeto é cacheado como `immutable` por um ano — sem o despejo, foto removida continuava servindo). `avatars/` sem linha no índice **não** cai no `MEDIA_LEGACY_READS: allow`: avatar é 3 migrations mais novo que o índice, então "sem linha" ali significa apagado.
+- **`purpose` no upload** (`POST /api/media/upload-url`): `message` (default) ou `avatar`. Avatar = `image/jpeg|png|webp`, 512KB, prefixo `avatars/`. Prefixo é decidido no Worker, nunca vem do cliente. Cliente recorta quadrado de 512px (`compressAvatar`) — gif e vídeo recusados na origem, animar num frame de 40px não serve.
+- **Varreduras:** retenção pula `avatars/%` (foto de perfil não é histórico — janela de retenção zerando avatar de todo mundo seria bug, não política); órfãos continua levando avatar que ninguém adotou; **apagar conta leva a foto** (`deletePersonalUploads`, antes `deleteUnclaimedUploads`) — sem isso `removeIfUnreferenced` via `media > 0` e a linha ficava lápide pra sempre. Purge de histórico **não** mexe na foto (é escopo de conversa).
+- **Cache local da conta** (`lib/accountCache.ts` + `useSession`): cópia do `SessionUser` em localStorage, boot stale-while-revalidate — com cópia o app já monta `authenticated` e cada tela mostra o próprio skeleton; a resposta de `/api/auth/me` sobrescreve, e 401 limpa a cópia e cai no login. Não é credencial: o cookie é HttpOnly e todo request continua passando por ele; logout limpa (a próxima pessoa no device é outra). Tema mantém a cópia dele (`goodchat-theme`), porque o paint dele acontece antes do React montar e não pode depender desta.
+- **Skeletons** (`components/Skeleton.tsx`): lista de conversas, thread abrindo, boot frio, e os três pontos do console do owner (totais, contas, conversas). Cada um copia a moldura do que substitui (mesma borda, sombra e altura de linha) pra nada pular quando o dado chega. Movimento é o `skeleton` do daisyUI (varredura ambiente, permitida pelas regras) — nada entra deslizando. Um `role="status"` por tela nomeia a espera e as caixas ficam `aria-hidden`, senão o leitor de tela recita caixa vazia.
+- **Teste:** `npm run smoke:phase11` — **25 checks all green**, rerunável (devolve `alice` ao estado do seed no fim). Cobre 401/validação, nome (trim, limpar, como o peer vê), recusa de vídeo/gif/512KB+, prefixo por `purpose`, adoção (chave de outro, anexo de mensagem, chave nunca presignada), leitura (adotado por qualquer sessão, não adotado só pelo dono, sempre com sessão), `avatar_key` no payload do peer, troca apagando o objeto antigo, e o sweep de órfãos deixando avatar adotado em paz (`created_at = 0` forçado via D1). Fora do script: exceção do sweep de retenção, que só roda com `MEDIA_RETENTION_DAYS` setado. Rodei também 4, 6, 7, 8, 9, 10 — all green.
+- **Pendente:** conferência visual no Chrome (extensão não respondeu nesta sessão) — settings com a paleta única + card de perfil, upload de foto ponta a ponta no browser, e os skeletons nos dois modos.
+
+---
+
 ## Fora de escopo permanente (PRD §1.4 — não implementar nunca sem ordem)
 
 Group chats · descoberta pública · voz/vídeo RTC · apps nativos · monetização. E2EE = pós-MVP (PRD fase 4), só com pedido explícito.
@@ -325,4 +345,6 @@ Group chats · descoberta pública · voz/vídeo RTC · apps nativos · monetiza
 - **Retenção/cleanup de mídia** (PRD §5): keys já têm prefixo mensal `media/<yyyy-mm>/` pra facilitar.
 - Lista de conversas não atualiza em tempo real (poll 15s) — fase 5.
 - **Push e2e manual (fase 8):** clicar "Permitir" no prompt de notificação (automação não alcança UI do browser), mandar mensagem com a destinatária sem aba aberta → notificação real via FCM; testar "Instalar GoodChat" na omnibox; testar home-screen PWA no iOS quando houver deploy https.
+- **Conferência visual (fase 11):** settings com paleta única + card de perfil, upload de foto ponta a ponta e skeletons nos dois modos — extensão Chrome não respondeu na sessão da fase.
+- **Cache do edge em mídia de conversa:** purge/retenção apagam o objeto e a linha, mas a cópia do `caches.default` só é despejada no caminho de avatar (`forgetCachedObject`). Com `MEDIA_LEGACY_READS: allow`, uma chave `media/` sem linha ainda passa na autorização — apertar isso (ou despejar no purge) quando a legacy door for fechada.
 - Edit/delete de mensagens (schema já tem `edited_at`/`deleted_at`) · E2EE (PRD fase 4) — só com pedido explícito.
