@@ -34,8 +34,8 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/auth/login`             | no   | Session cookie from username/password  |
 | POST   | `/api/auth/temp`              | no   | Guest account (expires) + session, credentials returned once |
 | POST   | `/api/auth/logout`            | no   | Revoke session (idempotent)            |
-| GET    | `/api/auth/me`                | yes  | Current user (includes `role` and `theme`) |
-| PATCH  | `/api/settings`               | yes  | Account preferences (theme)            |
+| GET    | `/api/auth/me`                | yes  | Current user (includes `role` and the three theme fields) |
+| PATCH  | `/api/settings`               | yes  | Account preferences (`theme_mode`, `theme_light`, `theme_dark` — all three per call) |
 | GET    | `/api/users/lookup?q=`        | yes  | Prefix search by username              |
 | GET    | `/api/conversations`          | yes  | List with preview and unread count     |
 | POST   | `/api/conversations/resolve`  | yes  | Deterministic conversation id, no side effects |
@@ -287,13 +287,22 @@ fetches the manifest once and renders stickers without bubble chrome.
   with attach, emoji and sticker pickers), Settings (theme, push, session),
   Admin (owner only).
 - Theming: every color exists once as a `--palette-*` token in
-  `src/styles/palettes.css`; daisyUI themes and utilities consume tokens
-  only. No hex values anywhere else. Entrance animations are fade/slide
-  with ease-out only, no springs or overshoot. The preference resolves in
-  order account → local copy → `prefers-color-scheme`: the account value is
-  the source of truth, the local copy only exists so the first paint has no
-  flash while `/api/auth/me` is in flight, and "system" is a real state
-  (no `data-theme` attribute pinned), not an alias for light.
+  `src/styles/palettes.css`; the ten daisyUI themes in
+  `src/styles/themes.css` and the utilities consume tokens only. No hex
+  values anywhere else. Entrance animations are fade/slide with ease-out
+  only, no springs or overshoot.
+- Palettes: the preference is a mode (`light` / `dark` / null = follow the
+  OS) plus which palette each mode uses — four light, six dark, catalogued
+  in `src/lib/themes.ts` and offered by the settings screen. The header
+  button only moves the mode; each mode keeps its own palette. Ids are the
+  Portfolio terminal palettes, so a palette means the same thing in both
+  apps. It resolves in order account → local copy → catalog default: the
+  account value is the source of truth and the local copy only exists so the
+  first paint has no flash while `/api/auth/me` is in flight. "System" is a
+  real state, not an alias for light, but it can no longer mean "pin
+  nothing" — the OS says light or dark and does not know which of the four
+  light palettes was picked, so the attribute is always pinned and a
+  `matchMedia` listener repins it when the OS flips.
 - PWA: `public/sw.js` caches hashed `/assets/` (cache-first) and the app
   shell as an offline fallback, never the API. `manifest.webmanifest` plus
   pixel-art icons generated from `public/icon.svg`.
@@ -304,7 +313,7 @@ D1 (metadata):
 
 | Table                | Purpose                                             |
 | -------------------- | --------------------------------------------------- |
-| `users`              | id, unique case-insensitive username, password hash, `role`, `theme`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
+| `users`              | id, unique case-insensitive username, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
 | `conversations`      | Deterministic id, ordered pair, last_message_at     |
 | `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads) |
@@ -345,6 +354,11 @@ and bucket bytes come from `media_objects.size` — the signed Content-Length
 B2 enforced on upload, so no bucket listing is needed. The overview does
 list the bucket once, so the drift between what the index knows and what B2
 actually holds is visible rather than hidden.
+
+Both storage tiles read `spent / total`: the totals come from
+`DO_STORAGE_LIMIT_GB` and `B2_STORAGE_LIMIT_GB` (defaults 5 and 10, the free
+tiers) and are display only — nothing rejects a write when they are reached.
+Setting either to `0` drops the total and shows plain usage again.
 
 ## Security notes
 

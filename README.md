@@ -15,8 +15,9 @@ with native web push notifications, all within free tiers.
   which checks that the caller is a participant of the conversation the
   object belongs to
 - Curated retro sticker pack and an emoji picker (pt-BR, self-hosted data)
-- Settings screen: theme stored on the account, so it follows the person
-  across devices instead of living in one browser
+- Settings screen: ten color palettes (four light, six dark) plus a
+  light/dark/system mode, stored on the account so the choice follows the
+  person across devices instead of living in one browser
 - Owner console: accounts, storage per account (message bytes and bucket
   bytes), history purges, and on-demand maintenance
 - Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login
@@ -30,8 +31,9 @@ with native web push notifications, all within free tiers.
   cleanup of expired sessions, expired accounts and orphaned uploads
 - Installable PWA: service worker, offline shell, VAPID web push with
   explicit opt-in
-- Retro design system: daisyUI 5 custom themes (light and dark), JetBrains
-  Mono, hard shadows, square corners, scanline and terminal cursor motifs
+- Retro design system: ten daisyUI 5 custom themes sharing one geometry,
+  JetBrains Mono, hard shadows, square corners, scanline and terminal cursor
+  motifs
 
 ## Tech stack
 

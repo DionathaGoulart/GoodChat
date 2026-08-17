@@ -176,7 +176,9 @@ Non-secrets can live in `wrangler.jsonc` (committable):
   "TEMP_ACCOUNTS_MAX": "100",
   "TEMP_ACCOUNTS_PER_IP_HOUR": "3",
   "MEDIA_RETENTION_DAYS": "0",
-  "MEDIA_LEGACY_READS": "allow"
+  "MEDIA_LEGACY_READS": "allow",
+  "DO_STORAGE_LIMIT_GB": "5",
+  "B2_STORAGE_LIMIT_GB": "10"
 }
 ```
 
@@ -203,6 +205,11 @@ The ones that change behaviour:
   owner console once, check that `indexed_media_bytes` matches
   `bucket_bytes` in the overview, then set this to `"deny"` and redeploy —
   media reads then require conversation membership, with no exceptions.
+- `DO_STORAGE_LIMIT_GB` / `B2_STORAGE_LIMIT_GB` — the totals the owner console
+  shows next to each storage number (`1.2 gb / 10 gb`, plus the share of the
+  ceiling). Defaults are the free tiers, 5 and 10. Display only: no upload or
+  message is ever refused because of them, so raise them when the plan
+  changes. `"0"` hides the total and shows plain usage again.
 
 Then regenerate types: `npm run cf-typegen`. Note that `vars` in
 `wrangler.jsonc` do not apply to local dev; `.dev.vars` rules there. Two

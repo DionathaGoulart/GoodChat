@@ -139,7 +139,11 @@ again.
   API and protocol boundary.
 - **Styling**: colors exist once, as `--palette-*` tokens in
   `app/src/styles/palettes.css`. Components consume theme tokens only,
-  never hardcoded values.
+  never hardcoded values. A new palette touches three files that must
+  agree: the theme block in `app/src/styles/themes.css`, the catalog entry
+  in `app/src/lib/themes.ts`, and the id list in
+  `worker/src/routes/settings.ts` (the worker rejects what it does not
+  know).
 - **Motion**: entrances are fade/slide with ease-out, 180-260ms, zero
   overshoot. No springs, bounce or elastic easing on appearing elements.
 - **Protocol sync**: `app/src/lib/protocol.ts` is a manual copy of
