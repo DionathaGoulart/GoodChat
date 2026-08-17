@@ -34,7 +34,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 | 3 | Usuários + conversas (REST) | ✅ concluída |
 | 4 | Real-time core (DO + WebSocket) | ✅ concluída |
 | 5 | Frontend do chat | ✅ concluída |
-| 6 | Pipeline de mídia (B2) | ⬜ pendente |
+| 6 | Pipeline de mídia (B2) | ✅ concluída |
 | 7 | Receipts, typing, emoji, stickers | ⬜ pendente |
 | 8 | PWA + push (stretch) | ⬜ pendente |
 
@@ -220,7 +220,18 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Não fazer:** stickers (fase 7), encriptação de mídia, retenção/cleanup (registrar como pendência).
 
-**Handoff:** _(nome do bucket, formato das keys de objeto, limites escolhidos, URL de serving usada, pendência do domínio CF se houver)_
+**Handoff (concluída 2026-08-17):**
+
+- **Sem conta B2 disponível** — pipeline completo implementado contra a **API S3-compatível** do B2 (presigned PUT), com **stub fake-B2 local** pra dev/teste: `worker/scripts/media-dev-server.ts` (`npm run media:dev`, porta 9000, storage em `worker/.media-dev/` gitignorado, CORS aberto, **não** valida assinatura). `worker/.dev.vars` (gitignorado, criado) aponta pro stub; trocar pelos valores reais quando o bucket existir — receita completa passo-a-passo no `worker/.env.example` (bucket público, application key escopada, CORS rules s3_put/s3_get no bucket, endpoint S3, URL pública).
+- **Presign:** `aws4fetch` 1.0.20 (`worker/src/lib/media.ts`), SigV4 query-signed, TTL 600s, região extraída do hostname do endpoint. **Content-Type e Content-Length entram na assinatura** (`allHeaders: true` — aws4fetch os pula por default), então o próprio B2 rejeita bytes com MIME/tamanho diferentes do aprovado; verificado contra B2 real = pendência (stub não valida assinatura).
+- **`POST /api/media/upload-url`** (`worker/src/routes/media.ts`): sessão obrigatória; allowlist `image/{jpeg,png,webp,gif}` + `video/{mp4,webm}`; caps **imagem 8MB / vídeo 32MB** (headroom pra GIF; alvo pós-compressão é ~1.5MB); erros `unsupported_media_type` 415, `payload_too_large` 413, `media_not_configured` 503 (env B2 ausente). Resposta: `{key, upload_url, headers, public_url, expires_in}`.
+- **Keys:** `media/<yyyy-mm>/<uuid>.<ext>` — prefixo mensal deixa retenção/cleanup futuro trivial (`b2 rm` por prefixo); uuid = não-adivinhável (bucket público serve por capability-URL). Env novas: `B2_KEY_ID`, `B2_APPLICATION_KEY`, `B2_BUCKET_NAME`, `B2_S3_ENDPOINT`, `B2_PUBLIC_BASE_URL` (typegen atualizado; guard runtime pra prod sem secrets).
+- **Serving:** URL pública direta (`<base>/<key>`), bytes nunca passam pelo Worker (upload nem download). App usa **`VITE_MEDIA_URL`** (deve casar com `B2_PUBLIC_BASE_URL`; default = stub local) — duplicação de config registrada e documentada nos dois `.env.example`.
+- **Client (`app/src/lib/media.ts`):** imagem comprimida via `createImageBitmap`+canvas → WebP (fallback JPEG), max 2048px, qualidade decrescente até ≤1.5MB; **GIF passa direto** (canvas mataria a animação). **Vídeo: compressão no browser descartada** (MediaRecorder re-encode é lento/instável; WebCodecs = peso demais pra fase) — só validação: duração ≤60s (metadata) + ≤32MB. Upload via **XHR** (fetch ainda não expõe progresso de upload) com `onprogress` + abort.
+- **Composer:** tile `+` abre file picker; strip de status acima do campo (`processando_` → `upload: N%` + barra + cancelar); erros em micro-texto (formato/tamanho/duração/rede). Mensagem só é enviada **depois** do PUT concluir — otimista já renderiza do URL público. `useConversation` ganhou `sendMedia(msgType, mediaKey)` (refactor: `sendEvent` interno compartilhado).
+- **Render:** `MessageBubble` — imagem `max-h-64` clicável → **lightbox** `<dialog>` nativo + classes modal do daisyUI (retro-border + retro-shadow, backdrop fecha, Esc nativo); vídeo `<video controls preload="metadata">` inline. Body vazio em mídia não renderiza `<p>`. Preview `[imagem]`/`[vídeo]` na lista já existia da fase 5.
+- **Testado:** `npm run smoke:phase6` (sobe o stub in-process se a 9000 estiver livre; 13 checks — 401/415/413, shape do presign com content-length+content-type assinados, upload direto sem passar pelo Worker, PUT→GET roundtrip, entrega WS em tempo real com media_key, history pós-reconexão, `media_key_required` do DO) — **all green**. E2E no Chrome real (alice UI + bob via script `ws`): upload pela UI com compressão, imagem chega no outro lado em tempo real, resposta do bob renderiza na alice, reload mantém tudo, lightbox abre/fecha, console sem erros, light+dark ok.
+- **Decisões/pendências:** bucket real B2 + application keys **não criados** (sem conta) — só trocar `.dev.vars`/secrets quando existir; domínio Cloudflare na frente do B2 (Bandwidth Alliance) pendente junto; validação da assinatura content-length contra B2 real pendente; retenção/cleanup de mídia segue pendência (prefixo mensal já preparado); vídeo e2e no browser não exercitado (protocolo coberto pelo smoke).
 
 ---
 
@@ -267,4 +278,8 @@ Group chats · descoberta pública · voz/vídeo RTC · apps nativos · monetiza
 
 ## Pendências acumuladas
 
-_(fases anexam aqui itens adiados: retenção de mídia, domínio CF do B2, edit/delete, E2EE...)_
+- **B2 real (fase 6):** criar bucket público + application key + CORS rules (receita no `worker/.env.example`), preencher `.dev.vars`/secrets e `VITE_MEDIA_URL`; validar contra o B2 real que a assinatura de content-length/content-type rejeita bytes divergentes.
+- **Domínio Cloudflare na frente do B2** (Bandwidth Alliance, egress grátis) — fase 6 serve via URL direta até existir DNS.
+- **Retenção/cleanup de mídia** (PRD §5): keys já têm prefixo mensal `media/<yyyy-mm>/` pra facilitar.
+- Lista de conversas não atualiza em tempo real (poll 15s) — fase 5.
+- Edit/delete de mensagens (schema já tem `edited_at`/`deleted_at`) · E2EE (PRD fase 4) — só com pedido explícito.
