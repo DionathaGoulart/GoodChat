@@ -10,14 +10,17 @@
     "db:migrate": "wrangler d1 migrations apply goodchat --local",
     "db:seed": "node scripts/seed.ts",
     "user:create": "node scripts/create-user.ts",
-    "smoke:phase3": "node scripts/smoke-phase3.ts"
+    "smoke:phase3": "node scripts/smoke-phase3.ts",
+    "smoke:phase4": "node scripts/smoke-phase4.ts"
   },
   "dependencies": {
     "agents": "^0.20.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "typescript": "^7.0.2",
-    "wrangler": "^4.123.0"
+    "wrangler": "^4.123.0",
+    "ws": "^8.21.3"
   }
 }
