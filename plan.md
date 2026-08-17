@@ -1,6 +1,6 @@
 # GoodChat — Plano de Implementação por Fases
 
-Plano operacional derivado de `harness/prd.md` (fonte de verdade funcional) e `harness/styleguide.md` (fonte de verdade visual). Desenhado para execução com **contexto limpo entre fases**: cada fase é autocontida, declara exatamente o que ler ao começar, e termina gravando um handoff aqui dentro.
+Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `.harness/styleguide.md` (fonte de verdade visual). Desenhado para execução com **contexto limpo entre fases**: cada fase é autocontida, declara exatamente o que ler ao começar, e termina gravando um handoff aqui dentro.
 
 ---
 
@@ -10,7 +10,7 @@ Plano operacional derivado de `harness/prd.md` (fonte de verdade funcional) e `h
 2. Agente lê, nesta ordem: (a) este `plan.md` inteiro — em especial o **Estado global** e os **handoffs das fases anteriores**; (b) os arquivos listados em **"Ler antes"** da fase N. Nada além disso — não reler o projeto inteiro.
 3. Executa as tarefas da fase. Commits pequenos e escopados (`feat(auth): ...`).
 4. Ao concluir: roda os critérios de aceite, **atualiza o Estado global e o bloco "Handoff" da fase** (o que foi criado, decisões, desvios, pendências), e para. Usuário faz `/clear` e chama a próxima.
-5. Bloqueio/ambiguidade: checar `harness/prd.md` §10 (Open Questions) primeiro; se não coberto, perguntar ao usuário. Não inventar escopo (não-goals no PRD §1.4).
+5. Bloqueio/ambiguidade: checar `.harness/prd.md` §10 (Open Questions) primeiro; se não coberto, perguntar ao usuário. Não inventar escopo (não-goals no PRD §1.4).
 
 ### Convenções globais (valem em toda fase)
 
@@ -21,7 +21,7 @@ Plano operacional derivado de `harness/prd.md` (fonte de verdade funcional) e `h
 - Ferramentas de movimento rápido (Agents SDK, Durable Objects WS Hibernation, daisyUI 5, lib de hash compatível com Workers): **verificar docs oficiais atuais antes de usar** — não confiar só em conhecimento de treino.
 - Animações: só fade/slide com ease-out, sem spring/bounce/overshoot (styleguide §4-Motion).
 - UI: nunca hardcodar cor/espaçamento — só tokens do tema (styleguide §7).
-- Estrutura do repo: `/app` (frontend), `/worker` (backend), `/harness` (docs, nunca deployado).
+- Estrutura do repo: `/app` (frontend), `/worker` (backend), `/.harness` (docs, nunca deployado).
 
 ---
 
@@ -46,7 +46,7 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Objetivo:** monorepo funcional com `/app` e `/worker` rodando localmente, tema retro aplicado e visível.
 
-**Ler antes:** `harness/styleguide.md` (inteiro), `harness/prd.md` §11 (stack) e §4.1–4.2 (arquitetura).
+**Ler antes:** `.harness/styleguide.md` (inteiro), `.harness/prd.md` §11 (stack) e §4.1–4.2 (arquitetura).
 
 **Tarefas:**
 1. Verificar docs atuais: comando de scaffold do Cloudflare Agents SDK (`npm create cloudflare` / template `agents`), passos de install Tailwind v4 + daisyUI 5 no Vite.
@@ -78,7 +78,7 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Objetivo:** login funcional com sessão persistente em cookie seguro; criação de contas por admin.
 
-**Ler antes:** `harness/prd.md` §3.1, §4.3; handoff da fase 1.
+**Ler antes:** `.harness/prd.md` §3.1, §4.3; handoff da fase 1.
 
 **Tarefas:**
 1. Verificar lib de hash compatível com runtime Workers (Argon2id ou scrypt — ex.: WASM ou `crypto.subtle`-based). Registrar escolha no handoff.
@@ -100,7 +100,7 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Objetivo:** achar usuário por `@username` e materializar conversa determinística.
 
-**Ler antes:** `harness/prd.md` §3.2, §3.3, §4.3; handoffs 1–2.
+**Ler antes:** `.harness/prd.md` §3.2, §3.3, §4.3; handoffs 1–2.
 
 **Tarefas:**
 1. `GET /api/users/lookup?q=` — match exato/prefixo, visibilidade Opção A (todos visíveis — PRD §3.2.1 recomenda; confirmado salvo aviso contrário). Autenticado.
@@ -121,7 +121,7 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Objetivo:** duas conexões trocando mensagens em tempo real com persistência e entrega offline. Coração do produto.
 
-**Ler antes:** `harness/prd.md` §3.4, §4.1, §4.4, §4.5, §4.6; handoffs 2–3.
+**Ler antes:** `.harness/prd.md` §3.4, §4.1, §4.4, §4.5, §4.6; handoffs 2–3.
 
 **Tarefas:**
 1. Verificar docs atuais: Agents SDK vs DO puro, e **WebSocket Hibernation API** (é o padrão atual? usar se sim — custo zero idle é requisito do PRD §5).
@@ -144,7 +144,7 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Objetivo:** app usável de ponta a ponta: login → lista de conversas → thread → enviar/receber em tempo real. Tema retro desde o primeiro componente.
 
-**Ler antes:** `harness/styleguide.md` §4–§7, `harness/prd.md` §3.3, §3.7; handoffs 2–4 (shapes de API e protocolo WS).
+**Ler antes:** `.harness/styleguide.md` §4–§7, `.harness/prd.md` §3.3, §3.7; handoffs 2–4 (shapes de API e protocolo WS).
 
 **Tarefas:**
 1. Estrutura: React Router (ou estado simples), fetch client com cookie (`credentials: include`), telas Login / ConversationList / Thread.
@@ -168,7 +168,7 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Objetivo:** enviar e ver imagens (P0) e vídeos curtos (P1) nas conversas.
 
-**Ler antes:** `harness/prd.md` §3.5, §5; handoffs 4–5.
+**Ler antes:** `.harness/prd.md` §3.5, §5; handoffs 4–5.
 
 **Tarefas:**
 1. Setup B2: bucket + application keys; documentar em `.env.example`; domínio Cloudflare na frente (Bandwidth Alliance) — se conta/DNS não disponível, servir via URL B2 direta em dev e registrar pendência.
@@ -189,7 +189,7 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Objetivo:** camada de riqueza conversacional (P1s do PRD).
 
-**Ler antes:** `harness/prd.md` §3.4 (estados/typing), §3.5 (stickers), §2.2 UC4/UC7/UC8; handoffs 4–6; styleguide §4 (motifs) e §6.
+**Ler antes:** `.harness/prd.md` §3.4 (estados/typing), §3.5 (stickers), §2.2 UC4/UC7/UC8; handoffs 4–6; styleguide §4 (motifs) e §6.
 
 **Tarefas:**
 1. Emoji: picker client-side (lib leve, ex. `emoji-picker` verificar atual) no composer; emoji inline é Unicode puro — sem tratamento server.
@@ -209,7 +209,7 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Objetivo:** instalável + notificações com opt-in explícito.
 
-**Ler antes:** `harness/prd.md` §3.8, §7 fase 3; handoffs 5 e 7.
+**Ler antes:** `.harness/prd.md` §3.8, §7 fase 3; handoffs 5 e 7.
 
 **Tarefas:**
 1. Manifest + ícones (gerar no estilo retro) + service worker (cache estático mínimo, sem cache de API).
