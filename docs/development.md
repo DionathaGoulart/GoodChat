@@ -105,11 +105,15 @@ npm run smoke:phase6   # media pipeline (starts its own stub if needed)
 npm run smoke:phase7   # stickers, emoji, typing broadcast
 npm run smoke:phase8   # web push: crypto roundtrip, REST, DO trigger
 npm run smoke:phase9   # headers, CORS, login timing, settings, owner console
+npm run smoke:phase10  # guest accounts: quotas, expiry, deletion rules
 ```
 
-`smoke:phase9` needs the `good` owner account (see above) and the media stub.
-It creates and deletes its own throwaway accounts, and keeps its WebSocket
-flood inside the owner's own thread so the other suites' fixtures stay clean.
+`smoke:phase9` and `smoke:phase10` need the `good` owner account (see above)
+and the media stub. Both create and delete their own throwaway accounts, and
+phase 9 keeps its WebSocket flood inside the owner's own thread so the other
+suites' fixtures stay clean. Phase 10 talks to D1 directly to force guest
+expiry (five hours is a long wait) and to clear its own per-IP signup quota,
+so it is rerunnable.
 Run the suites against a freshly migrated database — a few of them assert on
 state that earlier runs leave behind (`rm -rf worker/.wrangler/state`, then
 migrate and seed again).

@@ -32,6 +32,7 @@ All endpoints return JSON. Errors always use the shape
 | ------ | ----------------------------- | ---- | -------------------------------------- |
 | GET    | `/api/health`                 | no   | Liveness check                         |
 | POST   | `/api/auth/login`             | no   | Session cookie from username/password  |
+| POST   | `/api/auth/temp`              | no   | Guest account (expires) + session, credentials returned once |
 | POST   | `/api/auth/logout`            | no   | Revoke session (idempotent)            |
 | GET    | `/api/auth/me`                | yes  | Current user (includes `role` and `theme`) |
 | PATCH  | `/api/settings`               | yes  | Account preferences (theme)            |
@@ -53,7 +54,7 @@ Owner console — every route additionally requires `role = 'owner'`:
 | GET    | `/api/admin/users`                       | Accounts with their storage footprint      |
 | POST   | `/api/admin/users`                       | Create an account                          |
 | PATCH  | `/api/admin/users/:id`                   | Rename, reset password, disable, set role  |
-| DELETE | `/api/admin/users/:id`                   | Delete the account and everything it owns  |
+| DELETE | `/api/admin/users/:id`                   | Delete the account and every thread it took part in |
 | POST   | `/api/admin/users/:id/purge`             | Wipe every history it takes part in        |
 | GET    | `/api/admin/conversations`               | Threads with participants and size         |
 | POST   | `/api/admin/conversations/:id/purge`     | Wipe one thread for both sides             |
@@ -88,7 +89,48 @@ is what makes the policy worth having.
   persisted only when they gain at least one hour.
 - Login rate limiting: fixed 15-minute window in D1, 5 failures per
   account and 20 per IP. Blocked attempts return 429 with `Retry-After`.
-- Account creation is CLI-only (`npm run user:create`), no public sign-up.
+- Other quotas share the same counter table, namespaced by key: guest
+  signups per IP per hour (`temp:<ip>`) and presign requests per account per
+  hour (`upload:<user id>`, 60). Both charge on success — those calls are
+  expensive when they work, not when they fail.
+- Permanent accounts are created by the owner (`npm run user:create` or the
+  console). The only public way in is a guest account, below.
+
+### Temporary (guest) accounts
+
+`POST /api/auth/temp` mints a random `temp_<9 chars>` username and a
+16-character password, stores `is_temp = 1` and
+`expires_at = now + TEMP_ACCOUNT_TTL_HOURS` (5 by default), and signs the
+browser in. The password is returned once and never recoverable. Being
+unauthenticated, the endpoint is fenced three ways: a per-IP hourly quota
+(`TEMP_ACCOUNTS_PER_IP_HOUR`), a ceiling on live guests
+(`TEMP_ACCOUNTS_MAX`), and an off switch (`TEMP_ACCOUNTS_ENABLED`, surfaced
+on `/api/health` so the login screen only offers what exists).
+
+Access ends exactly at `expires_at`: `requireSession` and `login` both join
+on it, and the session cookie is capped at the account's lifetime, so no
+cookie outlives its account. The data is torn down by the hourly sweep
+(`lib/accounts.ts`), which is where the interesting rule lives:
+
+- a conversation whose other participant is still alive is **kept**,
+  messages and media included — deleting a guest must not delete the
+  permanent account's copy of the thread. Media follows the conversation,
+  not the uploader;
+- a conversation whose other participant is already gone is **destroyed**:
+  the DO wipes its storage, the bucket objects go, the D1 row goes. Two
+  guests talking means the second one to expire takes the thread with it;
+- uploads that never became a message are always deleted; sessions and push
+  subscriptions are deleted explicitly.
+
+The `users` row is hard-deleted when nothing references it anymore.
+Otherwise it survives as a **tombstone**: same id, `deleted_at` set, and
+every credential and personal field stripped. It exists only so the
+surviving side still has a thread to open — the UI renders "conta expirada",
+`requireSession`/`login`/`lookup` refuse it, and the WebSocket route opens
+that thread read-only (`x-goodchat-readonly`), so the DO answers a send with
+`peer_unavailable` instead of storing a message nobody will ever read. A
+tombstone whose last reference disappears later is collected by the same
+sweep.
 
 The `SameSite=Strict` cookie is the reason production serves the SPA from
 the Worker: on a separate frontend origin the browser would never attach
@@ -185,11 +227,17 @@ so existing threads keep rendering) or are refused (`deny`, after running
 `POST /api/admin/media/reindex` once).
 
 Maintenance runs hourly (`triggers.crons` → `scheduled` → `lib/cleanup.ts`):
-expired sessions, stale rate-limit counters, unclaimed uploads older than
-24h, and — only when `MEDIA_RETENTION_DAYS` is set — claimed media past that
-age. Each job is bounded per run, deletes bucket objects before forgetting
-index rows (a failed delete is retried instead of leaked), and bubbles whose
-object is gone render a "mídia indisponível" placeholder.
+expired sessions, stale rate-limit counters, expired guest accounts and
+orphan tombstones, unclaimed uploads older than 24h, and — only when
+`MEDIA_RETENTION_DAYS` is set — claimed media past that age. Each job is
+bounded per run, deletes bucket objects before forgetting index rows (a
+failed delete is retried instead of leaked), and bubbles whose object is
+gone render a "mídia indisponível" placeholder.
+
+Nothing in B2 expires on its own: every deletion above is an explicit S3
+`DELETE` from the Worker. If the bucket keeps all versions (the B2 default),
+those DELETEs only write hide markers and the bytes stay billable — set a
+lifecycle rule that keeps only the last version.
 
 Local development uses a fake-B2 stub (`npm run media:dev`), so no B2
 account is required; it implements PUT, ranged GET, DELETE and ListObjectsV2.
@@ -256,10 +304,10 @@ D1 (metadata):
 
 | Table                | Purpose                                             |
 | -------------------- | --------------------------------------------------- |
-| `users`              | id, unique case-insensitive username, password hash, `role`, `theme`, `created_by`, `disabled_at` |
+| `users`              | id, unique case-insensitive username, password hash, `role`, `theme`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
 | `conversations`      | Deterministic id, ordered pair, last_message_at     |
-| `login_attempts`     | Rate-limit counters per account and per IP          |
+| `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads) |
 | `push_subscriptions` | Endpoint (PK), user, p256dh, auth                   |
 | `media_objects`      | Every presigned object: uploader, conversation, mime, size, claim timestamp |
 
@@ -284,6 +332,11 @@ console). `created_by` records who provisioned an account. Disabling is a
 soft delete: `requireSession` joins on `disabled_at IS NULL`, so every live
 session of that account dies on its next request, it disappears from user
 search, and nobody can open a thread with it.
+
+`DELETE /api/admin/users/:id` is the blunt instrument, on purpose: an owner
+asking for an account to disappear destroys every thread it took part in,
+the other participants' copies included. The guest expiry is the careful one
+and keeps those threads — see "Temporary (guest) accounts".
 
 The console reports storage from two sides, because they are two different
 systems: message payload comes from each conversation's DO (attributed to

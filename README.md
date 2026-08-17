@@ -20,10 +20,14 @@ with native web push notifications, all within free tiers.
 - Owner console: accounts, storage per account (message bytes and bucket
   bytes), history purges, and on-demand maintenance
 - Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login
-  with no timing oracle, case-insensitive usernames, no public sign-up
+  with no timing oracle, case-insensitive usernames
+- Guest accounts: a throwaway account that lives 5 hours and then deletes
+  itself with its data — while keeping the conversations whose other side is
+  a permanent account, and taking a guest-to-guest thread with the last of
+  the pair to expire
 - Hardened by default: CSP with `frame-ancestors 'none'`, CORS allowlist,
-  per-connection WebSocket rate limiting, hourly cleanup of expired
-  sessions and orphaned uploads
+  per-connection WebSocket rate limiting, per-account upload quotas, hourly
+  cleanup of expired sessions, expired accounts and orphaned uploads
 - Installable PWA: service worker, offline shell, VAPID web push with
   explicit opt-in
 - Retro design system: daisyUI 5 custom themes (light and dark), JetBrains
@@ -114,7 +118,7 @@ Worker (`cd worker`):
 | `npm run media:dev`     | Fake-B2 media store on port 9000               |
 | `npm run stickers:publish` | Publish sticker pack to the media store     |
 | `npm run vapid:generate`| Generate a VAPID key pair for web push         |
-| `npm run smoke:phase3..8` | Smoke test suites (see Testing)              |
+| `npm run smoke:phase3..10` | Smoke test suites (see Testing)             |
 | `npm run typecheck`     | TypeScript check                               |
 | `npm run deploy:full`   | Build the app and deploy the Worker            |
 
@@ -139,6 +143,7 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase7`  | Stickers, emoji persistence, typing broadcast              |
 | `smoke:phase8`  | Web push: aes128gcm roundtrip with decrypt, REST, trigger  |
 | `smoke:phase9`  | Security headers, CORS, login timing, settings, owner console |
+| `smoke:phase10` | Guest accounts: quotas, expiry, deletion keeping the peer's history |
 
 ## Documentation
 

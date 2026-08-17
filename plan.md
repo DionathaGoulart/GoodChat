@@ -37,6 +37,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 | 6 | Pipeline de mídia (B2) | ✅ concluída |
 | 7 | Receipts, typing, emoji, stickers | ✅ concluída |
 | 8 | PWA + push (stretch) | ✅ concluída |
+| 10 | Contas temporárias (convidados) | ✅ concluída |
 
 MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definition of Done completa: `inicial.md` §2.4 espelhada nos critérios das fases.
 
@@ -292,6 +293,24 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 - **E2E Chrome real:** SW `activated`, manifest servido, botão ok nos dois temas, console limpo, clique dispara o prompt de permissão. **Prompt é UI do browser — a automação não alcança**; e2e completo da notificação = 1 clique manual em "Permitir" e mandar mensagem com a aba fechada (o wrangler dev alcança o FCM real de localhost). Fica como verificação manual pendente.
 - **Suporte por browser (task 3):** Chrome/Edge/Firefox/Opera/Samsung Internet — push com payload ok. Safari macOS 13+ (Safari 16+) — ok. **iOS 16.4+: só PWA instalada na home screen** (Compartilhar → Adicionar à Tela de Início); em aba normal não existe PushManager → nosso botão some sozinho. iOS/Safari 18.4+ tem Declarative Web Push — não usado (SW imperativo funciona nos dois). **UE/iOS: Apple removeu PWA standalone (DMA) → sem push.**
 - **Critério "Lighthouse PWA pass" ajustado:** Google removeu a categoria PWA do Lighthouse (out/2025). Substituto verificado: manifest válido + SW ativo (e2e acima); install real = botão "Instalar GoodChat" na omnibox do Chrome (manual, junto do teste de notificação).
+
+---
+
+## Fase 10 — Contas temporárias (convidados)
+
+**Objetivo:** uma porta pública numa instância fechada, sem deixar lixo: conta que dura 5h e se apaga, levando só o que é dela.
+
+**Handoff (concluída 2026-08-17):**
+
+- **Migration `0004_temp_accounts.sql`:** `users` ganha `is_temp`, `expires_at`, `deleted_at` (+ índices parciais). Regra central: apagar conta **não pode** ser `DELETE FROM users` — `conversations` tem FK pra `users` e a lista de conversas dá JOIN no peer pra nomear a thread. Conta apagada vira **lápide**: mesma linha, `deleted_at` setado, username reescrito pra `deleted_<12 hex do id>` (libera o handle), credenciais e campos pessoais zerados. A linha só morre de vez quando nada mais aponta pra ela (nenhuma conversa, nenhum objeto de mídia).
+- **Criação (`POST /api/auth/temp`, `lib/accounts.ts`):** username `temp_<9 chars>` + senha de 16 chars, alfabeto sem `0/O/1/l/i` e com rejection sampling (módulo puro enviesaria as primeiras letras). Senha volta **uma vez** no corpo e some. Sessão nasce com `expires_at = min(7d, expiry da conta)` — cookie nunca sobrevive à conta.
+- **Cercas (endpoint é anônimo):** quota por IP/hora (`temp:<ip>`), teto de convidados vivos, e chave liga/desliga (`TEMP_ACCOUNTS_*` em `wrangler.jsonc`). O flag sai em `/api/health` — a tela de login só oferece o botão quando existe. Aproveitei pra fechar o buraco vizinho: `POST /api/media/upload-url` agora tem quota por conta (60/h). Ambas usam `consumeQuota` (mesma tabela `login_attempts`, chaves namespaced, upsert + `RETURNING` numa statement só — duas idas ao D1 deixariam dois requests concorrentes passarem).
+- **Expiração:** acesso morre **no minuto exato** (`requireSession` e `login` filtram por `expires_at`), dado morre no cron da hora seguinte. Fazer alarm por conta só pra antecipar a faxina não valia a peça a mais.
+- **Regra de exclusão (o coração da fase):** conversa com peer vivo é **mantida** (mensagens e mídia — mídia segue a conversa, não quem subiu); conversa cujo peer já é lápide é **destruída** (DO faz `deleteAll`, objetos do B2 vão, linha do D1 vai). Dois convidados conversando: o último a expirar leva a thread junto. Upload nunca reivindicado, sessões e push subscriptions sempre vão (cascade não dispara em lápide, então é DELETE explícito).
+- **Thread órfã fica read-only:** `routes/ws.ts` deixa abrir socket com peer-lápide se a conversa existir e manda `x-goodchat-readonly`; o DO responde `peer_unavailable` no send em vez de gravar mensagem que ninguém vai ler. `resolve` devolve `readonly`, `lookup` esconde lápide, UI mostra "conta expirada" e troca o Composer por um aviso.
+- **Refactor de tabela:** `purgeConversationHistory` saiu de `routes/admin.ts` pra `lib/purge.ts`, com `destroyConversation` novo. `DELETE /api/admin/users/:id` passou a usar destroy (antes deixava o DO com storage órfão) e segue sendo o **instrumento cego** de propósito: apaga o histórico do outro lado junto. A expiração de convidado é o cuidadoso.
+- **Teste:** `npm run smoke:phase10` — **28 checks all green**, rerunável (limpa a própria quota e força expiry via D1, esperar 5h não é teste). Cobre quota por IP, sessão morrendo no relógio, thread com conta permanente sobrevivendo com mídia legível, read-only, e o par de convidados levando a thread.
+- **B2 (resposta a uma pergunta que ficou no ar):** B2 não apaga nada sozinho — quem apaga é o cron e os purges. E se o bucket estiver em "keep all versions" (padrão), o DELETE via S3 só cria hide marker e os bytes continuam sendo cobrados. Documentado no passo 5 do `docs/deployment.md`: lifecycle rule "keep only the last version" é o que torna a exclusão real.
 
 ---
 

@@ -83,12 +83,46 @@ Full recipe also in `worker/.env.example`. Summary:
 2. Scoped application key:
    `b2 key create --bucket goodchat-media goodchat-worker listBuckets,readFiles,writeFiles`
    (keyID and applicationKey are shown once, save them)
-3. CORS on the bucket (web UI, Bucket Settings, CORS Rules): all origins,
-   S3 operation `s3_put`, header `content-type`. Browser uploads fail
-   without this; reads need no rule, they never leave the Worker.
+3. CORS on the bucket. Uploads go browser → B2 directly, so B2 itself has
+   to answer the preflight; reads need no rule, they never leave the
+   Worker. The web UI preset "share with all origins" only covers
+   downloads — the rule must name the S3 operation `s3_put` explicitly:
+   ```bash
+   b2 bucket update goodchat-media allPrivate --cors-rules '[
+     {
+       "corsRuleName": "s3UploadFromThisOneOrigin",
+       "allowedOrigins": ["https://goodchat.dionatha.com.br"],
+       "allowedOperations": ["s3_put"],
+       "allowedHeaders": ["*"],
+       "exposeHeaders": ["etag"],
+       "maxAgeSeconds": 3600
+     }
+   ]'
+   ```
+   `--cors-rules` replaces the whole set, so read the current rules first
+   (`b2 bucket get goodchat-media`) and resend them alongside the new one.
+   Needs a key with `writeBuckets` — the scoped worker key from step 2 does
+   not have it, so authorize with the master key (the CLI caches one
+   account at a time in `~/.b2_account_info`; back it up if another B2
+   account is already authorized). Check the result end to end:
+   ```bash
+   curl -i -X OPTIONS "$B2_S3_ENDPOINT/goodchat-media/media/probe" \
+     -H "Origin: https://goodchat.dionatha.com.br" \
+     -H "Access-Control-Request-Method: PUT" \
+     -H "Access-Control-Request-Headers: content-type"
+   ```
+   A 200 with `access-control-allow-methods: PUT` means uploads work; a
+   200 without those headers is the failure this step fixes.
 4. Note the S3 endpoint shown in the bucket UI, e.g.
    `https://s3.us-west-004.backblazeb2.com`
-5. Publish the sticker pack (the real bucket only accepts signed PUTs, so
+5. Lifecycle rule (web UI, Bucket Settings, Lifecycle Settings): **keep only
+   the last version**. B2 buckets default to keeping every version, and an
+   S3 `DELETE` against such a bucket only writes a hide marker — every
+   deletion the Worker performs (history purges, guest expiry, the orphan
+   and retention sweeps) would keep billing for the bytes it thinks it
+   freed. B2 itself never deletes anything on its own; this rule is what
+   makes deletion real.
+6. Publish the sticker pack (the real bucket only accepts signed PUTs, so
    pass the credentials and the publisher signs them):
    ```bash
    cd worker
@@ -137,16 +171,27 @@ Non-secrets can live in `wrangler.jsonc` (committable):
   "VAPID_PUBLIC_KEY": "<public key from step 3>",
   "VAPID_SUBJECT": "mailto:you@example.com",
   "ALLOWED_ORIGINS": "",
+  "TEMP_ACCOUNTS_ENABLED": "true",
+  "TEMP_ACCOUNT_TTL_HOURS": "5",
+  "TEMP_ACCOUNTS_MAX": "100",
+  "TEMP_ACCOUNTS_PER_IP_HOUR": "3",
   "MEDIA_RETENTION_DAYS": "0",
   "MEDIA_LEGACY_READS": "allow"
 }
 ```
 
-The last three:
+The ones that change behaviour:
 
 - `ALLOWED_ORIGINS` — extra browser origins allowed to call the API with
   credentials, comma-separated. Empty in production: the SPA is same-origin.
   The Worker's own origin is always allowed; anything else is refused.
+- `TEMP_ACCOUNTS_*` — guest accounts (`POST /api/auth/temp`). `ENABLED` is
+  the off switch: `"false"` closes the instance back to invite-only and the
+  login screen stops offering the button (it reads the flag from
+  `/api/health`). `TTL_HOURS` is how long a guest lives before it and its
+  data are deleted. `MAX` caps how many can be alive at once and
+  `PER_IP_HOUR` how many one address may create per hour — the endpoint is
+  unauthenticated, so both are load-bearing, not decoration.
 - `MEDIA_RETENTION_DAYS` — the hourly sweep deletes claimed media older than
   this. `"0"` keeps everything forever, which is the default because
   deleting someone's photos on a timer is a product decision. Bubbles whose
@@ -167,9 +212,11 @@ separate worlds by design.
 
 `wrangler.jsonc` declares `triggers.crons: ["17 * * * *"]`; `wrangler deploy`
 registers it. The hourly run clears expired sessions and stale rate-limit
-counters, deletes uploads no message ever referenced (24h grace), and applies
-media retention when it is enabled. The owner console can trigger the same
-work on demand.
+counters, tears down guest accounts past their expiry (keeping the threads
+whose other side is a permanent account), collects tombstones nothing
+references anymore, deletes uploads no message ever referenced (24h grace),
+and applies media retention when it is enabled. The owner console can
+trigger the same work on demand.
 
 ## 5. Build and deploy
 
@@ -189,6 +236,8 @@ On the production URL, in order:
 - [ ] `GET /api/health` returns `{"ok":true}`
 - [ ] SPA loads at the root, retro theme correct in light and dark
 - [ ] Login works with the user created in step 1
+- [ ] Guest button appears (when `TEMP_ACCOUNTS_ENABLED` is on), creates an
+      account, shows the credentials once and signs in with a countdown
 - [ ] Two browsers chat in real time (`wss://` WebSocket)
 - [ ] Refresh keeps session and history; offline messages arrive on reconnect
 - [ ] Image upload: appears on the other side, survives reload, lightbox opens
@@ -252,13 +301,11 @@ host to the browser.
 
 Pending items, none blocking a first deploy beyond the setup above:
 
-1. Media retention/cleanup is not implemented; keys are month-prefixed
-   (`media/<yyyy-mm>/`) to make a future cleanup job trivial.
-2. `GET /api/media/<key>` authorises on "valid session", not on
-   conversation membership — messages live inside each Durable Object, so
-   the check would cost a DO round trip per image. Keys carry a uuid and
-   the bucket is private, so guessing or crawling is not viable.
-3. The conversation list refreshes by polling (15s, visible tabs only),
+1. The conversation list refreshes by polling (15s, visible tabs only),
    not in real time.
-4. Rate limiting exists on login only; other endpoints rely on sessions.
-5. Message edit/delete, group chats and E2EE are out of scope by design.
+2. Guest accounts are swept hourly, so their data can outlive the account by
+   up to an hour. Access does not: the session and login checks read
+   `expires_at` directly, so the account is unusable the moment it expires.
+3. Rate limiting covers login, guest signup, upload presigns and the
+   WebSocket. The remaining read endpoints rely on the session alone.
+4. Message edit/delete, group chats and E2EE are out of scope by design.
