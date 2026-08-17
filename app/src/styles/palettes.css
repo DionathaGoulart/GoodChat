@@ -2,20 +2,67 @@
  * GoodChat raw palette — single source of every color in the app.
  * Rule (inherited from Portfolio): a color exists exactly once, as a
  * --palette-* token here. No hex values anywhere else in the codebase.
- * Origin: harness/styleguide.md §2.1 (retro-hub pair).
+ * Origin: harness/styleguide.md §2.1 (retro-hub pair); the eight extra
+ * families come from the Portfolio terminal skin, so both projects draw
+ * from the same catalog and a palette can never drift between them.
  */
 :root {
   /* Neutrals */
   --palette-cream: #f2efe7; /* light page background (base-100) */
   --palette-white: #ffffff; /* light raised surface / content over accent */
+  --palette-black: #000000; /* matrix page background */
   --palette-ink: #1a0a0a; /* light text + borders */
   --palette-noir: #121212; /* dark page background (base-100) */
   --palette-noir-raised: #1a1a1a; /* dark raised surface (base-200) */
   --palette-near-black: #0d0d0d; /* text over soft status colors (dark) */
+  --palette-graphite: #111111; /* gold page background */
+  --palette-silver: #e0e0e0; /* gold text */
 
   /* Accents */
-  --palette-crimson: #dc143c; /* accent/primary — light theme */
-  --palette-rose: #e8729a; /* accent/primary — dark theme */
+  --palette-crimson: #dc143c; /* accent/primary — light default */
+  --palette-rose: #e8729a; /* accent/primary — dark default */
+  --palette-ember: #ff6b45;
+  --palette-gold: #c8a96e;
+
+  /* Frost / abyss family */
+  --palette-frost-bg: #e4f0f6;
+  --palette-frost-ink: #0f172a;
+  --palette-abyss: #0a0f1e;
+
+  /* Forest family */
+  --palette-forest-bg: #eef4ee;
+  --palette-forest-bg-raised: #f5faf5;
+  --palette-forest-ink: #1a2e1a;
+  --palette-forest-green: #2d6a2d;
+
+  /* Sand family */
+  --palette-sand-bg: #f5f0e8;
+  --palette-sand-bg-raised: #fffcf5;
+  --palette-sand-ink: #2a1a0a;
+  --palette-copper: #b56a30;
+
+  /* Midnight / mint family (ember) */
+  --palette-midnight: #0d1117;
+  --palette-midnight-raised: #121a12;
+  --palette-mint: #e0ffe0;
+
+  /* Cyan family */
+  --palette-cyan-bg: #0a0f14;
+  --palette-cyan-bg-raised: #0f1820;
+  --palette-cyan: #00e5ff;
+  --palette-cyan-mist: #e0f4ff;
+
+  /* Violet family */
+  --palette-violet-bg: #0e0a14;
+  --palette-violet-bg-raised: #160f20;
+  --palette-violet: #b47aff;
+  --palette-violet-mist: #ede0ff;
+
+  /* Matrix family */
+  --palette-matrix-bg-raised: #0a140a;
+  --palette-matrix-green: #00ff66;
+  --palette-matrix-mist: #d7ffd7;
+  --palette-matrix-ink: #001a08;
 
   /* Status — full strength (light themes) */
   --palette-info: #2563eb;

@@ -7,7 +7,8 @@ import type { ReactNode } from 'react'
 import * as api from '../lib/api'
 import type { SessionUser } from '../lib/api'
 import { disablePush } from '../lib/push'
-import { applyTheme, type ThemePreference } from './useTheme'
+import { darkPaletteOr, lightPaletteOr } from '../lib/themes'
+import { applyThemePrefs, type ThemePrefs } from './useTheme'
 
 type SessionStatus = 'loading' | 'anonymous' | 'authenticated'
 
@@ -25,8 +26,17 @@ interface SessionContextValue {
   guestCredentials: { username: string; password: string } | null
   forgetGuestCredentials: () => void
   logout: () => Promise<void>
-  /** Persists the theme on the account; the DOM is updated immediately. */
-  setTheme: (preference: ThemePreference) => Promise<void>
+  /** Persists mode + palettes on the account; the DOM is updated immediately. */
+  setTheme: (prefs: ThemePrefs) => Promise<void>
+}
+
+/** The account row, as the theme module wants it. */
+function prefsOf(user: SessionUser): ThemePrefs {
+  return {
+    mode: user.theme_mode,
+    light: lightPaletteOr(user.theme_light),
+    dark: darkPaletteOr(user.theme_dark),
+  }
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null)
@@ -43,7 +53,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // boot-time local copy pinned, including unpinning it back to "system".
   const adopt = useCallback((next: SessionUser) => {
     setUser(next)
-    applyTheme(next.theme)
+    applyThemePrefs(prefsOf(next))
   }, [])
 
   useEffect(() => {
@@ -96,12 +106,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const setTheme = useCallback(async (preference: ThemePreference) => {
+  const setTheme = useCallback(async (prefs: ThemePrefs) => {
     // Optimistic: the switch has to feel instant, and a failed write only
     // costs the cross-device sync, which the next successful one repairs.
-    applyTheme(preference)
-    setUser((current) => (current ? { ...current, theme: preference } : current))
-    await api.updateSettings(preference)
+    applyThemePrefs(prefs)
+    setUser((current) =>
+      current
+        ? {
+            ...current,
+            theme_mode: prefs.mode,
+            theme_light: prefs.light,
+            theme_dark: prefs.dark,
+          }
+        : current,
+    )
+    await api.updateSettings(prefs)
   }, [])
 
   const value = useMemo(

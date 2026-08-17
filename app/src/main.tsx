@@ -2,9 +2,9 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import { applyStoredTheme } from './hooks/useTheme.ts'
+import { bootTheme } from './hooks/useTheme.ts'
 
-applyStoredTheme()
+bootTheme()
 
 // Service worker: static-asset cache + Web Push display (phase 8). Registered
 // in dev too — push and install flows are exercised against localhost.

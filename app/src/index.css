@@ -5,6 +5,7 @@
  */
 @import "tailwindcss";
 @import "./styles/palettes.css";
+@import "./styles/themes.css";
 
 /* JetBrains Mono — the single type family for everything (styleguide §3) */
 @import "@fontsource/jetbrains-mono/400.css";
@@ -17,88 +18,8 @@
 @import "@fontsource/jetbrains-mono/800-italic.css";
 
 @plugin "daisyui" {
-  themes: false; /* only the custom themes below */
+  themes: false; /* only the custom themes in styles/themes.css */
   logs: false;
-}
-
-@plugin "daisyui/theme" {
-  name: "goodchat-light";
-  default: true;
-  color-scheme: light;
-
-  --color-base-100: var(--palette-cream);
-  --color-base-200: var(--palette-white);
-  --color-base-300: var(--palette-ink);
-  --color-base-content: var(--palette-ink);
-  --color-primary: var(--palette-crimson);
-  --color-primary-content: var(--palette-white);
-  --color-secondary: var(--palette-ink);
-  --color-secondary-content: var(--palette-white);
-  --color-accent: var(--palette-crimson);
-  --color-accent-content: var(--palette-white);
-  --color-neutral: var(--palette-ink);
-  --color-neutral-content: var(--palette-white);
-  --color-info: var(--palette-info);
-  --color-info-content: var(--palette-white);
-  --color-success: var(--palette-success);
-  --color-success-content: var(--palette-white);
-  --color-warning: var(--palette-warning);
-  --color-warning-content: var(--palette-white);
-  --color-error: var(--palette-error);
-  --color-error-content: var(--palette-white);
-
-  --radius-selector: 0rem;
-  --radius-field: 0rem;
-  --radius-box: 0rem;
-  --size-selector: 0.25rem;
-  --size-field: 0.25rem;
-  --border: 2px;
-  --depth: 0;
-  --noise: 0;
-
-  /* GoodChat extras (consumed by retro-* utilities) */
-  --shadow: var(--palette-ink);
-  --scanline-color: var(--palette-scanline-light);
-  --frame-border: 2px;
-}
-
-@plugin "daisyui/theme" {
-  name: "goodchat-dark";
-  prefersdark: true;
-  color-scheme: dark;
-
-  --color-base-100: var(--palette-noir);
-  --color-base-200: var(--palette-noir-raised);
-  --color-base-300: var(--palette-cream);
-  --color-base-content: var(--palette-cream);
-  --color-primary: var(--palette-rose);
-  --color-primary-content: var(--palette-white);
-  --color-secondary: var(--palette-cream);
-  --color-secondary-content: var(--palette-noir);
-  --color-accent: var(--palette-rose);
-  --color-accent-content: var(--palette-white);
-  --color-neutral: var(--palette-cream);
-  --color-neutral-content: var(--palette-noir);
-  --color-info: var(--palette-info-soft);
-  --color-info-content: var(--palette-near-black);
-  --color-success: var(--palette-success-soft);
-  --color-success-content: var(--palette-near-black);
-  --color-warning: var(--palette-warning-soft);
-  --color-warning-content: var(--palette-near-black);
-  --color-error: var(--palette-error-soft);
-  --color-error-content: var(--palette-near-black);
-
-  --radius-selector: 0rem;
-  --radius-field: 0rem;
-  --radius-box: 0rem;
-  --size-selector: 0.25rem;
-  --size-field: 0.25rem;
-  --border: 2px;
-  --depth: 0;
-  --noise: 0;
-
-  --shadow: var(--palette-rose);
-  --scanline-color: var(--palette-scanline-dark);
 }
 
 @theme {

@@ -1,0 +1,408 @@
+/*
+ * Theme catalog — every palette the settings screen offers, assembled from the
+ * variables in palettes.css. Ten themes: four light, six dark.
+ *
+ * They are the Portfolio terminal palettes wearing GoodChat's geometry: the
+ * colors are copied verbatim so a palette means the same thing in both apps,
+ * while `--border: 2px` (Portfolio's terminal skin uses 1px) keeps the chunky
+ * neobrutalist frame that is GoodChat's own look. Only color changes between
+ * themes; nothing else does.
+ *
+ * `goodchat-crimson` and `goodchat-rose` are the pair the app shipped with
+ * (formerly `goodchat-light` / `goodchat-dark`) — byte-for-byte the same
+ * tokens, so nobody's screen changes on upgrade.
+ *
+ * goodchat-crimson is declared first and marked default, so it also lands on
+ * `:root`. Every other theme must come after it — `:root` and `[data-theme=…]`
+ * have equal specificity, so source order is what lets the others win. That
+ * same cascade is why `--frame-border`, which every theme agrees on, is
+ * declared once here and inherited by the other nine.
+ *
+ * The id of each theme is what an account stores (users.theme_light /
+ * users.theme_dark) and what the worker validates against — see
+ * app/src/lib/themes.ts and worker/src/routes/settings.ts.
+ */
+
+@plugin "daisyui/theme" {
+  name: "goodchat-crimson";
+  default: true;
+  color-scheme: light;
+
+  --color-base-100: var(--palette-cream);
+  --color-base-200: var(--palette-white);
+  --color-base-300: var(--palette-ink);
+  --color-base-content: var(--palette-ink);
+  --color-primary: var(--palette-crimson);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-ink);
+  --color-secondary-content: var(--palette-white);
+  --color-accent: var(--palette-crimson);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-ink);
+  --color-neutral-content: var(--palette-white);
+  --color-info: var(--palette-info);
+  --color-info-content: var(--palette-white);
+  --color-success: var(--palette-success);
+  --color-success-content: var(--palette-white);
+  --color-warning: var(--palette-warning);
+  --color-warning-content: var(--palette-white);
+  --color-error: var(--palette-error);
+  --color-error-content: var(--palette-white);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  /* GoodChat extras (consumed by retro-* utilities) */
+  --shadow: var(--palette-ink);
+  --scanline-color: var(--palette-scanline-light);
+  --frame-border: 2px;
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-rose";
+  prefersdark: true;
+  color-scheme: dark;
+
+  --color-base-100: var(--palette-noir);
+  --color-base-200: var(--palette-noir-raised);
+  --color-base-300: var(--palette-cream);
+  --color-base-content: var(--palette-cream);
+  --color-primary: var(--palette-rose);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-cream);
+  --color-secondary-content: var(--palette-noir);
+  --color-accent: var(--palette-rose);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-cream);
+  --color-neutral-content: var(--palette-noir);
+  --color-info: var(--palette-info-soft);
+  --color-info-content: var(--palette-near-black);
+  --color-success: var(--palette-success-soft);
+  --color-success-content: var(--palette-near-black);
+  --color-warning: var(--palette-warning-soft);
+  --color-warning-content: var(--palette-near-black);
+  --color-error: var(--palette-error-soft);
+  --color-error-content: var(--palette-near-black);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-rose);
+  --scanline-color: var(--palette-scanline-dark);
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-frost";
+  color-scheme: light;
+
+  --color-base-100: var(--palette-frost-bg);
+  --color-base-200: var(--palette-frost-bg);
+  --color-base-300: var(--palette-frost-ink);
+  --color-base-content: var(--palette-frost-ink);
+  --color-primary: var(--palette-abyss);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-frost-ink);
+  --color-secondary-content: var(--palette-frost-bg);
+  --color-accent: var(--palette-abyss);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-frost-ink);
+  --color-neutral-content: var(--palette-frost-bg);
+  --color-info: var(--palette-info);
+  --color-info-content: var(--palette-white);
+  --color-success: var(--palette-success);
+  --color-success-content: var(--palette-white);
+  --color-warning: var(--palette-warning);
+  --color-warning-content: var(--palette-white);
+  --color-error: var(--palette-error);
+  --color-error-content: var(--palette-white);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-abyss);
+  --scanline-color: var(--palette-scanline-light);
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-forest";
+  color-scheme: light;
+
+  --color-base-100: var(--palette-forest-bg);
+  --color-base-200: var(--palette-forest-bg-raised);
+  --color-base-300: var(--palette-forest-ink);
+  --color-base-content: var(--palette-forest-ink);
+  --color-primary: var(--palette-forest-green);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-forest-ink);
+  --color-secondary-content: var(--palette-forest-bg);
+  --color-accent: var(--palette-forest-green);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-forest-ink);
+  --color-neutral-content: var(--palette-forest-bg);
+  --color-info: var(--palette-info);
+  --color-info-content: var(--palette-white);
+  --color-success: var(--palette-success);
+  --color-success-content: var(--palette-white);
+  --color-warning: var(--palette-warning);
+  --color-warning-content: var(--palette-white);
+  --color-error: var(--palette-error);
+  --color-error-content: var(--palette-white);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-forest-green);
+  --scanline-color: var(--palette-scanline-light);
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-sand";
+  color-scheme: light;
+
+  --color-base-100: var(--palette-sand-bg);
+  --color-base-200: var(--palette-sand-bg-raised);
+  --color-base-300: var(--palette-sand-ink);
+  --color-base-content: var(--palette-sand-ink);
+  --color-primary: var(--palette-copper);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-sand-ink);
+  --color-secondary-content: var(--palette-sand-bg);
+  --color-accent: var(--palette-copper);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-sand-ink);
+  --color-neutral-content: var(--palette-sand-bg);
+  --color-info: var(--palette-info);
+  --color-info-content: var(--palette-white);
+  --color-success: var(--palette-success);
+  --color-success-content: var(--palette-white);
+  --color-warning: var(--palette-warning);
+  --color-warning-content: var(--palette-white);
+  --color-error: var(--palette-error);
+  --color-error-content: var(--palette-white);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-copper);
+  --scanline-color: var(--palette-scanline-light);
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-gold";
+  color-scheme: dark;
+
+  --color-base-100: var(--palette-graphite);
+  --color-base-200: var(--palette-graphite);
+  --color-base-300: var(--palette-gold);
+  --color-base-content: var(--palette-silver);
+  --color-primary: var(--palette-gold);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-silver);
+  --color-secondary-content: var(--palette-graphite);
+  --color-accent: var(--palette-gold);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-silver);
+  --color-neutral-content: var(--palette-graphite);
+  --color-info: var(--palette-info-soft);
+  --color-info-content: var(--palette-near-black);
+  --color-success: var(--palette-success-soft);
+  --color-success-content: var(--palette-near-black);
+  --color-warning: var(--palette-warning-soft);
+  --color-warning-content: var(--palette-near-black);
+  --color-error: var(--palette-error-soft);
+  --color-error-content: var(--palette-near-black);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-gold);
+  --scanline-color: var(--palette-scanline-dark);
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-ember";
+  color-scheme: dark;
+
+  --color-base-100: var(--palette-midnight);
+  --color-base-200: var(--palette-midnight-raised);
+  --color-base-300: var(--palette-ember);
+  --color-base-content: var(--palette-mint);
+  --color-primary: var(--palette-ember);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-mint);
+  --color-secondary-content: var(--palette-midnight);
+  --color-accent: var(--palette-ember);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-mint);
+  --color-neutral-content: var(--palette-midnight);
+  --color-info: var(--palette-info-soft);
+  --color-info-content: var(--palette-near-black);
+  --color-success: var(--palette-success-soft);
+  --color-success-content: var(--palette-near-black);
+  --color-warning: var(--palette-warning-soft);
+  --color-warning-content: var(--palette-near-black);
+  --color-error: var(--palette-error-soft);
+  --color-error-content: var(--palette-near-black);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-ember);
+  --scanline-color: var(--palette-scanline-dark);
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-cyan";
+  color-scheme: dark;
+
+  --color-base-100: var(--palette-cyan-bg);
+  --color-base-200: var(--palette-cyan-bg-raised);
+  --color-base-300: var(--palette-cyan);
+  --color-base-content: var(--palette-cyan-mist);
+  --color-primary: var(--palette-cyan);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-cyan-mist);
+  --color-secondary-content: var(--palette-cyan-bg);
+  --color-accent: var(--palette-cyan);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-cyan-mist);
+  --color-neutral-content: var(--palette-cyan-bg);
+  --color-info: var(--palette-info-soft);
+  --color-info-content: var(--palette-near-black);
+  --color-success: var(--palette-success-soft);
+  --color-success-content: var(--palette-near-black);
+  --color-warning: var(--palette-warning-soft);
+  --color-warning-content: var(--palette-near-black);
+  --color-error: var(--palette-error-soft);
+  --color-error-content: var(--palette-near-black);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-cyan);
+  --scanline-color: var(--palette-scanline-dark);
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-violet";
+  color-scheme: dark;
+
+  --color-base-100: var(--palette-violet-bg);
+  --color-base-200: var(--palette-violet-bg-raised);
+  --color-base-300: var(--palette-violet);
+  --color-base-content: var(--palette-violet-mist);
+  --color-primary: var(--palette-violet);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-violet-mist);
+  --color-secondary-content: var(--palette-violet-bg);
+  --color-accent: var(--palette-violet);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-violet-mist);
+  --color-neutral-content: var(--palette-violet-bg);
+  --color-info: var(--palette-info-soft);
+  --color-info-content: var(--palette-near-black);
+  --color-success: var(--palette-success-soft);
+  --color-success-content: var(--palette-near-black);
+  --color-warning: var(--palette-warning-soft);
+  --color-warning-content: var(--palette-near-black);
+  --color-error: var(--palette-error-soft);
+  --color-error-content: var(--palette-near-black);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-violet);
+  --scanline-color: var(--palette-scanline-dark);
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-matrix";
+  color-scheme: dark;
+
+  --color-base-100: var(--palette-black);
+  --color-base-200: var(--palette-matrix-bg-raised);
+  --color-base-300: var(--palette-matrix-green);
+  --color-base-content: var(--palette-matrix-mist);
+  --color-primary: var(--palette-matrix-green);
+  --color-primary-content: var(--palette-matrix-ink);
+  --color-secondary: var(--palette-matrix-mist);
+  --color-secondary-content: var(--palette-black);
+  --color-accent: var(--palette-matrix-green);
+  --color-accent-content: var(--palette-matrix-ink);
+  --color-neutral: var(--palette-matrix-mist);
+  --color-neutral-content: var(--palette-black);
+  --color-info: var(--palette-info-soft);
+  --color-info-content: var(--palette-near-black);
+  --color-success: var(--palette-success-soft);
+  --color-success-content: var(--palette-near-black);
+  --color-warning: var(--palette-warning-soft);
+  --color-warning-content: var(--palette-near-black);
+  --color-error: var(--palette-error-soft);
+  --color-error-content: var(--palette-near-black);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-matrix-green);
+  --scanline-color: var(--palette-scanline-dark);
+}

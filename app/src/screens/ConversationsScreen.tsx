@@ -17,16 +17,17 @@ const POLL_MS = 15_000
 
 export function ConversationsScreen() {
   const { user, setTheme } = useSession()
-  const { theme, toggle } = useTheme()
+  const { mode, toggleMode } = useTheme()
   const [conversations, setConversations] = useState<ConversationListItem[] | null>(null)
   const [failed, setFailed] = useState(false)
 
   // The header toggle is a shortcut for the setting: flip locally for an
-  // instant response, then persist it to the account. A failed write is not
+  // instant response, then persist it to the account. It only moves the mode —
+  // each mode keeps whichever palette was chosen for it. A failed write is not
   // worth an error banner here — the settings screen owns that feedback.
   const flipTheme = useCallback(() => {
-    void setTheme(toggle())
-  }, [setTheme, toggle])
+    void setTheme(toggleMode())
+  }, [setTheme, toggleMode])
 
   const refresh = useCallback(() => {
     listConversations()
@@ -72,9 +73,9 @@ export function ConversationsScreen() {
           <RetroIconButton
             onClick={flipTheme}
             aria-label="alternar tema"
-            title={theme === 'goodchat-light' ? 'modo escuro' : 'modo claro'}
+            title={mode === 'light' ? 'modo escuro' : 'modo claro'}
           >
-            {theme === 'goodchat-light' ? 'dark' : 'light'}
+            {mode === 'light' ? 'dark' : 'light'}
           </RetroIconButton>
           <RetroIconButton
             onClick={() => navigate({ name: 'settings' })}

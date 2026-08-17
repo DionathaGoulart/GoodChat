@@ -2,6 +2,10 @@
 // handoffs). Cookie-based session: every call rides `credentials: include`.
 
 import type { WireMessage } from './protocol'
+import type { Mode } from './themes'
+
+/** Wire alias for the theme mode; the palette catalog owns the definition. */
+export type ThemeMode = Mode
 
 // Empty string (production build) = same origin: REST calls go out as
 // relative paths and wsUrl() falls back to window.location.origin.
@@ -21,14 +25,19 @@ export interface PublicUser {
   deleted?: boolean
 }
 
-export type Theme = 'goodchat-light' | 'goodchat-dark'
 export type Role = 'owner' | 'user'
 
 /** My own account: role and theme are only ever sent to their owner. */
 export interface SessionUser extends PublicUser {
   role: Role
-  /** Account-level default; null follows the OS preference. */
-  theme: Theme | null
+  /** Account-level mode; null follows the OS preference. */
+  theme_mode: ThemeMode | null
+  /**
+   * Palette ids from lib/themes.ts, one per mode. null means "never picked" —
+   * the client falls back to the catalog default rather than storing it.
+   */
+  theme_light: string | null
+  theme_dark: string | null
   /** Guest account: it and its data are deleted at `expires_at`. */
   is_temp: boolean
   expires_at: number | null
@@ -123,9 +132,24 @@ export function me(): Promise<{ user: SessionUser }> {
   return call('/api/auth/me')
 }
 
-/** Account-level preferences. `theme: null` means "follow the system". */
-export function updateSettings(theme: Theme | null): Promise<{ user: SessionUser }> {
-  return call('/api/settings', { method: 'PATCH', body: JSON.stringify({ theme }) })
+/**
+ * Account-level preferences. All three travel together — the settings screen
+ * always knows the whole triple, and a full write keeps the worker free of
+ * read-modify-write. `theme_mode: null` means "follow the system".
+ */
+export function updateSettings(prefs: {
+  mode: ThemeMode | null
+  light: string
+  dark: string
+}): Promise<{ user: SessionUser }> {
+  return call('/api/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      theme_mode: prefs.mode,
+      theme_light: prefs.light,
+      theme_dark: prefs.dark,
+    }),
+  })
 }
 
 export function lookupUsers(q: string): Promise<{ users: PublicUser[] }> {

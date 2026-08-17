@@ -7,35 +7,40 @@
 
 import { useState } from 'react'
 import { ApiError } from '../lib/api'
-import type { Theme } from '../lib/api'
 import { usePush } from '../hooks/usePush'
 import { useSession } from '../hooks/useSession'
+import { useTheme, type ThemePrefs } from '../hooks/useTheme'
+import {
+  DARK_PALETTES,
+  LIGHT_PALETTES,
+  type ModePreference,
+  type PaletteOption,
+} from '../lib/themes'
 import { RetroIconButton } from '../components/RetroIconButton'
+import { PaletteSwatch } from '../components/PaletteSwatch'
 import { TempAccountBanner } from '../components/TempAccount'
 import { navigate } from '../lib/router'
 
-type Preference = Theme | 'system'
-
-const THEME_OPTIONS: { value: Preference; label: string; hint: string }[] = [
-  { value: 'system', label: 'sistema', hint: 'segue o tema do dispositivo' },
-  { value: 'goodchat-light', label: 'claro', hint: 'cream / crimson' },
-  { value: 'goodchat-dark', label: 'escuro', hint: 'noir / rose' },
+const MODE_OPTIONS: { value: ModePreference; label: string; hint: string }[] = [
+  { value: null, label: 'sistema', hint: 'segue o dispositivo' },
+  { value: 'light', label: 'claro', hint: 'paleta clara sempre' },
+  { value: 'dark', label: 'escuro', hint: 'paleta escura sempre' },
 ]
 
 export function SettingsScreen() {
   const { user, setTheme, logout, isOwner } = useSession()
+  const { prefs, mode } = useTheme()
   const push = usePush()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   if (!user) return null
-  const current: Preference = user.theme ?? 'system'
 
-  const pick = (preference: Preference) => {
-    if (saving || preference === current) return
+  const save = (next: ThemePrefs) => {
+    if (saving) return
     setSaving(true)
     setError(null)
-    setTheme(preference === 'system' ? null : preference)
+    setTheme(next)
       .catch((err: unknown) => {
         setError(
           err instanceof ApiError && err.status === 0
@@ -44,6 +49,10 @@ export function SettingsScreen() {
         )
       })
       .finally(() => setSaving(false))
+  }
+
+  const pickMode = (value: ModePreference) => {
+    if (value !== prefs.mode) save({ ...prefs, mode: value })
   }
 
   return (
@@ -82,30 +91,48 @@ export function SettingsScreen() {
               Salvo na sua conta — vale em qualquer dispositivo onde você entrar.
             </p>
           </div>
-          <div className="flex flex-col gap-2">
-            {THEME_OPTIONS.map((option) => {
-              const selected = option.value === current
+
+          <div className="grid grid-cols-3 gap-2">
+            {MODE_OPTIONS.map((option) => {
+              const selected = option.value === prefs.mode
               return (
                 <button
-                  key={option.value}
+                  key={option.label}
                   type="button"
                   aria-pressed={selected}
                   disabled={saving}
-                  onClick={() => pick(option.value)}
-                  className={`retro-border flex cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 ${
+                  onClick={() => pickMode(option.value)}
+                  className={`retro-border flex cursor-pointer flex-col gap-1 px-3 py-3 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 ${
                     selected ? 'bg-accent text-accent-content' : 'bg-base-100'
                   }`}
                 >
                   <span className="font-mono text-xs font-black uppercase tracking-widest">
                     {option.label}
                   </span>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
-                    {selected ? 'ativo' : option.hint}
+                  <span className="font-mono text-[10px] uppercase tracking-[0.15em] opacity-60">
+                    {option.hint}
                   </span>
                 </button>
               )
             })}
           </div>
+
+          <PaletteGroup
+            title="paleta clara"
+            active={mode === 'light'}
+            options={LIGHT_PALETTES}
+            selected={prefs.light}
+            disabled={saving}
+            onPick={(id) => id !== prefs.light && save({ ...prefs, light: id })}
+          />
+          <PaletteGroup
+            title="paleta escura"
+            active={mode === 'dark'}
+            options={DARK_PALETTES}
+            selected={prefs.dark}
+            disabled={saving}
+            onPick={(id) => id !== prefs.dark && save({ ...prefs, dark: id })}
+          />
         </div>
       </section>
 
@@ -179,5 +206,64 @@ export function SettingsScreen() {
         </div>
       </section>
     </main>
+  )
+}
+
+/**
+ * One mode's palette shelf. Both shelves are always shown, even though only
+ * one is on screen right now: picking the dark palette while sitting in the
+ * light one is the normal case, and hiding it behind the mode switch would
+ * mean toggling the whole app just to preview a color.
+ */
+function PaletteGroup({
+  title,
+  active,
+  options,
+  selected,
+  disabled,
+  onPick,
+}: {
+  title: string
+  active: boolean
+  options: readonly PaletteOption[]
+  selected: string
+  disabled: boolean
+  onPick: (id: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
+          {title}
+        </h3>
+        {active && (
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">
+            em uso agora
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {options.map((palette) => {
+          const isSelected = palette.id === selected
+          return (
+            <button
+              key={palette.id}
+              type="button"
+              aria-pressed={isSelected}
+              disabled={disabled}
+              onClick={() => onPick(palette.id)}
+              className={`retro-border flex cursor-pointer items-center gap-3 px-3 py-2 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 ${
+                isSelected ? 'bg-accent text-accent-content' : 'bg-base-100'
+              }`}
+            >
+              <PaletteSwatch palette={palette} />
+              <span className="font-mono text-[11px] font-black uppercase tracking-widest">
+                {palette.label}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
   )
 }

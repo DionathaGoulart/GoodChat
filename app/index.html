@@ -6,9 +6,13 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Literal hex (palettes.css §cream/noir): meta/manifest can't read CSS vars. -->
-    <meta name="theme-color" content="#f2efe7" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)" />
+    <!--
+      Literal hex (palettes.css §cream): meta/manifest can't read CSS vars. Only
+      the pre-boot value — hooks/useTheme.ts rewrites it from the resolved
+      theme's base-100, so it tracks whichever of the ten palettes is active.
+      Deliberately not media-scoped: a media query would outrank the update.
+    -->
+    <meta name="theme-color" content="#f2efe7" />
     <title>GoodChat</title>
   </head>
   <body>

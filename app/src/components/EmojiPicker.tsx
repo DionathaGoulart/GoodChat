@@ -5,7 +5,7 @@
 // Unicode in the message body (PRD §3.4), no server-side handling.
 
 import { useEffect, useRef, useState } from 'react'
-import { currentTheme } from '../hooks/useTheme'
+import { currentMode } from '../hooks/useTheme'
 
 export function EmojiPicker({ onPick }: { onPick: (unicode: string) => void }) {
   // React never renders children into the host div — the web component is
@@ -37,7 +37,7 @@ export function EmojiPicker({ onPick }: { onPick: (unicode: string) => void }) {
         // and keep it in sync: the element stays mounted after the first
         // open, so a later theme toggle (or an OS scheme flip) must re-pin.
         const applyPickerTheme = () => {
-          const dark = currentTheme() === 'goodchat-dark'
+          const dark = currentMode() === 'dark'
           picker.classList.toggle('dark', dark)
           picker.classList.toggle('light', !dark)
         }
