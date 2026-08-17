@@ -18,6 +18,12 @@ function storedTheme(): Theme | null {
   return value === 'goodchat-light' || value === 'goodchat-dark' ? value : null
 }
 
+/** Effective theme right now (stored choice, else system) — for widgets that
+ * cannot inherit CSS through a shadow DOM (e.g. emoji-picker-element). */
+export function currentTheme(): Theme {
+  return storedTheme() ?? systemTheme()
+}
+
 export function useTheme(): { theme: Theme; toggle: () => void } {
   const [theme, setTheme] = useState<Theme>(() => storedTheme() ?? systemTheme())
 

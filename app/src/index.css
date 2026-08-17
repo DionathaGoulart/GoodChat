@@ -188,6 +188,33 @@
   }
 }
 
+/* emoji-picker-element (shadow DOM — styled via its CSS variable API only;
+   light/dark class is pinned by EmojiPicker.tsx since the shadow tree cannot
+   read daisyUI tokens). Squared corners + theme colors keep it in-family. */
+emoji-picker {
+  width: min(88vw, 20rem);
+  height: 22rem;
+  --background: var(--color-base-100);
+  --border-color: var(--color-base-300);
+  --border-radius: 0;
+  --border-size: 0px; /* the popover shell already draws the retro border */
+  --input-border-radius: 0;
+  --input-border-size: 2px;
+  --input-border-color: var(--color-base-300);
+  --input-font-color: var(--color-base-content);
+  --input-placeholder-color: var(--color-base-content);
+  --input-font-size: 0.875rem;
+  --category-font-color: var(--color-base-content);
+  --category-font-size: 0.625rem;
+  --indicator-color: var(--color-accent);
+  --button-hover-background: color-mix(in srgb, var(--color-base-content) 12%, transparent);
+  --button-active-background: color-mix(in srgb, var(--color-base-content) 20%, transparent);
+  --outline-color: var(--color-accent);
+  --skintone-border-radius: 0;
+  --num-columns: 8;
+  --emoji-size: 1.25rem;
+}
+
 /* --- Global base --- */
 
 @keyframes blink {

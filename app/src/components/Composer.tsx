@@ -1,6 +1,10 @@
 // Message composer: retro field, Enter sends, Shift+Enter breaks line.
 // client_id/optimistic state live in useConversation — this emits text via
-// onSend and, after compress+upload to B2, media keys via onSendMedia.
+// onSend, media keys via onSendMedia (after compress+upload to B2), sticker
+// ids via onSendSticker, and throttled typing hints via onTyping. Emoji are
+// inserted at the caret as plain Unicode (picker content lazy-mounts on
+// first open). Pickers are daisyUI focus dropdowns — clicking outside (or
+// blurring after a sticker send) closes them.
 
 import { useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent } from 'react'
@@ -17,6 +21,8 @@ import {
 } from '../lib/media'
 import type { UploadHandle } from '../lib/media'
 import { ApiError } from '../lib/api'
+import { EmojiPicker } from './EmojiPicker'
+import { StickerPicker } from './StickerPicker'
 
 interface Attachment {
   name: string
@@ -24,17 +30,28 @@ interface Attachment {
   progress: number
 }
 
+const TOOL_BUTTON_CLASS =
+  'retro-border cursor-pointer self-stretch bg-base-100 px-3 text-lg font-black transition-all duration-300 hover:-translate-y-1 hover:bg-accent hover:text-accent-content hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40'
+
 export function Composer({
   onSend,
   onSendMedia,
+  onSendSticker,
+  onTyping,
 }: {
   onSend: (body: string) => void
   onSendMedia: (msgType: 'image' | 'video', mediaKey: string) => void
+  onSendSticker: (stickerId: string) => void
+  onTyping: () => void
 }) {
   const [body, setBody] = useState('')
   const [attachment, setAttachment] = useState<Attachment | null>(null)
   const [mediaError, setMediaError] = useState<string | null>(null)
+  // Lazy-mount flags: picker content only exists after the first open.
+  const [emojiOpened, setEmojiOpened] = useState(false)
+  const [stickersOpened, setStickersOpened] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const uploadRef = useRef<UploadHandle | null>(null)
   const canSend = body.trim().length > 0
 
@@ -49,6 +66,32 @@ export function Composer({
       event.preventDefault()
       submit()
     }
+  }
+
+  const onBodyChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setBody(event.target.value)
+    onTyping()
+  }
+
+  // The textarea keeps its selection while unfocused, so the caret position
+  // survives the click into the picker; restore it right after the re-render.
+  const insertEmoji = (unicode: string) => {
+    const el = textareaRef.current
+    const start = el?.selectionStart ?? body.length
+    const end = el?.selectionEnd ?? body.length
+    const next = body.slice(0, start) + unicode + body.slice(end)
+    if (next.length > MAX_BODY_LENGTH) return
+    setBody(next)
+    onTyping()
+    requestAnimationFrame(() => {
+      if (el) el.selectionStart = el.selectionEnd = start + unicode.length
+    })
+  }
+
+  const pickSticker = (stickerId: string) => {
+    onSendSticker(stickerId)
+    // Focus dropdown: dropping focus is what closes the popover.
+    ;(document.activeElement as HTMLElement | null)?.blur()
   }
 
   const pickFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -160,17 +203,50 @@ export function Composer({
           aria-label="anexar imagem ou vídeo"
           disabled={attachment !== null}
           onClick={() => fileInputRef.current?.click()}
-          className="retro-border cursor-pointer self-stretch bg-base-100 px-3 text-lg font-black transition-all duration-300 hover:-translate-y-1 hover:bg-accent hover:text-accent-content hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40"
+          className={TOOL_BUTTON_CLASS}
         >
           +
         </button>
+        <div className="dropdown dropdown-top self-stretch">
+          <button
+            type="button"
+            aria-label="abrir emojis"
+            onClick={() => setEmojiOpened(true)}
+            className={`${TOOL_BUTTON_CLASS} h-full text-sm tracking-tighter`}
+          >
+            :)
+          </button>
+          <div
+            tabIndex={0}
+            className="dropdown-content z-10 mb-3 retro-border bg-base-100 retro-shadow"
+          >
+            {emojiOpened && <EmojiPicker onPick={insertEmoji} />}
+          </div>
+        </div>
+        <div className="dropdown dropdown-top self-stretch">
+          <button
+            type="button"
+            aria-label="abrir stickers"
+            onClick={() => setStickersOpened(true)}
+            className={`${TOOL_BUTTON_CLASS} h-full`}
+          >
+            ▦
+          </button>
+          <div
+            tabIndex={0}
+            className="dropdown-content z-10 mb-3 w-64 retro-border bg-base-100 retro-shadow"
+          >
+            {stickersOpened && <StickerPicker onPick={pickSticker} />}
+          </div>
+        </div>
         <textarea
+          ref={textareaRef}
           className="max-h-32 min-h-11 flex-1 resize-none bg-transparent p-2 font-mono text-sm outline-none [field-sizing:content] placeholder:uppercase placeholder:tracking-widest placeholder:opacity-40"
           placeholder="mensagem_"
           rows={1}
           maxLength={MAX_BODY_LENGTH}
           value={body}
-          onChange={(event) => setBody(event.target.value)}
+          onChange={onBodyChange}
           onKeyDown={onKeyDown}
         />
         <button

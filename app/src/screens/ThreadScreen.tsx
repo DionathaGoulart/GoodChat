@@ -92,11 +92,8 @@ function LiveThread({
   otherUser: PublicUser
   myId: string
 }) {
-  const { messages, connection, send, sendMedia, markRead } = useConversation(
-    conversationId,
-    otherUser.id,
-    myId,
-  )
+  const { messages, connection, peerTyping, send, sendMedia, sendSticker, sendTyping, markRead } =
+    useConversation(conversationId, otherUser.id, myId)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
 
@@ -172,7 +169,25 @@ function LiveThread({
         ))}
       </div>
 
-      <Composer onSend={send} onSendMedia={sendMedia} />
+      {/* Fixed-height slot so the hint never shifts the layout (styleguide §6:
+          micro-text + blinking cursor, no bouncing dots). */}
+      <p
+        className="h-4 shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-accent"
+        aria-live="polite"
+      >
+        {peerTyping && (
+          <>
+            @{otherUser.username} digitando<span className="terminal-cursor">_</span>
+          </>
+        )}
+      </p>
+
+      <Composer
+        onSend={send}
+        onSendMedia={sendMedia}
+        onSendSticker={sendSticker}
+        onTyping={sendTyping}
+      />
     </main>
   )
 }

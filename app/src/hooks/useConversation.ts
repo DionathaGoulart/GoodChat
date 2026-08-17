@@ -5,9 +5,9 @@
 //   is server-side, so resending is safe — at-least-once)
 // - optimistic send: local status 'sending' until the echo frame arrives
 // - read receipts sent when the thread reports visibility (unread badge
-//   source of truth; receipt *rendering* is phase 7)
+//   source of truth); typing is throttled out / expiry-timed in
 
-import { useCallback, useEffect, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { wsUrl } from '../lib/api'
 import {
   ServerEventSchema,
@@ -104,8 +104,11 @@ export function useConversation(
 ): {
   messages: ThreadMessage[]
   connection: ConnectionState
+  peerTyping: boolean
   send: (body: string) => void
   sendMedia: (msgType: 'image' | 'video', mediaKey: string) => void
+  sendSticker: (stickerId: string) => void
+  sendTyping: () => void
   markRead: (upToMessageId: string) => void
 } {
   const [messages, dispatch] = useReducer(reduce, [])
@@ -114,6 +117,9 @@ export function useConversation(
   const wsRef = useRef<WebSocket | null>(null)
   const pendingRef = useRef(new Map<string, SendMessageEvent>())
   const lastReadSentRef = useRef<string | null>(null)
+  const [peerTyping, setPeerTyping] = useState(false)
+  const typingTimerRef = useRef<number | undefined>(undefined)
+  const lastTypingSentRef = useRef(0)
 
   const setConnection = useCallback(
     (state: ConnectionState) => {
@@ -131,6 +137,19 @@ export function useConversation(
     dispatch({ type: 'reset' })
     pendingRef.current.clear()
     lastReadSentRef.current = null
+    setPeerTyping(false)
+
+    // Peer typing is ephemeral: each frame re-arms a short expiry, and a real
+    // message from the peer clears it immediately.
+    const showPeerTyping = () => {
+      setPeerTyping(true)
+      window.clearTimeout(typingTimerRef.current)
+      typingTimerRef.current = window.setTimeout(() => setPeerTyping(false), 4000)
+    }
+    const clearPeerTyping = () => {
+      window.clearTimeout(typingTimerRef.current)
+      setPeerTyping(false)
+    }
 
     const handleFrame = (event: ServerEvent) => {
       switch (event.type) {
@@ -139,6 +158,7 @@ export function useConversation(
           return
         case 'message':
           if (event.sender_id === myId) pendingRef.current.delete(event.client_id)
+          else clearPeerTyping()
           dispatch({ type: 'message', frame: event })
           return
         case 'message_status':
@@ -155,7 +175,7 @@ export function useConversation(
           dispatch({ type: 'peer_read', upToMessageId: event.up_to_message_id, myId })
           return
         case 'typing':
-          // Rendered in phase 7.
+          showPeerTyping()
           return
         case 'error':
           console.warn('ws error frame', event.error, event.message)
@@ -201,6 +221,7 @@ export function useConversation(
     return () => {
       disposed = true
       window.clearTimeout(timer)
+      window.clearTimeout(typingTimerRef.current)
       wsRef.current?.close()
       wsRef.current = null
     }
@@ -245,6 +266,21 @@ export function useConversation(
     [sendEvent],
   )
 
+  const sendSticker = useCallback((stickerId: string) => sendEvent('sticker', stickerId, null), [
+    sendEvent,
+  ])
+
+  // Ephemeral by design: throttled to one frame per 2.5s and never queued —
+  // a typing hint that survives a reconnect would be a lie.
+  const sendTyping = useCallback(() => {
+    const ws = wsRef.current
+    if (ws?.readyState !== WebSocket.OPEN) return
+    const now = Date.now()
+    if (now - lastTypingSentRef.current < 2500) return
+    lastTypingSentRef.current = now
+    ws.send(JSON.stringify({ type: 'typing' }))
+  }, [])
+
   const markRead = useCallback((upToMessageId: string) => {
     if (lastReadSentRef.current === upToMessageId) return
     const ws = wsRef.current
@@ -253,5 +289,14 @@ export function useConversation(
     ws.send(JSON.stringify({ type: 'read_receipt', up_to_message_id: upToMessageId }))
   }, [])
 
-  return { messages, connection: connectionRef.current, send, sendMedia, markRead }
+  return {
+    messages,
+    connection: connectionRef.current,
+    peerTyping,
+    send,
+    sendMedia,
+    sendSticker,
+    sendTyping,
+    markRead,
+  }
 }
