@@ -32,7 +32,7 @@ Plano operacional derivado de `.harness/prd.md` (fonte de verdade funcional) e `
 | 1 | Scaffolding + tema | ✅ concluída |
 | 2 | D1 + Auth | ✅ concluída |
 | 3 | Usuários + conversas (REST) | ✅ concluída |
-| 4 | Real-time core (DO + WebSocket) | ⬜ pendente |
+| 4 | Real-time core (DO + WebSocket) | ✅ concluída |
 | 5 | Frontend do chat | ⬜ pendente |
 | 6 | Pipeline de mídia (B2) | ⬜ pendente |
 | 7 | Receipts, typing, emoji, stickers | ⬜ pendente |
@@ -155,7 +155,17 @@ MVP = fases 1–6 (emoji inline da fase 7 é trivial e pode antecipar). Definiti
 
 **Não fazer:** UI, mídia, stickers. Typing/read chegam no protocolo mas UI só na fase 7.
 
-**Handoff:** _(Hibernation sim/não e API usada, formato de rota WS, N do histórico, como rodar o teste de integração, pegadinhas do Agents SDK)_
+**Handoff (concluída 2026-08-17):**
+
+- **Hibernation: SIM** — é o default do Agents SDK (`Agent.options = { hibernate: true }`, via `HibernatingConnectionManager` do partyserver). Deixado explícito na classe (`static override options`). Custo idle zero; `conn.setState()` sobrevive hibernação (attachment do WebSocket).
+- **Arquivos:** `worker/src/agent.ts` (`ConversationAgent`, movido do index), `worker/src/protocol.ts` (Zod nos dois sentidos — **fase 5 importa/copia esses shapes**), `worker/src/routes/ws.ts` (upgrade). `wrangler.jsonc` não mudou (binding/migration da fase 1 serviu).
+- **Rota WS:** `GET /api/ws/:conversationId?with=<other_user_id>`. Cookie de sessão no handshake (browser manda; teste usa lib `ws` com header Cookie). Validação de pertencimento **sem exigir linha em `conversations`** (criação lazy): recomputa `conversationIdFor(me, with)` e compara com o path → 403 se divergir; 401 sem sessão, 404 user inexistente, 400 malformado/self, 426 sem Upgrade. Worker **sobrescreve** headers `x-goodchat-user-id`/`x-goodchat-peer-id` (nunca confia no cliente) e encaminha via `getAgentByName(env.ConversationAgent, conversationId)` + `stub.fetch()`. Rota tratada **antes** do wrapper CORS do `index.ts` — resposta 101 não pode ser reconstruída (e WS não usa CORS).
+- **DO:** tabela `messages` exata PRD §4.4 (coluna `type` no disco, `msg_type` no wire) + índice único `(sender_id, client_id)` = dedup at-least-once; tabela `participants` pina o par no 1º connect (defesa em profundidade — conexão de terceiro fecha 1008 mesmo se o Worker falhar).
+- **Protocolo:** PRD §4.5 + extensões aditivas documentadas no `protocol.ts`: frame `history` no connect; `message` carrega `client_id`+`status` (receber o próprio `message` de volta = ack "sent" — **não há** `message_status: sent` separado); `message_status` carrega `id` além de `client_id` (transições de mensagens de sessões antigas); frame `error` (socket fica aberto). Body cap 4096 chars.
+- **Entrega:** peer com conexão viva no send → grava e broadcasta já `delivered`. Offline → `sent`; quando destinatário conecta: `UPDATE sent→delivered` + `message_status` pro remetente + `history` contígua por rowid (janela = últimas **N=50** ∪ tudo que estava não-entregue, mesmo que mais antigo). `read_receipt {up_to_message_id}` → `UPDATE status='read'` onde `sender != leitor AND rowid <= alvo`; broadcast do frame `read_receipt` (sem frames por-mensagem). Typing: efêmero, broadcast só pra conns de `state.userId != sender` (multi-tab não vê o próprio typing).
+- **D1:** `ensureConversation` (helper fase 3) a cada mensagem persistida, **depois** do broadcast (D1 fora do caminho de latência), com try/catch + log.
+- **Teste:** `npm run smoke:phase4` (dev na 8000 + seed; 18 checks — handshake negativo, history, entrega online/offline/reconexão, dedup, receipts, typing, payload inválido, linha lazy no D1). Idempotente entre runs: client_ids únicos + storage do DO persiste em `.wrangler/state`. Persistência pós-restart verificada à parte (restart do wrangler → history intacta com estados `read`/`delivered`). Rodado: **all green**. devDeps novas: `ws` + `@types/ws` (WebSocket global do Node não aceita header Cookie).
+- **Pegadinhas Agents SDK:** (1) sem `shouldSendProtocolMessages() => false` o SDK manda frames `cf_agent_identity`/`cf_agent_state`/`cf_agent_mcp_servers` pro cliente raw no connect; (2) o wrapper interno de `onMessage` intercepta JSON com shapes internos (state sync/RPC) antes do handler do usuário — nossos types não colidem; (3) `AgentNamespace` é alias deprecated de `DurableObjectNamespace` — o binding gerado pelo `cf-typegen` serve direto no `getAgentByName`; (4) scripts Node com type stripping não aceitam parameter properties (`constructor(private ws: ...)`).
 
 ---
 
