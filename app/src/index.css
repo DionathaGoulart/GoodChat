@@ -1,0 +1,218 @@
+/*
+ * GoodChat theme entry point.
+ * Recipe: harness/styleguide.md §7 (CSS-first Tailwind v4 + daisyUI 5).
+ * Colors only via var(--palette-*) from styles/palettes.css — never raw hex here.
+ */
+@import "tailwindcss";
+@import "./styles/palettes.css";
+
+/* JetBrains Mono — the single type family for everything (styleguide §3) */
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/400-italic.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/500-italic.css";
+@import "@fontsource/jetbrains-mono/700.css";
+@import "@fontsource/jetbrains-mono/700-italic.css";
+@import "@fontsource/jetbrains-mono/800.css";
+@import "@fontsource/jetbrains-mono/800-italic.css";
+
+@plugin "daisyui" {
+  themes: false; /* only the custom themes below */
+  logs: false;
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-light";
+  default: true;
+  color-scheme: light;
+
+  --color-base-100: var(--palette-cream);
+  --color-base-200: var(--palette-white);
+  --color-base-300: var(--palette-ink);
+  --color-base-content: var(--palette-ink);
+  --color-primary: var(--palette-crimson);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-ink);
+  --color-secondary-content: var(--palette-white);
+  --color-accent: var(--palette-crimson);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-ink);
+  --color-neutral-content: var(--palette-white);
+  --color-info: var(--palette-info);
+  --color-info-content: var(--palette-white);
+  --color-success: var(--palette-success);
+  --color-success-content: var(--palette-white);
+  --color-warning: var(--palette-warning);
+  --color-warning-content: var(--palette-white);
+  --color-error: var(--palette-error);
+  --color-error-content: var(--palette-white);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  /* GoodChat extras (consumed by retro-* utilities) */
+  --shadow: var(--palette-ink);
+  --scanline-color: var(--palette-scanline-light);
+  --frame-border: 2px;
+}
+
+@plugin "daisyui/theme" {
+  name: "goodchat-dark";
+  prefersdark: true;
+  color-scheme: dark;
+
+  --color-base-100: var(--palette-noir);
+  --color-base-200: var(--palette-noir-raised);
+  --color-base-300: var(--palette-cream);
+  --color-base-content: var(--palette-cream);
+  --color-primary: var(--palette-rose);
+  --color-primary-content: var(--palette-white);
+  --color-secondary: var(--palette-cream);
+  --color-secondary-content: var(--palette-noir);
+  --color-accent: var(--palette-rose);
+  --color-accent-content: var(--palette-white);
+  --color-neutral: var(--palette-cream);
+  --color-neutral-content: var(--palette-noir);
+  --color-info: var(--palette-info-soft);
+  --color-info-content: var(--palette-near-black);
+  --color-success: var(--palette-success-soft);
+  --color-success-content: var(--palette-near-black);
+  --color-warning: var(--palette-warning-soft);
+  --color-warning-content: var(--palette-near-black);
+  --color-error: var(--palette-error-soft);
+  --color-error-content: var(--palette-near-black);
+
+  --radius-selector: 0rem;
+  --radius-field: 0rem;
+  --radius-box: 0rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
+  --depth: 0;
+  --noise: 0;
+
+  --shadow: var(--palette-rose);
+  --scanline-color: var(--palette-scanline-dark);
+}
+
+@theme {
+  /* Monospace-everywhere is the core of the retro feel — sans is an alias */
+  --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* --- Retro utilities (styleguide §4) --- */
+
+@utility retro-shadow {
+  box-shadow: 6px 6px 0 0 var(--shadow);
+}
+
+@utility retro-shadow-sm {
+  box-shadow: 3px 3px 0 0 var(--shadow);
+}
+
+@utility retro-border {
+  border: var(--frame-border) solid var(--color-base-300);
+}
+
+@utility terminal-cursor {
+  animation: blink 1s step-end infinite;
+}
+
+@utility terminal-scanline {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--scanline-color) 0px,
+    var(--scanline-color) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  opacity: 0.3;
+}
+
+/* Button variants extend daisyUI's btn through its own tokens, so btn keeps
+   providing focus/active/disabled behavior (styleguide §6 technique). */
+@utility btn-goodchat {
+  --btn-color: var(--color-accent);
+  --btn-fg: var(--color-accent-content);
+  --btn-border: var(--color-base-300);
+  --btn-p: 2rem;
+  --size: 3.25rem;
+  --fontsize: 0.875rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+
+  @media (width >= 48rem) {
+    --size: 3.75rem;
+    --fontsize: 1rem;
+  }
+}
+
+@utility btn-goodchat-outline {
+  --btn-color: transparent;
+  --btn-fg: var(--color-base-content);
+  --btn-border: var(--color-base-300);
+  --btn-p: 2rem;
+  --size: 3.25rem;
+  --fontsize: 0.875rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+
+  @media (width >= 48rem) {
+    --size: 3.75rem;
+    --fontsize: 1rem;
+  }
+}
+
+/* --- Global base --- */
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+body {
+  background: var(--color-base-100);
+  color: var(--color-base-content);
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-accent-content);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .terminal-scanline {
+    display: none;
+  }
+}

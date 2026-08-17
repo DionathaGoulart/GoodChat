@@ -1,0 +1,35 @@
+/*
+ * GoodChat raw palette — single source of every color in the app.
+ * Rule (inherited from Portfolio): a color exists exactly once, as a
+ * --palette-* token here. No hex values anywhere else in the codebase.
+ * Origin: harness/styleguide.md §2.1 (retro-hub pair).
+ */
+:root {
+  /* Neutrals */
+  --palette-cream: #f2efe7; /* light page background (base-100) */
+  --palette-white: #ffffff; /* light raised surface / content over accent */
+  --palette-ink: #1a0a0a; /* light text + borders */
+  --palette-noir: #121212; /* dark page background (base-100) */
+  --palette-noir-raised: #1a1a1a; /* dark raised surface (base-200) */
+  --palette-near-black: #0d0d0d; /* text over soft status colors (dark) */
+
+  /* Accents */
+  --palette-crimson: #dc143c; /* accent/primary — light theme */
+  --palette-rose: #e8729a; /* accent/primary — dark theme */
+
+  /* Status — full strength (light themes) */
+  --palette-info: #2563eb;
+  --palette-success: #16a34a;
+  --palette-warning: #d97706;
+  --palette-error: #dc2626;
+
+  /* Status — softened (dark themes) */
+  --palette-info-soft: #60a5fa;
+  --palette-success-soft: #4ade80;
+  --palette-warning-soft: #fbbf24;
+  --palette-error-soft: #f87171;
+
+  /* Overlays */
+  --palette-scanline-light: rgba(0, 0, 0, 0.05);
+  --palette-scanline-dark: rgba(0, 0, 0, 0.2);
+}
