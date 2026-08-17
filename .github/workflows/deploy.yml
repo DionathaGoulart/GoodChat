@@ -93,16 +93,33 @@ jobs:
 
       # Reads the deployed index.html and prints the hashed bundle it points
       # at, so the run log records exactly what is live.
+      #
+      # Polled, not single-shot: `wrangler deploy` returns before the new
+      # version has reached every colo, and the document is edge-cached
+      # (max-age=0 + must-revalidate, so a colo revalidates against whichever
+      # version it is already running). That window is seconds long, and a
+      # one-shot read inside it fails a deploy that did land — which is worse
+      # than no check, because the next person distrusts the red run.
+      #
+      # `no-cache` on the request and a unique query keep this off any cached
+      # copy where the zone honours them; the poll is what covers the rest.
       - name: Verify deployment
         run: |
-          bundle=$(curl -fsS --retry 3 --retry-delay 5 https://goodchat.dionatha.com.br/ \
-            | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1)
-          if [ -z "$bundle" ]; then
-            echo "::error::could not read the deployed bundle from the production HTML"
+          expected=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' app/dist/index.html | head -1)
+          if [ -z "$expected" ]; then
+            echo "::error::no hashed bundle in app/dist/index.html — did the build step run?"
             exit 1
           fi
-          echo "live bundle: $bundle"
-          if ! grep -q "$bundle" app/dist/index.html; then
-            echo "::error::live bundle does not match this build — deploy did not take effect"
-            exit 1
-          fi
+          for attempt in $(seq 1 10); do
+            bundle=$(curl -fsS -H 'Cache-Control: no-cache' --retry 3 --retry-delay 5 \
+              "https://goodchat.dionatha.com.br/?deploy-check=${GITHUB_RUN_ID}-${attempt}" \
+              | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1)
+            echo "attempt ${attempt}: live bundle ${bundle:-<none>}, expected ${expected}"
+            if [ "$bundle" = "$expected" ]; then
+              echo "live bundle matches this build"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::live bundle still does not match this build after 10 attempts — deploy did not take effect"
+          exit 1
