@@ -74,7 +74,13 @@
     // existing threads keep working. Run POST /api/admin/media/reindex once,
     // confirm indexed_media_bytes matches bucket_bytes in the owner overview,
     // then set this to "deny".
-    "MEDIA_LEGACY_READS": "allow"
+    "MEDIA_LEGACY_READS": "allow",
+    // Storage ceilings the owner console divides usage by (used / total). They
+    // are display only — nothing rejects a write when they are reached. The
+    // defaults are the free tiers: 5 GB of Durable Object SQLite, 10 GB of B2.
+    // "0" hides the total and shows the plain usage again.
+    "DO_STORAGE_LIMIT_GB": "5",
+    "B2_STORAGE_LIMIT_GB": "10"
   },
   "observability": {
     "enabled": true

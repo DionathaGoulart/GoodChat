@@ -24,6 +24,20 @@ function formatBytes(bytes: number): string {
   return `${bytes} b`
 }
 
+/** "1.2 mb / 5 gb" — the plan's ceiling next to what is spent of it. */
+function formatUsage(used: number, limit: number | null): string {
+  if (limit === null) return formatBytes(used)
+  return `${formatBytes(used)} / ${formatBytes(limit)}`
+}
+
+/** Share of the ceiling, kept to one decimal while it is still small. */
+function formatShare(used: number, limit: number | null): string | null {
+  if (limit === null) return null
+  const percent = (used / limit) * 100
+  if (percent > 0 && percent < 0.1) return '<0,1% do limite'
+  return `${percent >= 10 ? Math.round(percent) : percent.toFixed(1)}% do limite`
+}
+
 function formatDate(ms: number | null): string {
   if (!ms) return '—'
   return new Date(ms).toLocaleDateString('pt-BR', {
@@ -221,14 +235,28 @@ function OverviewPanel({ overview }: { overview: AdminOverview | null }) {
       hint: `${overview.tombstones} contas expiradas ainda citadas`,
     },
     { label: 'conversas', value: String(overview.conversations), hint: `${overview.messages} mensagens` },
-    { label: 'banco (dos)', value: formatBytes(overview.do_storage_bytes) },
+    {
+      label: 'banco (dos)',
+      value: formatUsage(overview.do_storage_bytes, overview.do_storage_limit_bytes),
+      hint: formatShare(overview.do_storage_bytes, overview.do_storage_limit_bytes) ?? undefined,
+    },
     {
       label: 'bucket',
-      value: overview.bucket_bytes === null ? '—' : formatBytes(overview.bucket_bytes),
+      value:
+        overview.bucket_bytes === null
+          ? '—'
+          : formatUsage(overview.bucket_bytes, overview.bucket_limit_bytes),
       hint:
         overview.bucket_objects === null
           ? 'b2 indisponível'
-          : `${overview.bucket_objects} objetos`,
+          : [
+              `${overview.bucket_objects} objetos`,
+              overview.bucket_bytes === null
+                ? null
+                : formatShare(overview.bucket_bytes, overview.bucket_limit_bytes),
+            ]
+              .filter(Boolean)
+              .join(' · '),
     },
     {
       label: 'indexado',
@@ -249,7 +277,9 @@ function OverviewPanel({ overview }: { overview: AdminOverview | null }) {
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
             {tile.label}
           </p>
-          <p className="mt-1 text-xl font-black tracking-tighter">{tile.value}</p>
+          <p className="mt-1 break-words text-lg font-black tracking-tighter sm:text-xl">
+            {tile.value}
+          </p>
           {tile.hint && (
             <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
               {tile.hint}

@@ -218,12 +218,30 @@ export async function overview(request: Request, env: Env): Promise<Response> {
       // against indexed_media_bytes is what a reindex would pick up.
       bucket_objects: bucket?.objects ?? null,
       bucket_bytes: bucket?.bytes ?? null,
+      // What the console divides the two storage numbers by. Nothing enforces
+      // these — they are the plan's ceiling, so the owner sees how much room is
+      // left instead of a bare number.
+      do_storage_limit_bytes: limitBytes(env.DO_STORAGE_LIMIT_GB, 5),
+      bucket_limit_bytes: limitBytes(env.B2_STORAGE_LIMIT_GB, 10),
       retention_days: Number(env.MEDIA_RETENTION_DAYS ?? 0) || null,
       legacy_media_reads: env.MEDIA_LEGACY_READS === 'deny' ? 'deny' : 'allow',
     },
     200,
     sessionHeaders(owner.auth),
   )
+}
+
+/** GiB, matching how the console formats bytes. */
+const GIB = 1024 ** 3
+
+/**
+ * Reads a storage ceiling expressed in GB. "0" (or anything unparseable) turns
+ * the quota off and the console falls back to showing the raw usage.
+ */
+function limitBytes(value: string | undefined, fallbackGb: number): number | null {
+  const gb = value === undefined || value.trim() === '' ? fallbackGb : Number(value)
+  if (!Number.isFinite(gb) || gb <= 0) return null
+  return Math.round(gb * GIB)
 }
 
 // --- account management --------------------------------------------------

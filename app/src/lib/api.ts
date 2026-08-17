@@ -219,6 +219,9 @@ export interface AdminOverview {
   /** Null when B2 is unreachable or unconfigured. */
   bucket_objects: number | null
   bucket_bytes: number | null
+  /** Plan ceilings shown as `used / total`. Null when the limit is off. */
+  do_storage_limit_bytes: number | null
+  bucket_limit_bytes: number | null
   retention_days: number | null
   legacy_media_reads: 'allow' | 'deny'
 }

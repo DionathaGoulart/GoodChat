@@ -225,6 +225,13 @@ try {
       typeof overview.body?.indexed_media_bytes === 'number',
     overview.body,
   )
+  check(
+    'overview reports the ceilings the console divides by',
+    ['do_storage_limit_bytes', 'bucket_limit_bytes'].every(
+      (field) => overview.body?.[field] === null || typeof overview.body?.[field] === 'number',
+    ),
+    overview.body,
+  )
 
   const accounts = await api('/api/admin/users', { cookie: ownerCookie })
   const aliceRow = accounts.body?.users?.find((u: any) => u.username === 'alice')
