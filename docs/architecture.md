@@ -33,7 +33,8 @@ All endpoints return JSON. Errors always use the shape
 | GET    | `/api/health`                 | no   | Liveness check                         |
 | POST   | `/api/auth/login`             | no   | Session cookie from username/password  |
 | POST   | `/api/auth/logout`            | no   | Revoke session (idempotent)            |
-| GET    | `/api/auth/me`                | yes  | Current user                           |
+| GET    | `/api/auth/me`                | yes  | Current user (includes `role` and `theme`) |
+| PATCH  | `/api/settings`               | yes  | Account preferences (theme)            |
 | GET    | `/api/users/lookup?q=`        | yes  | Prefix search by username              |
 | GET    | `/api/conversations`          | yes  | List with preview and unread count     |
 | POST   | `/api/conversations/resolve`  | yes  | Deterministic conversation id, no side effects |
@@ -44,9 +45,35 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/push/subscribe`         | yes  | Upsert a push subscription             |
 | POST   | `/api/push/unsubscribe`       | yes  | Remove own push subscription           |
 
-CORS is applied centrally and reflects the request Origin (the session
-cookie requires `Allow-Credentials`, which forbids the wildcard). In
-production the SPA and the API share one origin, so CORS is mostly inert.
+Owner console — every route additionally requires `role = 'owner'`:
+
+| Method | Path                                     | Purpose                                    |
+| ------ | ---------------------------------------- | ------------------------------------------ |
+| GET    | `/api/admin/overview`                    | Instance totals, D1/DO and bucket bytes    |
+| GET    | `/api/admin/users`                       | Accounts with their storage footprint      |
+| POST   | `/api/admin/users`                       | Create an account                          |
+| PATCH  | `/api/admin/users/:id`                   | Rename, reset password, disable, set role  |
+| DELETE | `/api/admin/users/:id`                   | Delete the account and everything it owns  |
+| POST   | `/api/admin/users/:id/purge`             | Wipe every history it takes part in        |
+| GET    | `/api/admin/conversations`               | Threads with participants and size         |
+| POST   | `/api/admin/conversations/:id/purge`     | Wipe one thread for both sides             |
+| POST   | `/api/admin/cleanup`                     | Run the maintenance sweep now              |
+| POST   | `/api/admin/media/reindex`               | Backfill the media index from the DOs      |
+
+CORS is an allowlist: an Origin is echoed (with `Allow-Credentials`, which
+forbids the wildcard) only when it is the Worker's own origin or appears in
+`ALLOWED_ORIGINS`. In production the SPA and the API share one origin, so
+the list is empty and CORS is inert; local dev allow-lists the Vite server
+on 5173.
+
+Every response carries `X-Content-Type-Options`, `Referrer-Policy`,
+`Permissions-Policy`, `Cross-Origin-Opener-Policy` and `X-Frame-Options`;
+over https it also carries HSTS. The SPA document and its assets are fetched
+by the Worker from the `ASSETS` binding (`run_worker_first: true`) and
+re-emitted with a `Content-Security-Policy` on top — served straight from
+the asset server they would carry no CSP at all. `frame-ancestors 'none'`
+is the clickjacking fix; `script-src 'self'` has no `unsafe-inline`, which
+is what makes the policy worth having.
 
 ### Authentication and sessions
 
@@ -114,29 +141,60 @@ Messages are kept in the DO's internal SQLite, one table per PRD 4.4.
    `video/mp4 webm`) and size caps (8MB image, 32MB video), then returns a
    presigned S3-compatible PUT (aws4fetch). Content-Type and Content-Length
    are part of the signature, so the storage itself rejects mismatched bytes.
-3. Client compresses images in the browser (canvas, WebP with JPEG
-   fallback, target ~1.5MB, GIFs pass through), validates video duration
-   (max 60s), uploads directly to the bucket with XHR progress.
-4. The message carries only the object key; bubbles render from
+3. The presign is recorded in `media_objects` *before* the URL is handed
+   out. That single row is what later authorizes the read, attributes the
+   bytes to an account, and lets the sweep recognise an upload no message
+   ever referenced.
+4. Client compresses in the browser (see below), then uploads directly to
+   the bucket with XHR progress.
+5. The message carries only the object key; bubbles render from
    `/api/media/<key>`. Upload bytes never touch the Worker.
-5. Reads do: the bucket is private, so `GET /api/media/<key>` checks the
-   session cookie, signs a GET against B2 and streams the object back,
-   forwarding `Range` so video seeking keeps working. Successful full
-   responses are stored in the Cloudflare edge cache (`caches.default`,
-   immutable), so a repeated view costs one Worker request and no B2 read.
-   B2 → Cloudflare egress is free (Bandwidth Alliance), so the proxy adds
-   no bandwidth cost.
+6. When the DO persists a message carrying a `media_key`, it claims the row
+   for that conversation — only the uploader can claim, and only once.
+7. Reads go through the Worker: the bucket is private, so
+   `GET /api/media/<key>` checks the session, checks membership, signs a GET
+   against B2 and streams the object back, forwarding `Range` so video
+   seeking keeps working. Successful full responses are stored in the
+   Cloudflare edge cache (`caches.default`, immutable), so a repeated view
+   costs one Worker request and no B2 read. B2 → Cloudflare egress is free
+   (Bandwidth Alliance), so the proxy adds no bandwidth cost.
 
-Keys are `media/<yyyy-mm>/<uuid>.<ext>`: prefixed by month to make future
-retention trivial, and unguessable — which matters because the access rule
-is "any valid session", not "a participant of that conversation" (the
-message rows live inside each Durable Object, so the Worker cannot check
-membership without asking the DO). The bucket being private is what keeps a
-leaked key from outliving the session check.
+Compression, in `app/src/lib/media.ts`:
+
+- images: resized to 1600px and re-encoded (WebP, JPEG fallback) to a ~600KB
+  target. A bubble is a few hundred CSS pixels tall, so anything above that
+  is detail nobody ever sees;
+- video: the bucket's biggest consumer. Transcoded to 720p at ~1.5 Mbps via
+  canvas + MediaRecorder, with the audio routed through a Web Audio
+  `MediaStreamDestination` so the page stays silent. MediaRecorder timestamps
+  by wall clock, so this runs in real time — which is why it only kicks in
+  above ~2.4 Mbps or 1600px, and why WebCodecs is the natural next step;
+- GIFs above 2MB are decoded frame by frame (`ImageDecoder`) and re-encoded
+  as WebM, becoming video messages; smaller ones pass through as GIFs.
+
+Every step falls back to uploading the original if the browser lacks the API
+or the result comes out bigger than the source.
+
+Authorization is membership, not obscurity: the index says which conversation
+an object belongs to, and `conversations` says whether the caller is one of
+its two participants. Keys are still `media/<yyyy-mm>/<uuid>.<ext>` —
+month-prefixed for retention, unguessable as defense in depth. Objects
+uploaded before migration 0003 have no index row; `MEDIA_LEGACY_READS`
+decides whether those keep the old "any session" rule (`allow`, the default,
+so existing threads keep rendering) or are refused (`deny`, after running
+`POST /api/admin/media/reindex` once).
+
+Maintenance runs hourly (`triggers.crons` → `scheduled` → `lib/cleanup.ts`):
+expired sessions, stale rate-limit counters, unclaimed uploads older than
+24h, and — only when `MEDIA_RETENTION_DAYS` is set — claimed media past that
+age. Each job is bounded per run, deletes bucket objects before forgetting
+index rows (a failed delete is retried instead of leaked), and bubbles whose
+object is gone render a "mídia indisponível" placeholder.
 
 Local development uses a fake-B2 stub (`npm run media:dev`), so no B2
-account is required. The signing code is generic S3, so Cloudflare R2 works
-with the same environment variables.
+account is required; it implements PUT, ranged GET, DELETE and ListObjectsV2.
+The signing code is generic S3, so Cloudflare R2 works with the same
+environment variables.
 
 ### Stickers
 
@@ -168,20 +226,26 @@ fetches the manifest once and renders stickers without bubble chrome.
 
 - `src/lib`: REST client (cookie credentials, uniform `ApiError`), a
   literal copy of the worker's `protocol.ts` (kept in sync by hand), hash
-  router (`#/` list, `#/t/<userId>` thread), media compression, push
-  opt-in flow, sticker manifest client.
-- `src/hooks`: `useSession` (context provider, `me` on load),
-  `useConversation` (the core: WebSocket with exponential backoff and
-  jitter, history resync on reconnect, optimistic sends with client_id
-  dedup, status rank so out-of-order frames never downgrade, offline
-  queue, read receipts, typing with throttle), `useTheme`, `usePush`.
+  router (`#/` list, `#/t/<userId>` thread, `#/config`, `#/admin`), media
+  compression and transcoding, push opt-in flow, sticker manifest client.
+- `src/hooks`: `useSession` (context provider, `me` on load, owns the
+  account theme), `useConversation` (the core: WebSocket with exponential
+  backoff and jitter, history resync on reconnect, optimistic sends with
+  client_id dedup, status rank so out-of-order frames never downgrade,
+  offline queue, read receipts, typing with throttle), `useTheme`,
+  `usePush`.
 - `src/screens`: Login, Conversations (search, previews, unread badges,
   visible-only 15s poll), Thread (bubbles, receipts, typing line, composer
-  with attach, emoji and sticker pickers).
+  with attach, emoji and sticker pickers), Settings (theme, push, session),
+  Admin (owner only).
 - Theming: every color exists once as a `--palette-*` token in
   `src/styles/palettes.css`; daisyUI themes and utilities consume tokens
   only. No hex values anywhere else. Entrance animations are fade/slide
-  with ease-out only, no springs or overshoot.
+  with ease-out only, no springs or overshoot. The preference resolves in
+  order account → local copy → `prefers-color-scheme`: the account value is
+  the source of truth, the local copy only exists so the first paint has no
+  flash while `/api/auth/me` is in flight, and "system" is a real state
+  (no `data-theme` attribute pinned), not an alias for light.
 - PWA: `public/sw.js` caches hashed `/assets/` (cache-first) and the app
   shell as an offline fallback, never the API. `manifest.webmanifest` plus
   pixel-art icons generated from `public/icon.svg`.
@@ -192,11 +256,12 @@ D1 (metadata):
 
 | Table                | Purpose                                             |
 | -------------------- | --------------------------------------------------- |
-| `users`              | id, unique case-insensitive username, password hash |
+| `users`              | id, unique case-insensitive username, password hash, `role`, `theme`, `created_by`, `disabled_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
 | `conversations`      | Deterministic id, ordered pair, last_message_at     |
 | `login_attempts`     | Rate-limit counters per account and per IP          |
 | `push_subscriptions` | Endpoint (PK), user, p256dh, auth                   |
+| `media_objects`      | Every presigned object: uploader, conversation, mime, size, claim timestamp |
 
 Durable Object SQLite (per conversation):
 
@@ -205,12 +270,62 @@ Durable Object SQLite (per conversation):
 | `messages`     | id, client_id, sender, type, body, media_key, status     |
 | `participants` | The pinned user pair, defense in depth for connections   |
 
+## Roles
+
+Two roles, in `users.role`. `user` is everyone; `owner` additionally reaches
+`/api/admin/*`. Migration 0003 grants it to the `good` account; any other
+instance names its owner with `npm run user:role -- [--remote] <user> owner`.
+There is no bootstrap endpoint on purpose — promoting an account is a D1
+write, and D1 writes need the deploy key.
+
+An owner administers every account except another owner, and cannot disable,
+demote or delete itself (that would lock the instance out of its own
+console). `created_by` records who provisioned an account. Disabling is a
+soft delete: `requireSession` joins on `disabled_at IS NULL`, so every live
+session of that account dies on its next request, it disappears from user
+search, and nobody can open a thread with it.
+
+The console reports storage from two sides, because they are two different
+systems: message payload comes from each conversation's DO (attributed to
+the sender, with the DO's real SQLite page count reported per conversation),
+and bucket bytes come from `media_objects.size` — the signed Content-Length
+B2 enforced on upload, so no bucket listing is needed. The overview does
+list the bucket once, so the drift between what the index knows and what B2
+actually holds is visible rather than hidden.
+
 ## Security notes
 
-- All user content is rendered as text, never as HTML.
+- All user content is rendered as text, never as HTML, with a CSP whose
+  `script-src` has no `unsafe-inline` as the backstop.
 - Server-side validation at every boundary: Zod on REST bodies and every
   WebSocket frame, MIME and size checks on uploads, slug check on sticker
   ids, https-only check on push endpoints (stored endpoints are outbound
   fetch targets, so this is an SSRF guard).
+- Login costs the same whether or not the account exists: an unknown
+  username still pays a full PBKDF2 derivation, so response time is not an
+  enumeration oracle. Rate limiting stays on top (5/15min per account,
+  20/15min per IP).
+- WebSocket frames are rate limited per connection with two token buckets
+  (persisted messages 20 burst / 2 per second, typing and receipts 40 / 8).
+  A client that keeps hammering past 20 consecutive refusals is
+  disconnected rather than answered.
+- Media reads require conversation membership, not just a valid session.
 - Session tokens and push endpoints are treated as secrets: hashed at rest
   or excluded from logs.
+
+### What this is not
+
+There is no end-to-end encryption. Messages are stored as plain text in each
+conversation's Durable Object, and media is stored unencrypted in the
+bucket. Transport is TLS and the platform encrypts its disks, but whoever
+controls the Cloudflare account can read every conversation. That is a
+deliberate trade — the push preview, the owner console's storage accounting
+and history purges all depend on the server being able to read content —
+and it is written down here so "private chat" is not mistaken for E2EE.
+
+Adding it later is tractable for fixed 1:1 threads (X25519 per account,
+ECDH to a conversation key, AES-256-GCM per message, all WebCrypto), and
+the costs are the interesting part: push previews become generic, history
+is unrecoverable without a password-wrapped key backup, multi-device needs
+key sync or per-device fan-out, and media has to be encrypted client-side
+before upload. Forward secrecy would additionally require a ratchet.

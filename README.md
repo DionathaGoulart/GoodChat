@@ -9,14 +9,21 @@ with native web push notifications, all within free tiers.
 - Real-time 1:1 messaging over WebSockets, with offline delivery and
   at-least-once semantics (client-side dedup by message id)
 - Delivery states (sent, delivered, read) and a typing indicator
-- Media messages: images and short videos, compressed in the browser and
-  uploaded directly to object storage (upload bytes never touch the
-  server); the bucket stays private and reads are proxied by the Worker
-  behind the session cookie
+- Media messages: images and short videos, compressed and transcoded in the
+  browser and uploaded directly to object storage (upload bytes never touch
+  the server); the bucket stays private and reads are proxied by the Worker,
+  which checks that the caller is a participant of the conversation the
+  object belongs to
 - Curated retro sticker pack and an emoji picker (pt-BR, self-hosted data)
-- Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login,
-  case-insensitive usernames, account creation via admin CLI only (no
-  public sign-up)
+- Settings screen: theme stored on the account, so it follows the person
+  across devices instead of living in one browser
+- Owner console: accounts, storage per account (message bytes and bucket
+  bytes), history purges, and on-demand maintenance
+- Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login
+  with no timing oracle, case-insensitive usernames, no public sign-up
+- Hardened by default: CSP with `frame-ancestors 'none'`, CORS allowlist,
+  per-connection WebSocket rate limiting, hourly cleanup of expired
+  sessions and orphaned uploads
 - Installable PWA: service worker, offline shell, VAPID web push with
   explicit opt-in
 - Retro design system: daisyUI 5 custom themes (light and dark), JetBrains
@@ -39,8 +46,10 @@ with native web push notifications, all within free tiers.
 ```
 Browser ---https---> Cloudflare Worker
                       |- /api/*  REST + WebSocket upgrade -> Durable Objects
-                      |- /*      SPA (static assets, single origin)
-                      |- D1: users, sessions, conversations, push subscriptions
+                      |- /*      SPA (assets re-emitted with the CSP)
+                      |- D1: users, sessions, conversations, media index,
+                      |      push subscriptions, rate-limit counters
+                      |- cron: hourly cleanup (sessions, orphan media)
                       |- Web Push -> FCM / Mozilla / Apple
 Browser ---PUT-----> Backblaze B2 (private bucket, presigned uploads)
 Worker  ---GET-----> Backblaze B2 (signed reads, streamed at /api/media/<key>)
@@ -84,6 +93,13 @@ npm run dev
 Open http://localhost:5173 in two browsers or profiles and sign in as
 `alice` / `alice-goodchat` and `bob` / `bob-goodchat`.
 
+For the owner console (`#/admin`), create the owner account once:
+
+```bash
+cd worker
+npm run user:create -- --owner good good-goodchat Good
+```
+
 ## Scripts
 
 Worker (`cd worker`):
@@ -93,7 +109,8 @@ Worker (`cd worker`):
 | `npm run dev`           | Dev server on port 8000                        |
 | `npm run db:migrate`    | Apply D1 migrations (local)                    |
 | `npm run db:seed`       | Seed test users (idempotent)                   |
-| `npm run user:create`   | Create an account: `-- [--remote] <user> <pass> [name]` |
+| `npm run user:create`   | Create an account: `-- [--remote] [--owner] <user> <pass> [name]` |
+| `npm run user:role`     | Set a role: `-- [--remote] <user> <owner\|user>` |
 | `npm run media:dev`     | Fake-B2 media store on port 9000               |
 | `npm run stickers:publish` | Publish sticker pack to the media store     |
 | `npm run vapid:generate`| Generate a VAPID key pair for web push         |
@@ -121,6 +138,7 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase6`  | Media presign validation, upload roundtrip, realtime flow  |
 | `smoke:phase7`  | Stickers, emoji persistence, typing broadcast              |
 | `smoke:phase8`  | Web push: aes128gcm roundtrip with decrypt, REST, trigger  |
+| `smoke:phase9`  | Security headers, CORS, login timing, settings, owner console |
 
 ## Documentation
 

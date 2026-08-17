@@ -72,14 +72,25 @@ After changing it, regenerate types: `npm run cf-typegen`.
 
 ## Creating accounts
 
-No public sign-up. Use the CLI:
+No public sign-up. Use the CLI, or the owner console once an owner exists:
 
 ```bash
 cd worker
-npm run user:create -- <username> <password> [display name]
+npm run user:create -- [--owner] <username> <password> [display name]
+npm run user:role -- <username> <owner|user>    # promote or demote
 ```
 
 Usernames match `^[a-z0-9_]{3,20}$`; passwords need at least 8 characters.
+
+Migration 0003 grants the owner role to the `good` account if it exists.
+For a local database, create it and sign in to reach `#/admin`:
+
+```bash
+npm run user:create -- --owner good good-goodchat Good
+```
+
+An owner can create, rename, disable, reset the password of and delete every
+non-owner account from the UI, and see how much each one is storing.
 
 ## Testing
 
@@ -93,7 +104,15 @@ npm run smoke:phase4   # realtime: delivery, dedup, receipts, typing
 npm run smoke:phase6   # media pipeline (starts its own stub if needed)
 npm run smoke:phase7   # stickers, emoji, typing broadcast
 npm run smoke:phase8   # web push: crypto roundtrip, REST, DO trigger
+npm run smoke:phase9   # headers, CORS, login timing, settings, owner console
 ```
+
+`smoke:phase9` needs the `good` owner account (see above) and the media stub.
+It creates and deletes its own throwaway accounts, and keeps its WebSocket
+flood inside the owner's own thread so the other suites' fixtures stay clean.
+Run the suites against a freshly migrated database — a few of them assert on
+state that earlier runs leave behind (`rm -rf worker/.wrangler/state`, then
+migrate and seed again).
 
 Each script prints per-check results and exits non-zero on failure. Type
 checks: `npm run typecheck` in both packages. Lint (app): `npm run lint`.

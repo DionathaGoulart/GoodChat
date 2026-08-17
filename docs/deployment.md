@@ -57,6 +57,21 @@ are stored lowercase and match case-insensitively, so `Good`, `GOOD` and
 Do not seed `alice`/`bob` in production: they are dev fixtures with public
 passwords.
 
+### The owner account
+
+Migration 0003 grants `role = 'owner'` to the account named `good`. If the
+instance owner is named something else, promote it explicitly:
+
+```bash
+npm run user:role -- --remote <username> owner
+```
+
+The owner reaches `/api/admin/*` and the `#/admin` screen: create and
+disable accounts, reset passwords, see storage per account, and purge
+conversation histories. Everything else is a plain `user`. There is no
+bootstrap endpoint — promoting an account requires the deploy key, on
+purpose. An owner cannot disable, demote or delete itself.
+
 ## 2. Media (Backblaze B2)
 
 Full recipe also in `worker/.env.example`. Summary:
@@ -120,13 +135,41 @@ Non-secrets can live in `wrangler.jsonc` (committable):
   "B2_BUCKET_NAME": "goodchat-media",
   "B2_S3_ENDPOINT": "https://s3.us-west-004.backblazeb2.com",
   "VAPID_PUBLIC_KEY": "<public key from step 3>",
-  "VAPID_SUBJECT": "mailto:you@example.com"
+  "VAPID_SUBJECT": "mailto:you@example.com",
+  "ALLOWED_ORIGINS": "",
+  "MEDIA_RETENTION_DAYS": "0",
+  "MEDIA_LEGACY_READS": "allow"
 }
 ```
+
+The last three:
+
+- `ALLOWED_ORIGINS` — extra browser origins allowed to call the API with
+  credentials, comma-separated. Empty in production: the SPA is same-origin.
+  The Worker's own origin is always allowed; anything else is refused.
+- `MEDIA_RETENTION_DAYS` — the hourly sweep deletes claimed media older than
+  this. `"0"` keeps everything forever, which is the default because
+  deleting someone's photos on a timer is a product decision. Bubbles whose
+  object is gone render a "mídia indisponível" placeholder.
+- `MEDIA_LEGACY_READS` — how to treat objects with no row in `media_objects`
+  (anything uploaded before migration 0003). `"allow"` keeps the old rule
+  (any valid session plus an unguessable key) so existing threads keep
+  rendering. After deploying, run `POST /api/admin/media/reindex` from the
+  owner console once, check that `indexed_media_bytes` matches
+  `bucket_bytes` in the overview, then set this to `"deny"` and redeploy —
+  media reads then require conversation membership, with no exceptions.
 
 Then regenerate types: `npm run cf-typegen`. Note that `vars` in
 `wrangler.jsonc` do not apply to local dev; `.dev.vars` rules there. Two
 separate worlds by design.
+
+### Scheduled maintenance
+
+`wrangler.jsonc` declares `triggers.crons: ["17 * * * *"]`; `wrangler deploy`
+registers it. The hourly run clears expired sessions and stale rate-limit
+counters, deletes uploads no message ever referenced (24h grace), and applies
+media retention when it is enabled. The owner console can trigger the same
+work on demand.
 
 ## 5. Build and deploy
 
