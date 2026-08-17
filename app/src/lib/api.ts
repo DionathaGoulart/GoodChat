@@ -3,6 +3,8 @@
 
 import type { WireMessage } from './protocol'
 
+// Empty string (production build) = same origin: REST calls go out as
+// relative paths and wsUrl() falls back to window.location.origin.
 export const API_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
 export interface PublicUser {
@@ -127,6 +129,7 @@ export function pushUnsubscribe(endpoint: string): Promise<{ ok: boolean; remove
 
 /** ws(s):// endpoint for a conversation (cookie rides the handshake). */
 export function wsUrl(conversationId: string, otherUserId: string): string {
-  const base = API_URL.replace(/^http/, 'ws')
+  const origin = API_URL !== '' ? API_URL : window.location.origin
+  const base = origin.replace(/^http/, 'ws')
   return `${base}/api/ws/${conversationId}?with=${encodeURIComponent(otherUserId)}`
 }

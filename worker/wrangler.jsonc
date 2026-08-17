@@ -27,6 +27,15 @@
       "database_id": "00000000-0000-0000-0000-000000000000"
     }
   ],
+  // SPA served by the Worker itself (same origin as the API — the session
+  // cookie is SameSite=Strict, so a separate frontend origin would never send
+  // it). /api/* always reaches the Worker script, everything else serves the
+  // Vite build with SPA fallback. Build the app before deploying (deploy:full).
+  "assets": {
+    "directory": "../app/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
   "observability": {
     "enabled": true
   }

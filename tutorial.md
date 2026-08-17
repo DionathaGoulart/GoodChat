@@ -41,8 +41,13 @@ Mesma origem resolve isso e ainda elimina CORS e configuração de URL da API.
 
 ## 2. Ajustes de código (uma vez, antes do 1º deploy)
 
-Três mudanças pequenas que o código atual **ainda não tem** — ele assume
-frontend e API em origens separadas, o que o cookie Strict não permite:
+> **✅ Já aplicados no repo (2026-08-17)** — seção mantida como referência do
+> que mudou e por quê. Extras aplicados junto: `npm run dev` do worker cria
+> `../app/dist` se faltar (clone fresco não quebra) e existe o atalho
+> `npm run deploy:full` (§7).
+
+Três mudanças pequenas — o código anterior assumia frontend e API em origens
+separadas, o que o cookie Strict não permite:
 
 ### 2.1 `worker/wrangler.jsonc` — servir o SPA como assets
 
@@ -82,8 +87,6 @@ VITE_MEDIA_URL=https://<sua URL pública do B2, ver §4>
 
 O Vite usa esse arquivo automaticamente no `npm run build`.
 
-> Esses três ajustes o Claude aplica em minutos se você pedir — ou faça na mão
-> seguindo o de cima.
 
 ---
 
@@ -287,8 +290,8 @@ Sem domínio tudo funciona no `workers.dev`. Com domínio no Cloudflare você ga
 ## 11. O que ainda falta / riscos conhecidos (estado 2026-08-17)
 
 **Bloqueia o deploy (fazer antes):**
-1. Ajustes de código do §2 (assets + wsUrl + .env.production) — **sem isso o
-   login não funciona em produção** (cookie SameSite=Strict cross-site).
+1. ~~Ajustes de código do §2~~ — **feitos** (assets + wsUrl + .env.production;
+   editar o `VITE_MEDIA_URL` placeholder quando o bucket existir).
 2. `database_id` real no wrangler.jsonc (§3).
 3. Bucket B2 + CORS + stickers publicados (§4) — sem isso mídia/stickers dão erro
    (texto e emoji funcionam mesmo assim).

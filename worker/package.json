@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --port 8000",
+    "dev": "mkdir -p ../app/dist && wrangler dev --port 8000",
     "deploy": "wrangler deploy",
+    "deploy:full": "cd ../app && npm run build && cd ../worker && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
     "db:migrate": "wrangler d1 migrations apply goodchat --local",
