@@ -252,7 +252,9 @@ async function tombstone(db: D1Database, userId: string, now: number): Promise<v
          display_name = NULL,
          avatar_url = NULL,
          password_hash = NULL,
-         theme = NULL,
+         theme_mode = NULL,
+         theme_light = NULL,
+         theme_dark = NULL,
          deleted_at = ?3,
          disabled_at = COALESCE(disabled_at, ?3),
          expires_at = NULL

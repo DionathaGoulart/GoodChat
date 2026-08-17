@@ -22,8 +22,11 @@ export interface SessionUser {
   avatar_url: string | null
   created_at: number
   role: UserRole
-  /** Account-level theme default; null follows the OS preference. */
-  theme: string | null
+  /** Account-level mode (migration 0005); null follows the OS preference. */
+  theme_mode: string | null
+  /** Palette per mode; null means "never chose", the client uses its default. */
+  theme_light: string | null
+  theme_dark: string | null
   /** Guest account (migration 0004): dies at `expires_at`, taking its data. */
   is_temp: boolean
   /** When this account stops existing; null for permanent accounts. */
@@ -107,7 +110,8 @@ export async function requireSession(
     .prepare(
       `SELECT s.created_at AS session_created_at, s.expires_at AS session_expires_at,
               u.id, u.username, u.display_name, u.avatar_url, u.created_at,
-              u.role, u.theme, u.is_temp, u.expires_at AS account_expires_at
+              u.role, u.theme_mode, u.theme_light, u.theme_dark,
+              u.is_temp, u.expires_at AS account_expires_at
        FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ?1
          AND u.disabled_at IS NULL
@@ -124,7 +128,9 @@ export async function requireSession(
       avatar_url: string | null
       created_at: number
       role: UserRole
-      theme: string | null
+      theme_mode: string | null
+      theme_light: string | null
+      theme_dark: string | null
       is_temp: number
       account_expires_at: number | null
     }>()
@@ -144,7 +150,9 @@ export async function requireSession(
       avatar_url: row.avatar_url,
       created_at: row.created_at,
       role: row.role,
-      theme: row.theme,
+      theme_mode: row.theme_mode,
+      theme_light: row.theme_light,
+      theme_dark: row.theme_dark,
       is_temp: row.is_temp === 1,
       expires_at: row.account_expires_at,
     },

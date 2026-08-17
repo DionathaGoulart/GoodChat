@@ -121,7 +121,10 @@ try {
   }
   const owner = (await api('/api/auth/me', { cookie: ownerCookie })).body.user
   check('owner session reports role=owner', owner.role === 'owner', owner.role)
-  check('session payload carries the account theme', 'theme' in owner)
+  check(
+    'session payload carries the account theme',
+    'theme_mode' in owner && 'theme_light' in owner && 'theme_dark' in owner,
+  )
 
   const aliceCookie = await login('alice', 'alice-goodchat')
   if (!aliceCookie) throw new Error('alice login failed (run npm run db:seed)')
@@ -161,28 +164,49 @@ try {
   })
 
   // --- account settings -------------------------------------------------
+  const dark = { theme_mode: 'dark', theme_light: 'goodchat-sand', theme_dark: 'goodchat-matrix' }
   const setDark = await api('/api/settings', {
     method: 'PATCH',
     cookie: aliceCookie,
-    body: JSON.stringify({ theme: 'goodchat-dark' }),
+    body: JSON.stringify(dark),
   })
-  check('PATCH /api/settings stores the theme', setDark.body?.user?.theme === 'goodchat-dark')
+  check(
+    'PATCH /api/settings stores mode and both palettes',
+    setDark.body?.user?.theme_mode === 'dark' &&
+      setDark.body?.user?.theme_light === 'goodchat-sand' &&
+      setDark.body?.user?.theme_dark === 'goodchat-matrix',
+    setDark.body,
+  )
   const afterSet = await api('/api/auth/me', { cookie: aliceCookie })
-  check('theme survives on the account', afterSet.body?.user?.theme === 'goodchat-dark')
+  check(
+    'theme survives on the account',
+    afterSet.body?.user?.theme_mode === 'dark' &&
+      afterSet.body?.user?.theme_dark === 'goodchat-matrix',
+    afterSet.body?.user,
+  )
 
   const setSystem = await api('/api/settings', {
     method: 'PATCH',
     cookie: aliceCookie,
-    body: JSON.stringify({ theme: null }),
+    body: JSON.stringify({ ...dark, theme_mode: null }),
   })
-  check('null theme means "follow the system"', setSystem.body?.user?.theme === null)
+  check('null mode means "follow the system"', setSystem.body?.user?.theme_mode === null)
 
   const badTheme = await api('/api/settings', {
     method: 'PATCH',
     cookie: aliceCookie,
-    body: JSON.stringify({ theme: 'hacker-green' }),
+    body: JSON.stringify({ ...dark, theme_light: 'hacker-green' }),
   })
-  check('unknown theme rejected', badTheme.status === 400, badTheme.body)
+  check('unknown palette rejected', badTheme.status === 400, badTheme.body)
+
+  // A dark palette in the light slot would leave the header toggle switching
+  // between two dark screens.
+  const crossed = await api('/api/settings', {
+    method: 'PATCH',
+    cookie: aliceCookie,
+    body: JSON.stringify({ ...dark, theme_light: 'goodchat-matrix' }),
+  })
+  check('palette from the wrong mode rejected', crossed.status === 400, crossed.body)
 
   // --- owner gate -------------------------------------------------------
   for (const path of ['/api/admin/overview', '/api/admin/users', '/api/admin/conversations']) {
