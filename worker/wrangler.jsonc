@@ -4,6 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Custom domain on the dionatha.com.br zone. Wrangler manages the DNS
+  // record; the workers.dev URL keeps working as a fallback.
+  "routes": [{ "pattern": "goodchat.dionatha.com.br", "custom_domain": true }],
   "durable_objects": {
     "bindings": [
       {
@@ -22,9 +25,7 @@
     {
       "binding": "DB",
       "database_name": "goodchat",
-      // Placeholder id — local dev ignores it; replace with the real id from
-      // `wrangler d1 create goodchat` before the first deploy (see .env.example).
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_id": "da0b3881-23eb-4c2d-816b-208817c26c27"
     }
   ],
   // SPA served by the Worker itself (same origin as the API — the session
@@ -35,6 +36,14 @@
     "directory": "../app/dist",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
+  },
+  // Non-secret production config. Secrets (B2 keys, VAPID private key) go in
+  // via `wrangler secret put`. These do NOT apply to local dev — .dev.vars does.
+  "vars": {
+    "B2_BUCKET_NAME": "goodchat-media",
+    "B2_S3_ENDPOINT": "https://s3.us-east-005.backblazeb2.com",
+    "VAPID_PUBLIC_KEY": "BJGYYnihl2IiXX0tg_cyQemfkNKKEI5IxgX15d0QrH6dYcyJEXVTS3bVeiG_8ibELE0SoShEFk3XRy0dfcwUcnk",
+    "VAPID_SUBJECT": "mailto:dionatha.work@gmail.com"
   },
   "observability": {
     "enabled": true
