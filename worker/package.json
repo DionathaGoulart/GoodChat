@@ -1,6 +1,7 @@
 {
   "name": "goodchat-worker",
   "private": true,
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
     "dev": "mkdir -p ../app/dist && wrangler dev --port 8000",
