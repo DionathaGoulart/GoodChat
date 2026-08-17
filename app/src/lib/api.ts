@@ -16,7 +16,11 @@ export interface PublicUser {
   id: string
   username: string
   display_name: string | null
-  avatar_url: string | null
+  /**
+   * Profile picture as a bucket object key, not a URL: the bucket is private,
+   * so the bytes come from `mediaUrl(key)` (lib/media.ts) like any attachment.
+   */
+  avatar_key: string | null
   created_at: number
   /**
    * The account is gone (a temporary one that expired, or one the owner
@@ -152,6 +156,19 @@ export function updateSettings(prefs: {
   })
 }
 
+/**
+ * Display name and profile picture. Both optional and independent — the name
+ * form and the picture picker fire on their own, so only what changed is sent.
+ * `null` clears the field; the picture is uploaded first (uploadAvatar) and
+ * only its key travels here.
+ */
+export function updateProfile(patch: {
+  display_name?: string | null
+  avatar_key?: string | null
+}): Promise<{ user: SessionUser }> {
+  return call('/api/profile', { method: 'PATCH', body: JSON.stringify(patch) })
+}
+
 export function lookupUsers(q: string): Promise<{ users: PublicUser[] }> {
   return call(`/api/users/lookup?q=${encodeURIComponent(q)}`)
 }
@@ -175,10 +192,19 @@ export interface UploadUrlResult {
   expires_in: number
 }
 
-export function requestUploadUrl(mime: string, size: number): Promise<UploadUrlResult> {
+/**
+ * `purpose` picks the worker's rule set: a message attachment may be a video up
+ * to 32MB, an avatar is a still image capped at 512KB and lands under the
+ * `avatars/` prefix, which is what makes it readable outside the conversation.
+ */
+export function requestUploadUrl(
+  mime: string,
+  size: number,
+  purpose: 'message' | 'avatar' = 'message',
+): Promise<UploadUrlResult> {
   return call('/api/media/upload-url', {
     method: 'POST',
-    body: JSON.stringify({ mime, size }),
+    body: JSON.stringify({ mime, size, purpose }),
   })
 }
 
