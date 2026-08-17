@@ -1,0 +1,22 @@
+<!-- Maskable variant of icon.svg: full-bleed cream, no frame (masks crop the
+     edges), art scaled into the ~80% safe zone. See icon.svg for regen. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" shape-rendering="crispEdges">
+  <rect width="240" height="240" fill="#f2efe7"/>
+  <g transform="translate(120 120) scale(0.75) translate(-120 -120)">
+    <g fill="#dc143c">
+      <rect x="48" y="48" width="144" height="112"/>
+      <rect x="32" y="64" width="16" height="80"/>
+      <rect x="192" y="64" width="16" height="80"/>
+      <rect x="64" y="160" width="32" height="16"/>
+      <rect x="64" y="176" width="16" height="16"/>
+    </g>
+    <g fill="#f2efe7">
+      <rect x="72" y="72" width="16" height="16"/>
+      <rect x="88" y="88" width="16" height="16"/>
+      <rect x="104" y="104" width="16" height="16"/>
+      <rect x="88" y="120" width="16" height="16"/>
+      <rect x="72" y="136" width="16" height="16"/>
+      <rect x="128" y="120" width="48" height="16"/>
+    </g>
+  </g>
+</svg>

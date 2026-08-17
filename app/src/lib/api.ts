@@ -108,6 +108,23 @@ export function requestUploadUrl(mime: string, size: number): Promise<UploadUrlR
   })
 }
 
+export interface PushSubscriptionBody {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+}
+
+export function pushVapidKey(): Promise<{ public_key: string }> {
+  return call('/api/push/vapid-public-key')
+}
+
+export function pushSubscribe(subscription: PushSubscriptionBody): Promise<{ ok: boolean }> {
+  return call('/api/push/subscribe', { method: 'POST', body: JSON.stringify(subscription) })
+}
+
+export function pushUnsubscribe(endpoint: string): Promise<{ ok: boolean; removed: boolean }> {
+  return call('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }) })
+}
+
 /** ws(s):// endpoint for a conversation (cookie rides the handshake). */
 export function wsUrl(conversationId: string, otherUserId: string): string {
   const base = API_URL.replace(/^http/, 'ws')

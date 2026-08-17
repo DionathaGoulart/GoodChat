@@ -5,6 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from 'react'
 import * as api from '../lib/api'
 import type { PublicUser } from '../lib/api'
+import { disablePush } from '../lib/push'
 
 type SessionStatus = 'loading' | 'anonymous' | 'authenticated'
 
@@ -46,6 +47,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
+      // Push subscriptions are per-account: drop this browser's one on logout
+      // so the next account on this device doesn't receive my notifications.
+      // Before api.logout() — the unsubscribe call still needs the session.
+      await disablePush()
       await api.logout()
     } finally {
       // Cookie is gone (or was already invalid) — drop local state either way.
