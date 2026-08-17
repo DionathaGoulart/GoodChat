@@ -9,7 +9,8 @@
     "cf-typegen": "wrangler types",
     "db:migrate": "wrangler d1 migrations apply goodchat --local",
     "db:seed": "node scripts/seed.ts",
-    "user:create": "node scripts/create-user.ts"
+    "user:create": "node scripts/create-user.ts",
+    "smoke:phase3": "node scripts/smoke-phase3.ts"
   },
   "dependencies": {
     "agents": "^0.20.1",
