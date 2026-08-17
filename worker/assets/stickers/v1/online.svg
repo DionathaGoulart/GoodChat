@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+  <rect width="240" height="240" fill="#f2efe7"/>
+  <rect x="4" y="4" width="232" height="232" fill="none" stroke="#1a0a0a" stroke-width="8"/>
+  <text x="120" y="104" text-anchor="middle" font-family="ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace" font-size="34" font-weight="800" letter-spacing="4" fill="#1a0a0a">LINK:</text>
+  <text x="120" y="156" text-anchor="middle" font-family="ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace" font-size="40" font-weight="800" letter-spacing="2" fill="#16a34a">ONLINE</text>
+  <rect x="60" y="176" width="120" height="10" fill="#16a34a"/>
+</svg>

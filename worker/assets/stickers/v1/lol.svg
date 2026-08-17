@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+  <rect width="240" height="240" fill="#f2efe7"/>
+  <rect x="4" y="4" width="232" height="232" fill="none" stroke="#1a0a0a" stroke-width="8"/>
+  <text x="120" y="138" text-anchor="middle" font-family="ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace" font-size="76" font-weight="900" font-style="italic" fill="#dc143c">LOL</text>
+  <rect x="42" y="158" width="156" height="14" fill="#1a0a0a"/>
+</svg>

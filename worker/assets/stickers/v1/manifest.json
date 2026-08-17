@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "base": "stickers/v1",
+  "stickers": [
+    { "id": "heart", "file": "heart.svg", "label": "coração" },
+    { "id": "fire", "file": "fire.svg", "label": "fogo" },
+    { "id": "star", "file": "star.svg", "label": "estrela" },
+    { "id": "thumb", "file": "thumb.svg", "label": "joinha" },
+    { "id": "skull", "file": "skull.svg", "label": "caveira" },
+    { "id": "coffee", "file": "coffee.svg", "label": "café" },
+    { "id": "gg", "file": "gg.svg", "label": "gg" },
+    { "id": "lol", "file": "lol.svg", "label": "lol" },
+    { "id": "ok", "file": "ok.svg", "label": "ok" },
+    { "id": "online", "file": "online.svg", "label": "online" }
+  ]
+}

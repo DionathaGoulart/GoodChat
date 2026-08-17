@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+  <rect width="240" height="240" fill="#f2efe7"/>
+  <rect x="4" y="4" width="232" height="232" fill="none" stroke="#1a0a0a" stroke-width="8"/>
+  <text x="120" y="142" text-anchor="middle" font-family="ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace" font-size="96" font-weight="900" font-style="italic" fill="#1a0a0a">GG</text>
+  <rect x="48" y="164" width="144" height="14" fill="#dc143c"/>
+</svg>

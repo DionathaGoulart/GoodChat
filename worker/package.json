@@ -13,7 +13,8 @@
     "smoke:phase3": "node scripts/smoke-phase3.ts",
     "smoke:phase4": "node scripts/smoke-phase4.ts",
     "smoke:phase6": "node scripts/smoke-phase6.ts",
-    "media:dev": "node scripts/media-dev-server.ts"
+    "media:dev": "node scripts/media-dev-server.ts",
+    "stickers:publish": "node scripts/publish-stickers.ts"
   },
   "dependencies": {
     "agents": "^0.20.1",
