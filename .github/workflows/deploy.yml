@@ -72,9 +72,14 @@ jobs:
       # An icon is never imported, so nothing here would ever fail on a broken
       # one: the favicon shipped as invalid XML (a "--" inside its comment, which
       # XML forbids) and browsers silently fell back to the PWA icon for weeks.
-      # xmllint is on the runner image already.
+      # xmllint is not on the runner image (it used to be), so it is installed —
+      # a real XML parser is the point, and this class of bug is exactly "the
+      # file is not well-formed".
       - name: Validate icons
-        run: xmllint --noout app/public/*.svg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxml2-utils
+          xmllint --noout app/public/*.svg
 
       # wrangler deploy uploads ../app/dist as the assets directory, so the
       # SPA has to be built before it runs — this is what was stale in
