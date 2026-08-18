@@ -1,60 +1,25 @@
-// Settings (#/config): account-level preferences. The theme picked here is
-// stored on the account, so it follows the person to every device instead of
-// living in one browser's localStorage.
+// Settings (#/config): account-level preferences — profile, appearance,
+// notifications, administration and the session.
+//
+// Appearance is a screen of its own (#/config/aparencia): it grew two axes,
+// skins and themes, each with its own shelf of previews, and this screen is a
+// list of unrelated switches rather than a place to compare looks.
 //
 // Push opt-in moved here from the conversation-list header: it is a setting,
 // and the header was collecting toolbar buttons.
 
-import { useState } from 'react'
-import { ApiError } from '../lib/api'
 import { usePush } from '../hooks/usePush'
 import { useSession } from '../hooks/useSession'
-import { useTheme, type ThemePrefs } from '../hooks/useTheme'
-import {
-  DARK_PALETTES,
-  LIGHT_PALETTES,
-  type ModePreference,
-  type PaletteOption,
-} from '../lib/themes'
 import { RetroIconButton } from '../components/RetroIconButton'
-import { PaletteSwatch } from '../components/PaletteSwatch'
 import { ProfileCard } from '../components/ProfileCard'
 import { TempAccountBanner } from '../components/TempAccount'
 import { navigate } from '../lib/router'
 
-const MODE_OPTIONS: { value: ModePreference; label: string; hint: string }[] = [
-  { value: null, label: 'sistema', hint: 'segue o dispositivo' },
-  { value: 'light', label: 'claro', hint: 'paleta clara sempre' },
-  { value: 'dark', label: 'escuro', hint: 'paleta escura sempre' },
-]
-
 export function SettingsScreen() {
-  const { user, setTheme, logout, isOwner } = useSession()
-  const { prefs, mode } = useTheme()
+  const { user, logout, isOwner } = useSession()
   const push = usePush()
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   if (!user) return null
-
-  const save = (next: ThemePrefs) => {
-    if (saving) return
-    setSaving(true)
-    setError(null)
-    setTheme(next)
-      .catch((err: unknown) => {
-        setError(
-          err instanceof ApiError && err.status === 0
-            ? 'servidor inacessível — tema salvo só neste dispositivo'
-            : 'não deu pra salvar o tema na conta',
-        )
-      })
-      .finally(() => setSaving(false))
-  }
-
-  const pickMode = (value: ModePreference) => {
-    if (value !== prefs.mode) save({ ...prefs, mode: value })
-  }
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 p-6 sm:p-8">
@@ -78,58 +43,23 @@ export function SettingsScreen() {
 
       <ProfileCard />
 
-      {error && (
-        <p className="border-2 border-error bg-error/10 p-3 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
-          {error}
-        </p>
-      )}
-
       <section className="card card-border border-base-300 bg-base-200 retro-shadow">
         <div className="card-body gap-4">
           <div>
             <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-              {'>'} tema
+              {'>'} aparência
             </h2>
             <p className="mt-1 text-sm opacity-70">
-              Salvo na sua conta — vale em qualquer dispositivo onde você entrar.
+              Skins e temas. Salvo na sua conta — vale em qualquer dispositivo onde você
+              entrar.
             </p>
           </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            {MODE_OPTIONS.map((option) => {
-              const selected = option.value === prefs.mode
-              return (
-                <button
-                  key={option.label}
-                  type="button"
-                  aria-pressed={selected}
-                  disabled={saving}
-                  onClick={() => pickMode(option.value)}
-                  className={`retro-border flex cursor-pointer flex-col gap-1 px-3 py-3 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 ${
-                    selected ? 'bg-accent text-accent-content' : 'bg-base-100'
-                  }`}
-                >
-                  <span className="font-mono text-xs font-black uppercase tracking-widest">
-                    {option.label}
-                  </span>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.15em] opacity-60">
-                    {option.hint}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-
-          <PaletteGroup
-            title={mode === 'dark' ? 'paleta escura' : 'paleta clara'}
-            options={mode === 'dark' ? DARK_PALETTES : LIGHT_PALETTES}
-            selected={mode === 'dark' ? prefs.dark : prefs.light}
-            disabled={saving}
-            onPick={(id) => {
-              const current = mode === 'dark' ? prefs.dark : prefs.light
-              if (id !== current) save({ ...prefs, [mode]: id })
-            }}
-          />
+          <RetroIconButton
+            className="self-start"
+            onClick={() => navigate({ name: 'appearance' })}
+          >
+            abrir aparência
+          </RetroIconButton>
         </div>
       </section>
 
@@ -203,61 +133,5 @@ export function SettingsScreen() {
         </div>
       </section>
     </main>
-  )
-}
-
-/**
- * The palette shelf of the mode that is on screen — only that one. Each mode
- * keeps its own palette, and showing both shelves at once meant four of the
- * swatches previewed colors the app was not going to use until the mode
- * changed: the mode buttons above are the way to reach the other shelf, and
- * flipping them shows the palette applied instead of guessed.
- */
-function PaletteGroup({
-  title,
-  options,
-  selected,
-  disabled,
-  onPick,
-}: {
-  title: string
-  options: readonly PaletteOption[]
-  selected: string
-  disabled: boolean
-  onPick: (id: string) => void
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <h3 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
-          {title}
-        </h3>
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">
-          em uso agora
-        </span>
-      </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {options.map((palette) => {
-          const isSelected = palette.id === selected
-          return (
-            <button
-              key={palette.id}
-              type="button"
-              aria-pressed={isSelected}
-              disabled={disabled}
-              onClick={() => onPick(palette.id)}
-              className={`retro-border flex cursor-pointer items-center gap-3 px-3 py-2 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 ${
-                isSelected ? 'bg-accent text-accent-content' : 'bg-base-100'
-              }`}
-            >
-              <PaletteSwatch palette={palette} />
-              <span className="font-mono text-[11px] font-black uppercase tracking-widest">
-                {palette.label}
-              </span>
-            </button>
-          )
-        })}
-      </div>
-    </div>
   )
 }

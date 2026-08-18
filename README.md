@@ -33,8 +33,12 @@ with native web push notifications, all within free tiers.
   cleanup of expired sessions, expired accounts and orphaned uploads
 - Installable PWA: service worker, offline shell, VAPID web push with
   explicit opt-in
-- Retro design system: ten daisyUI 5 custom themes sharing one geometry,
-  JetBrains Mono, hard shadows, square corners, scanline and terminal cursor
+- Presence: a heartbeat while the tab is visible says who is online, shown on
+  the conversation list and in the thread header — which reports the person
+  you are writing to, and falls back to the link state only when your own
+  socket is the thing that is down
+- Retro design system: two skins (neobrutalist and terminal) × ten daisyUI 5
+  custom themes, JetBrains Mono, square corners, scanline and terminal cursor
   motifs, and skeleton placeholders shaped like the content they stand in for
   (list, thread, console) so a wait never shifts the layout
 
@@ -150,6 +154,7 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase9`  | Security headers, CORS, login timing, settings, owner console |
 | `smoke:phase10` | Guest accounts: quotas, expiry, deletion keeping the peer's history |
 | `smoke:phase11` | Profile: display name, avatar upload rules, adoption, read access, replacement |
+| `smoke:phase12` | Presence: heartbeat, online window, presence on the listing endpoints, skin preference |
 
 ## Documentation
 

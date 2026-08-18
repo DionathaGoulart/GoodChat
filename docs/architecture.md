@@ -34,8 +34,9 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/auth/login`             | no   | Session cookie from username/password  |
 | POST   | `/api/auth/temp`              | no   | Guest account (expires) + session, credentials returned once |
 | POST   | `/api/auth/logout`            | no   | Revoke session (idempotent)            |
-| GET    | `/api/auth/me`                | yes  | Current user (includes `role` and the three theme fields) |
-| PATCH  | `/api/settings`               | yes  | Account preferences (`theme_mode`, `theme_light`, `theme_dark` — all three per call) |
+| GET    | `/api/auth/me`                | yes  | Current user (includes `role`, the three theme fields and `skin`) |
+| PATCH  | `/api/settings`               | yes  | Appearance (`theme_mode`, `theme_light`, `theme_dark` per call; `skin` optional, absent keeps the stored one) |
+| POST   | `/api/presence`               | yes  | Heartbeat: marks the caller online and answers with the state of the ids in the body |
 | PATCH  | `/api/profile`                | yes  | Own display name and/or picture (`display_name`, `avatar_key` — both optional, `null` clears) |
 | GET    | `/api/users/lookup?q=`        | yes  | Prefix search by username              |
 | GET    | `/api/conversations`          | yes  | List with preview and unread count     |
@@ -323,9 +324,28 @@ fetches the manifest once and renders stickers without bubble chrome.
   `src/styles/themes.css` and the utilities consume tokens only. No hex
   values anywhere else. Entrance animations are fade/slide with ease-out
   only, no springs or overshoot.
+- Presence: one heartbeat per tab (`src/lib/presence.ts`) POSTs the ids on
+  screen to `/api/presence` every 25s while the tab is visible; the same call
+  stamps `users.last_seen_at`, and "online" is a beat inside the 60s window
+  (two beats wide, so one lost request does not blink anyone offline). The
+  store is a module singleton read through `useSyncExternalStore`, so the list
+  and an open thread can never disagree. REST payloads carry an `online` flag
+  of their own, which is what the first paint uses before the first beat
+  lands. Not the conversation DO: it only knows about its own thread, and the
+  question is per account.
+- Skins: the appearance preference has a second, independent axis — the
+  geometry the palette is painted on, `data-skin` on `<html>`, catalogued in
+  `src/lib/skins.ts` and defined in `src/styles/skins.css`. `retro` is the
+  neobrutalist look the app shipped with (2px frames, hard offset shadow);
+  `terminal` is the Portfolio terminal skin's geometry (1px frames, CRT glow,
+  block caret, 4px scanline). A skin only redefines the tokens the `retro-*`
+  utilities read, so no component knows which one is active, and the two axes
+  multiply instead of adding: ten palettes × two skins. The rules are
+  deliberately unlayered so they outrank Tailwind's utility layer — which is
+  also why they must never touch a class a component pairs with a variant.
 - Palettes: the preference is a mode (`light` / `dark` / null = follow the
   OS) plus which palette each mode uses — four light, six dark, catalogued
-  in `src/lib/themes.ts` and offered by the settings screen, which shows the
+  in `src/lib/themes.ts` and offered by the appearance screen, which shows the
   shelf of the mode that is on screen — flipping the mode shows the other
   shelf, applied instead of previewed. The header button only moves the mode;
   each mode keeps its own palette. Ids are the
@@ -347,7 +367,7 @@ D1 (metadata):
 
 | Table                | Purpose                                             |
 | -------------------- | --------------------------------------------------- |
-| `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
+| `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `skin`, `last_seen_at`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
 | `conversations`      | Deterministic id, ordered pair, last_message_at     |
 | `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads) |

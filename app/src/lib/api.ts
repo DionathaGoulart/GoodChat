@@ -23,6 +23,14 @@ export interface PublicUser {
   avatar_key: string | null
   created_at: number
   /**
+   * Presence (worker/src/lib/presence.ts): the last heartbeat and whether it is
+   * recent enough to call this account online. Optional because only the
+   * endpoints that render presence compute it — and because a payload from a
+   * worker that predates it must still parse.
+   */
+  last_seen_at?: number | null
+  online?: boolean
+  /**
    * The account is gone (a temporary one that expired, or one the owner
    * removed). The thread stays readable, but nothing can be sent to it.
    */
@@ -42,6 +50,8 @@ export interface SessionUser extends PublicUser {
    */
   theme_light: string | null
   theme_dark: string | null
+  /** Skin id from lib/skins.ts; null means the catalog default. */
+  skin: string | null
   /** Guest account: it and its data are deleted at `expires_at`. */
   is_temp: boolean
   expires_at: number | null
@@ -137,14 +147,15 @@ export function me(): Promise<{ user: SessionUser }> {
 }
 
 /**
- * Account-level preferences. All three travel together — the settings screen
- * always knows the whole triple, and a full write keeps the worker free of
+ * Account-level appearance. All four values travel together — the appearance
+ * screen always knows the whole set, and a full write keeps the worker free of
  * read-modify-write. `theme_mode: null` means "follow the system".
  */
 export function updateSettings(prefs: {
   mode: ThemeMode | null
   light: string
   dark: string
+  skin: string
 }): Promise<{ user: SessionUser }> {
   return call('/api/settings', {
     method: 'PATCH',
@@ -152,8 +163,31 @@ export function updateSettings(prefs: {
       theme_mode: prefs.mode,
       theme_light: prefs.light,
       theme_dark: prefs.dark,
+      skin: prefs.skin,
     }),
   })
+}
+
+export interface PresenceState {
+  id: string
+  online: boolean
+  last_seen_at: number | null
+}
+
+export interface PresenceResult {
+  /** Server clock, so a client with a skewed one still reads sane timestamps. */
+  now: number
+  window_ms: number
+  heartbeat_ms: number
+  users: PresenceState[]
+}
+
+/**
+ * Heartbeat: says "I am here" and asks about the accounts on screen in the same
+ * round trip. Driven by lib/presence.ts, which is the only caller.
+ */
+export function presence(ids: string[]): Promise<PresenceResult> {
+  return call('/api/presence', { method: 'POST', body: JSON.stringify({ ids }) })
 }
 
 /**

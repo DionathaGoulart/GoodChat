@@ -59,7 +59,7 @@ export async function login(request: Request, env: Env): Promise<Response> {
   // if the sweep has not reached its data yet.
   const user = await env.DB.prepare(
     `SELECT id, username, display_name, avatar_key, created_at, role,
-            theme_mode, theme_light, theme_dark,
+            theme_mode, theme_light, theme_dark, skin,
             is_temp, expires_at, password_hash
      FROM users
      WHERE username = ?1
@@ -132,6 +132,7 @@ export async function createTempSession(request: Request, env: Env): Promise<Res
     theme_mode: null,
     theme_light: null,
     theme_dark: null,
+    skin: null,
     is_temp: true,
     expires_at: account.expiresAt,
   }

@@ -32,6 +32,12 @@ export interface SessionUser {
   /** Palette per mode; null means "never chose", the client uses its default. */
   theme_light: string | null
   theme_dark: string | null
+  /**
+   * Skin id (migration 0007) — the geometry the palette is painted on, from
+   * app/src/lib/skins.ts. null means "never chose": the client resolves it to
+   * the default skin, the same way it resolves a null palette.
+   */
+  skin: string | null
   /** Guest account (migration 0004): dies at `expires_at`, taking its data. */
   is_temp: boolean
   /** When this account stops existing; null for permanent accounts. */
@@ -47,13 +53,21 @@ export interface PublicUser {
   avatar_key: string | null
   created_at: number
   /**
+   * Last heartbeat (migration 0007), and whether it is recent enough to call
+   * this account online — `lib/presence.ts` owns that window. Optional because
+   * only the surfaces that render presence pay for computing it.
+   */
+  last_seen_at?: number | null
+  online?: boolean
+  /**
    * The account behind this row is gone and only its tombstone remains
    * (migration 0004). Absent in contexts that never return one, like search.
    */
   deleted?: boolean
 }
 
-export const PUBLIC_USER_COLUMNS = 'id, username, display_name, avatar_key, created_at'
+export const PUBLIC_USER_COLUMNS =
+  'id, username, display_name, avatar_key, created_at, last_seen_at'
 
 export interface AuthContext {
   user: SessionUser
@@ -116,7 +130,7 @@ export async function requireSession(
     .prepare(
       `SELECT s.created_at AS session_created_at, s.expires_at AS session_expires_at,
               u.id, u.username, u.display_name, u.avatar_key, u.created_at,
-              u.role, u.theme_mode, u.theme_light, u.theme_dark,
+              u.role, u.theme_mode, u.theme_light, u.theme_dark, u.skin,
               u.is_temp, u.expires_at AS account_expires_at
        FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ?1
@@ -137,6 +151,7 @@ export async function requireSession(
       theme_mode: string | null
       theme_light: string | null
       theme_dark: string | null
+      skin: string | null
       is_temp: number
       account_expires_at: number | null
     }>()
@@ -159,6 +174,7 @@ export async function requireSession(
       theme_mode: row.theme_mode,
       theme_light: row.theme_light,
       theme_dark: row.theme_dark,
+      skin: row.skin,
       is_temp: row.is_temp === 1,
       expires_at: row.account_expires_at,
     },

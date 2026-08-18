@@ -17,6 +17,7 @@ import { tempAccountConfig } from './lib/accounts'
 import { createTempSession, login, logout, me } from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
 import { createUploadUrl, serveMedia } from './routes/media'
+import { heartbeat } from './routes/presence'
 import { updateProfile } from './routes/profile'
 import { subscribePush, unsubscribePush, vapidPublicKey } from './routes/push'
 import { updateSettings } from './routes/settings'
@@ -86,6 +87,7 @@ async function route(
   if (pathname === '/api/auth/me' && method === 'GET') return me(request, env)
   if (pathname === '/api/settings' && method === 'PATCH') return updateSettings(request, env)
   if (pathname === '/api/profile' && method === 'PATCH') return updateProfile(request, env)
+  if (pathname === '/api/presence' && method === 'POST') return heartbeat(request, env)
   if (pathname === '/api/users/lookup' && method === 'GET') return lookupUsers(request, env, url)
   if (pathname === '/api/conversations' && method === 'GET') return listConversations(request, env)
   if (pathname === '/api/conversations/resolve' && method === 'POST') {

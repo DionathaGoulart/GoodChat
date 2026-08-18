@@ -2,6 +2,7 @@ import { getAgentByName } from 'agents'
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import { conversationIdFor } from '../lib/conversation'
+import { isOnline } from '../lib/presence'
 import {
   PUBLIC_USER_COLUMNS,
   requireSession,
@@ -22,6 +23,8 @@ interface ConversationRow {
   other_display_name: string | null
   other_avatar_key: string | null
   other_created_at: number
+  /** Last heartbeat of the peer (migration 0007) — presence for the list. */
+  other_last_seen_at: number | null
   /** Set when the peer account is a tombstone (migration 0004). */
   other_deleted_at: number | null
 }
@@ -34,7 +37,8 @@ export async function listConversations(request: Request, env: Env): Promise<Res
     `SELECT c.id, c.created_at, c.last_message_at,
             u.id AS other_id, u.username AS other_username,
             u.display_name AS other_display_name, u.avatar_key AS other_avatar_key,
-            u.created_at AS other_created_at, u.deleted_at AS other_deleted_at
+            u.created_at AS other_created_at, u.last_seen_at AS other_last_seen_at,
+            u.deleted_at AS other_deleted_at
      FROM conversations c
      JOIN users u ON u.id = CASE WHEN c.user_a = ?1 THEN c.user_b ELSE c.user_a END
      WHERE c.user_a = ?1 OR c.user_b = ?1
@@ -50,6 +54,9 @@ export async function listConversations(request: Request, env: Env): Promise<Res
     results.map((row) => fetchSummary(env, row.id, auth.user.id)),
   )
 
+  // One clock for the whole list, so two tiles cannot disagree about who is
+  // online because a millisecond passed between them.
+  const now = Date.now()
   const conversations = results.map((row, i) => ({
     id: row.id,
     created_at: row.created_at,
@@ -62,6 +69,9 @@ export async function listConversations(request: Request, env: Env): Promise<Res
       display_name: row.other_display_name,
       avatar_key: row.other_avatar_key,
       created_at: row.other_created_at,
+      last_seen_at: row.other_last_seen_at,
+      // A tombstone is not offline, it is gone — the tile says so instead.
+      online: row.other_deleted_at === null && isOnline(row.other_last_seen_at, now),
       // The thread survives its owner: the client renders it read-only.
       deleted: row.other_deleted_at !== null,
     } satisfies PublicUser,
@@ -118,7 +128,11 @@ export async function resolveConversation(request: Request, env: Env): Promise<R
     {
       conversation_id: conversationId,
       exists: existing !== null,
-      other_user: { ...publicUser, deleted } satisfies PublicUser,
+      other_user: {
+        ...publicUser,
+        online: !deleted && isOnline(publicUser.last_seen_at, Date.now()),
+        deleted,
+      } satisfies PublicUser,
       readonly: deleted,
     },
     200,

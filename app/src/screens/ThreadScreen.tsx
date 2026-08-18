@@ -1,23 +1,31 @@
 // Thread: resolve the deterministic conversation id for the peer, then run
-// the live WebSocket. Header shows LINK status (terminal motif); read
-// receipts fire when the tab is visible so unread badges stay truthful.
+// the live WebSocket. Read receipts fire when the tab is visible so unread
+// badges stay truthful.
+//
+// The header used to report my own socket ("link: online"), which said nothing
+// about the person being written to. It now reports *their* presence
+// (lib/presence.ts) — with one exception: while my own link is down I cannot
+// know theirs, so the link state is what gets shown instead of a stale "online".
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, resolveConversation } from '../lib/api'
 import type { PublicUser } from '../lib/api'
 import { useConversation } from '../hooks/useConversation'
 import type { ConnectionState } from '../hooks/useConversation'
+import { usePresence } from '../hooks/usePresence'
 import { useSession } from '../hooks/useSession'
+import { presenceText, resolvePresence } from '../lib/presence'
 import { Avatar } from '../components/Avatar'
 import { Composer } from '../components/Composer'
 import { MessageBubble } from '../components/MessageBubble'
+import { PresenceMarker } from '../components/Presence'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { ThreadSkeleton } from '../components/Skeleton'
 import { WindowDots } from '../components/WindowDots'
 import { navigate } from '../lib/router'
 
-const LINK_LABEL: Record<ConnectionState, { text: string; className: string }> = {
-  online: { text: 'link: online', className: 'text-success' },
+/** Shown only while the socket is not up — see the note at the top. */
+const LINK_LABEL: Record<Exclude<ConnectionState, 'online'>, { text: string; className: string }> = {
   connecting: { text: 'link: connecting', className: 'text-warning' },
   offline: { text: 'link: offline', className: 'text-error' },
 }
@@ -102,6 +110,7 @@ function LiveThread({
 }) {
   const { messages, connection, peerTyping, send, sendMedia, sendSticker, sendTyping, markRead } =
     useConversation(conversationId, otherUser.id, myId)
+  const presence = usePresence(useMemo(() => [otherUser.id], [otherUser.id]))
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
 
@@ -130,7 +139,16 @@ function LiveThread({
     if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight
   }, [messages])
 
-  const link = LINK_LABEL[connection]
+  // Whose status the header reports: the peer's, unless my own link is the
+  // thing that is broken. A dead account has no presence to report at all.
+  const peerState = resolvePresence(presence.get(otherUser.id), otherUser)
+  const status = readonly
+    ? { text: 'conta expirada', className: 'opacity-60' }
+    : connection !== 'online'
+      ? LINK_LABEL[connection]
+      : peerState.online
+        ? { text: 'online', className: 'text-success' }
+        : { text: presenceText(peerState, Date.now()), className: 'opacity-60' }
 
   return (
     <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col gap-4 p-4 sm:p-6">
@@ -139,7 +157,12 @@ function LiveThread({
         <RetroIconButton onClick={() => navigate({ name: 'list' })} aria-label="voltar à lista">
           ←
         </RetroIconButton>
-        <Avatar user={otherUser} />
+        <PresenceMarker
+          online={!readonly && peerState.online}
+          label={readonly ? 'conta expirada' : presenceText(peerState, Date.now())}
+        >
+          <Avatar user={otherUser} />
+        </PresenceMarker>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-black uppercase tracking-tight">
             {readonly ? 'conta expirada' : (otherUser.display_name ?? otherUser.username)}
@@ -149,9 +172,9 @@ function LiveThread({
           </p>
         </div>
         <p
-          className={`shrink-0 font-mono text-[8px] uppercase tracking-[0.2em] md:text-[10px] ${link.className}`}
+          className={`shrink-0 font-mono text-[8px] uppercase tracking-[0.2em] md:text-[10px] ${status.className}`}
         >
-          {link.text}
+          {status.text}
         </p>
       </header>
 

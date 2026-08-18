@@ -1,13 +1,17 @@
 // Conversation list: search to start new threads, tiles with preview +
-// unread badge (worker enriches via DO /summary). Light polling keeps the
-// list fresh while visible — real-time list updates are a phase-7+ debt.
+// unread badge (worker enriches via DO /summary) + whether the peer is online.
+// Light polling keeps the list fresh while visible — real-time list updates are
+// a phase-7+ debt. Presence is not part of that poll: it rides its own
+// heartbeat (lib/presence.ts), which refreshes faster than the list does.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { listConversations } from '../lib/api'
 import type { ConversationListItem } from '../lib/api'
+import { usePresence } from '../hooks/usePresence'
 import { useSession } from '../hooks/useSession'
 import { useTheme } from '../hooks/useTheme'
 import { ConversationTile } from '../components/ConversationTile'
+import { MoonIcon, SunIcon } from '../components/Icons'
 import { ConversationListSkeleton } from '../components/Skeleton'
 import { GuestCredentialsCard, TempAccountBanner } from '../components/TempAccount'
 import { RetroIconButton } from '../components/RetroIconButton'
@@ -21,6 +25,13 @@ export function ConversationsScreen() {
   const { mode, toggleMode } = useTheme()
   const [conversations, setConversations] = useState<ConversationListItem[] | null>(null)
   const [failed, setFailed] = useState(false)
+
+  // One heartbeat asks about every peer on screen at once.
+  const peerIds = useMemo(
+    () => (conversations ?? []).map((item) => item.other_user.id),
+    [conversations],
+  )
+  const presence = usePresence(peerIds)
 
   // The header toggle is a shortcut for the setting: flip locally for an
   // instant response, then persist it to the account. It only moves the mode —
@@ -73,10 +84,13 @@ export function ConversationsScreen() {
         <div className="flex gap-2">
           <RetroIconButton
             onClick={flipTheme}
-            aria-label="alternar tema"
+            aria-label={mode === 'light' ? 'ativar modo escuro' : 'ativar modo claro'}
             title={mode === 'light' ? 'modo escuro' : 'modo claro'}
+            className="flex items-center justify-center"
           >
-            {mode === 'light' ? 'dark' : 'light'}
+            {/* The icon is the mode the button switches *to* — a moon while the
+                app is light, a sun while it is dark. */}
+            {mode === 'light' ? <MoonIcon /> : <SunIcon />}
           </RetroIconButton>
           <RetroIconButton
             onClick={() => navigate({ name: 'settings' })}
@@ -117,7 +131,7 @@ export function ConversationsScreen() {
         <ul className="flex flex-col gap-3">
           {conversations.map((item) => (
             <li key={item.id}>
-              <ConversationTile item={item} />
+              <ConversationTile item={item} presence={presence.get(item.other_user.id)} />
             </li>
           ))}
         </ul>

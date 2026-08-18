@@ -1,5 +1,6 @@
-// Theme state: a mode (light / dark / follow the system) plus which palette
-// each mode uses. Resolution order is unchanged from the single-pair days:
+// Appearance state: a mode (light / dark / follow the system), which palette
+// each mode uses, and which skin paints them (lib/skins.ts — `data-skin` on
+// <html>). Resolution order is unchanged from the single-pair days:
 //   1. the account preference (users.theme_mode / theme_light / theme_dark),
 //      which follows the person across devices and survives a PWA reinstall;
 //   2. the local copy of that preference, so the first paint has no flash
@@ -7,8 +8,8 @@
 //   3. the catalog defaults, for an account that never picked anything.
 //
 // The session provider owns the account value and calls applyThemePrefs when
-// it arrives; this module only ever touches <html data-theme>, the
-// theme-color meta and localStorage.
+// it arrives; this module only ever touches <html data-theme> / <html
+// data-skin>, the theme-color meta and localStorage.
 //
 // One change the palettes forced: "system" can no longer mean "pin nothing and
 // let daisyUI's prefersdark decide" — the OS only says light or dark, it does
@@ -17,6 +18,7 @@
 // it when the OS flips.
 
 import { useSyncExternalStore } from 'react'
+import { DEFAULT_SKIN, skinOr } from '../lib/skins'
 import {
   DEFAULT_DARK,
   DEFAULT_LIGHT,
@@ -32,6 +34,8 @@ export interface ThemePrefs {
   mode: ModePreference
   light: string
   dark: string
+  /** Skin id — the geometry the palette is painted on (lib/skins.ts). */
+  skin: string
 }
 
 const STORAGE_KEY = 'goodchat-theme'
@@ -40,6 +44,7 @@ export const DEFAULT_PREFS: ThemePrefs = {
   mode: null,
   light: DEFAULT_LIGHT,
   dark: DEFAULT_DARK,
+  skin: DEFAULT_SKIN,
 }
 
 function systemMode(): Mode {
@@ -68,6 +73,9 @@ function readStored(): ThemePrefs {
       mode: parsed.mode === 'light' || parsed.mode === 'dark' ? parsed.mode : null,
       light: lightPaletteOr(parsed.light),
       dark: darkPaletteOr(parsed.dark),
+      // Copies written before skins existed have none: the default is the look
+      // they were already seeing.
+      skin: skinOr(parsed.skin),
     }
   } catch {
     return DEFAULT_PREFS
@@ -108,6 +116,7 @@ function paintThemeColor(): void {
 function paint(prefs: ThemePrefs): void {
   const theme = (prefs.mode ?? systemMode()) === 'dark' ? prefs.dark : prefs.light
   document.documentElement.setAttribute('data-theme', theme)
+  document.documentElement.setAttribute('data-skin', prefs.skin)
   paintThemeColor()
 }
 
@@ -129,6 +138,7 @@ export function applyThemePrefs(prefs: ThemePrefs): void {
     mode: prefs.mode,
     light: lightPaletteOr(prefs.light),
     dark: darkPaletteOr(prefs.dark),
+    skin: skinOr(prefs.skin),
   }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(current))

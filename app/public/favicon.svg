@@ -1,0 +1,29 @@
+<!-- Browser-tab icon: a pixel "G" — placeholder until the real mark exists.
+     Same pixel-art family as icon.svg (cream plate, ink frame, crimson glyph,
+     everything on a 28px grid) so the tab does not look like a different app.
+     Literal hex, like the other icons: an SVG served as a file cannot read the
+     CSS custom properties in src/styles/palettes.css. Values are --palette-cream,
+     --palette-ink and --palette-crimson.
+     The PWA icons stay in icon.svg / icon-*.png — this one is only the tab. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" shape-rendering="crispEdges">
+  <rect width="240" height="240" fill="#f2efe7"/>
+  <g fill="#1a0a0a">
+    <rect x="4" y="4" width="232" height="8"/>
+    <rect x="4" y="228" width="232" height="8"/>
+    <rect x="4" y="4" width="8" height="232"/>
+    <rect x="228" y="4" width="8" height="232"/>
+  </g>
+  <g fill="#dc143c">
+    <!-- top bar -->
+    <rect x="78" y="22" width="84" height="28"/>
+    <!-- left stem, all the way down -->
+    <rect x="50" y="50" width="28" height="140"/>
+    <!-- top-right corner tick -->
+    <rect x="162" y="50" width="28" height="28"/>
+    <!-- the crossbar that makes it a G, plus the right stem below it -->
+    <rect x="134" y="106" width="56" height="28"/>
+    <rect x="162" y="134" width="28" height="56"/>
+    <!-- bottom bar -->
+    <rect x="78" y="190" width="84" height="28"/>
+  </g>
+</svg>

@@ -1,9 +1,16 @@
 // Conversation list item — the styleguide §6 interactive-tile pattern:
 // retro-border + hover accent + -translate-y-1, shadow sm→md, press back down.
+//
+// Presence rides along: a square dot on the avatar and, when the peer is around,
+// the word "online" next to their name. The dot is always there (dim when
+// offline) so "no dot" never has to mean two different things.
 
 import type { ConversationListItem } from '../lib/api'
+import type { Presence } from '../hooks/usePresence'
+import { presenceText, resolvePresence } from '../lib/presence'
 import { navigate } from '../lib/router'
 import { Avatar } from './Avatar'
+import { PresenceMarker } from './Presence'
 
 const MEDIA_PREVIEW: Record<string, string> = {
   sticker: '[sticker]',
@@ -28,21 +35,43 @@ function formatWhen(ms: number | null): string {
     : date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
 }
 
-export function ConversationTile({ item }: { item: ConversationListItem }) {
+/**
+ * `presence` is the live value from the heartbeat store; the payload that listed
+ * the conversation already carried one, which is what the tile paints until the
+ * first beat lands.
+ */
+export function ConversationTile({
+  item,
+  presence,
+}: {
+  item: ConversationListItem
+  presence?: Presence
+}) {
+  const gone = item.other_user.deleted === true
+  const state = resolvePresence(presence, item.other_user)
+  const label = gone ? 'conta expirada' : presenceText(state, Date.now())
+
   return (
     <button
       type="button"
       className="group animate-enter flex w-full cursor-pointer items-center gap-3 retro-border bg-base-200 p-4 text-left retro-shadow-sm transition-all duration-300 hover:-translate-y-1 hover:bg-accent hover:text-accent-content hover:retro-shadow active:translate-y-0"
       onClick={() => navigate({ name: 'thread', userId: item.other_user.id })}
     >
-      <Avatar user={item.other_user} className="group-hover:border-accent-content" />
+      <PresenceMarker online={!gone && state.online} label={label}>
+        <Avatar user={item.other_user} className="group-hover:border-accent-content" />
+      </PresenceMarker>
 
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-sm font-black uppercase tracking-tight">
-            {item.other_user.deleted
-              ? 'conta expirada'
-              : (item.other_user.display_name ?? item.other_user.username)}
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate text-sm font-black uppercase tracking-tight">
+              {gone ? 'conta expirada' : (item.other_user.display_name ?? item.other_user.username)}
+            </span>
+            {!gone && state.online && (
+              <span className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-success group-hover:text-accent-content">
+                online
+              </span>
+            )}
           </span>
           <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
             {formatWhen(item.last_message_at)}

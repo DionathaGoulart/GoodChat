@@ -1,0 +1,91 @@
+/*
+ * Skins — the geometry layer, selected by `data-skin` on <html>
+ * (hooks/useTheme.ts) and catalogued in src/lib/skins.ts.
+ *
+ * A palette says which colors; a skin says what they are painted on. Both are
+ * independent, so the ten palettes work under either skin instead of the catalog
+ * having to grow twenty entries. Everything a skin changes goes through the
+ * three tokens the retro-* utilities read (index.css) plus a handful of motif
+ * overrides — no component knows which skin is active.
+ *
+ * Cascade: `:root` here carries the retro values, so a document that has not
+ * been stamped yet (the instant before bootTheme runs) is already correct.
+ * `[data-skin=…]` and `[data-theme=…]` have equal specificity and both match
+ * <html>, so this file must be imported *after* themes.css — source order is
+ * what lets a skin win over the theme block that also declares --frame-border.
+ *
+ * These rules are deliberately unlayered: Tailwind utilities live in
+ * @layer utilities, and an unlayered rule outranks any layered one regardless
+ * of specificity. That is what lets `.terminal-cursor` be redefined here — and
+ * also why nothing in this file may touch a class a component pairs with a
+ * variant (`bg-base-200` + `hover:bg-accent` would stop hovering).
+ */
+
+/*
+ * Skin `retro`: the neobrutalist look the app shipped with (styleguide §4).
+ *
+ * Declared on `:root` *and* on the attribute, which is not redundant: `:root`
+ * covers the document before it is stamped and the accounts that never chose,
+ * while the attribute selector is what lets a subtree opt back into this skin
+ * inside a terminal-skinned page — which is exactly what the appearance
+ * screen's preview swatches do. Without it the retro swatch would inherit the
+ * terminal frame and preview the wrong skin.
+ */
+:root,
+[data-skin='retro'] {
+  --frame-border: 2px;
+  --frame-shadow: 6px 6px 0 0 var(--shadow);
+  --frame-shadow-sm: 3px 3px 0 0 var(--shadow);
+}
+
+/*
+ * Skin `terminal` — the Portfolio terminal skin's geometry (src/styles/
+ * terminal.css there): 1px frames instead of 2px, and a CRT glow where the
+ * retro skin casts its hard offset shadow. The hairline ring keeps the frame
+ * readable on a palette whose accent barely glows (crimson chalk) while the
+ * blurred halo carries the ones that do (neon matrix, cyber teal).
+ */
+[data-skin='terminal'] {
+  --frame-border: 1px;
+  --frame-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, transparent),
+    0 0 18px -4px color-mix(in srgb, var(--color-accent) 45%, transparent);
+  --frame-shadow-sm:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent),
+    0 0 10px -4px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+/*
+ * Phosphor glow on the accent micro-type — the skin's other signature. The
+ * shadow reads `currentColor` rather than the accent token so it survives the
+ * hover states that invert the text (a tile going accent-content over accent
+ * would otherwise keep glowing in the old color).
+ */
+[data-skin='terminal'] .text-accent {
+  text-shadow: 0 0 8px color-mix(in srgb, currentColor 55%, transparent);
+}
+
+/* Block caret instead of a blinking underscore (Portfolio's `terminal-cursor`).
+   The character inside goes transparent — the block is the cursor. */
+[data-skin='terminal'] .terminal-cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.05em;
+  vertical-align: text-bottom;
+  background-color: var(--color-accent);
+  color: transparent;
+}
+
+/* The CRT overlay, verbatim from the Portfolio terminal skin: a 4px band
+   instead of the retro skin's 1-in-4 hairline, and visible enough to read as a
+   screen rather than as texture. */
+[data-skin='terminal'] .terminal-scanline {
+  background: linear-gradient(
+    to bottom,
+    transparent 50%,
+    var(--scanline-color) 51%,
+    transparent 51%
+  );
+  background-size: 100% 4px;
+  opacity: 0.22;
+}

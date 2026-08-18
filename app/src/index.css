@@ -6,6 +6,9 @@
 @import "tailwindcss";
 @import "./styles/palettes.css";
 @import "./styles/themes.css";
+/* After themes.css on purpose: a skin overrides tokens the theme blocks also
+   declare, and equal specificity means source order decides. */
+@import "./styles/skins.css";
 
 /* JetBrains Mono — the single type family for everything (styleguide §3) */
 @import "@fontsource/jetbrains-mono/400.css";
@@ -28,14 +31,16 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* --- Retro utilities (styleguide §4) --- */
+/* --- Retro utilities (styleguide §4) ---
+   The frame tokens come from the active skin (styles/skins.css): the retro skin
+   resolves them to the hard offset shadow, the terminal skin to a CRT glow. */
 
 @utility retro-shadow {
-  box-shadow: 6px 6px 0 0 var(--shadow);
+  box-shadow: var(--frame-shadow);
 }
 
 @utility retro-shadow-sm {
-  box-shadow: 3px 3px 0 0 var(--shadow);
+  box-shadow: var(--frame-shadow-sm);
 }
 
 @utility retro-border {

@@ -13,7 +13,9 @@ import type { ReactNode } from 'react'
 import * as api from '../lib/api'
 import type { SessionUser } from '../lib/api'
 import { clearCachedAccount, readCachedAccount, writeCachedAccount } from '../lib/accountCache'
+import { startHeartbeat } from '../lib/presence'
 import { disablePush } from '../lib/push'
+import { skinOr } from '../lib/skins'
 import { darkPaletteOr, lightPaletteOr } from '../lib/themes'
 import { applyThemePrefs, type ThemePrefs } from './useTheme'
 
@@ -35,7 +37,7 @@ interface SessionContextValue {
   guestCredentials: { username: string; password: string } | null
   forgetGuestCredentials: () => void
   logout: () => Promise<void>
-  /** Persists mode + palettes on the account; the DOM is updated immediately. */
+  /** Persists mode, palettes and skin on the account; the DOM updates at once. */
   setTheme: (prefs: ThemePrefs) => Promise<void>
   /** Persists display name and/or profile picture key on the account. */
   setProfile: (patch: { display_name?: string | null; avatar_key?: string | null }) => Promise<void>
@@ -47,6 +49,7 @@ function prefsOf(user: SessionUser): ThemePrefs {
     mode: user.theme_mode,
     light: lightPaletteOr(user.theme_light),
     dark: darkPaletteOr(user.theme_dark),
+    skin: skinOr(user.skin),
   }
 }
 
@@ -94,6 +97,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [adopt])
 
+  // Presence is a property of the session, not of any screen: while somebody is
+  // signed in this tab beats (lib/presence.ts), which is what makes them show
+  // as online to everyone else — the list, a thread, or an idle tab alike.
+  useEffect(() => {
+    if (status !== 'authenticated') return
+    return startHeartbeat()
+  }, [status])
+
   const login = useCallback(
     async (username: string, password: string) => {
       const { user } = await api.login(username, password)
@@ -140,6 +151,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         theme_mode: prefs.mode,
         theme_light: prefs.light,
         theme_dark: prefs.dark,
+        skin: prefs.skin,
       }
       writeCachedAccount(next)
       return next

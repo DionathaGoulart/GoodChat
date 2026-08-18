@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
+import { isOnline } from '../lib/presence'
 import { PUBLIC_USER_COLUMNS, requireSession, sessionHeaders, type PublicUser } from '../lib/session'
 
 // User discovery (PRD §3.2): exact/prefix match on @username only.
@@ -40,5 +41,10 @@ export async function lookupUsers(request: Request, env: Env, url: URL): Promise
     .bind(pattern, auth.user.id)
     .all<PublicUser>()
 
-  return json({ users: results }, 200, sessionHeaders(auth))
+  // Search results carry presence too: knowing whether someone is around is
+  // part of deciding to message them.
+  const now = Date.now()
+  const users = results.map((row) => ({ ...row, online: isOnline(row.last_seen_at, now) }))
+
+  return json({ users }, 200, sessionHeaders(auth))
 }
