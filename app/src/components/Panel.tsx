@@ -50,7 +50,7 @@ export function Panel({
 
   return (
     <Tag
-      className={`card card-border overflow-hidden border-base-300 bg-base-200 retro-shadow ${className ?? ''}`}
+      className={`panel card card-border overflow-hidden border-base-300 bg-base-200 retro-shadow ${className ?? ''}`}
       {...rest}
     >
       <div className="window-bar flex items-center justify-between gap-3 border-b-2 border-base-300 bg-base-100 px-4 py-3">
@@ -63,7 +63,7 @@ export function Panel({
         </span>
         {right}
       </div>
-      <div className={`card-body ${bodyClassName ?? 'gap-4'}`}>{children}</div>
+      <div className={`panel-body card-body ${bodyClassName ?? 'gap-4'}`}>{children}</div>
     </Tag>
   )
 }

@@ -22,7 +22,8 @@
  */
 
 /*
- * Skin `retro`: the neobrutalist look the app shipped with (styleguide §4).
+ * Skin `retro`: the neobrutalist look the app shipped with
+ * (.harness/styleguides/retro.md — every skin has its own style guide).
  *
  * Declared on `:root` *and* on the attribute, which is not redundant: `:root`
  * covers the document before it is stamped and the accounts that never chose,
@@ -39,9 +40,9 @@
 }
 
 /*
- * Skin `terminal` — the Portfolio terminal skin's geometry (src/styles/
- * terminal.css there): 1px frames instead of 2px, and a CRT glow where the
- * retro skin casts its hard offset shadow. The hairline ring keeps the frame
+ * Skin `terminal` (.harness/styleguides/terminal.md) — the Portfolio terminal
+ * skin's geometry (src/styles/terminal.css there): 1px frames instead of 2px,
+ * and a CRT glow where the retro skin casts its hard offset shadow. The hairline ring keeps the frame
  * readable on a palette whose accent barely glows (crimson chalk) while the
  * blurred halo carries the ones that do (neon matrix, cyber teal).
  */
@@ -132,8 +133,16 @@
  * from the `retro-border` utility itself, and a bare `:root` here would match
  * every framed element on the page — terminal ones included — and, sitting
  * later in the file, would beat the rule above at equal specificity.
+ *
+ * Both the descendant and the compound form, because the swatch stamps its
+ * `data-skin` on the very element that carries the frame: a descendant
+ * combinator does not match the element that holds the attribute, so without
+ * the second selector the retro preview would keep drawing the terminal
+ * hairline it inherited from <html> and would preview the wrong skin — the
+ * exact failure this block exists to prevent.
  */
-[data-skin='retro'] .retro-border {
+[data-skin='retro'] .retro-border,
+.retro-border[data-skin='retro'] {
   border-color: var(--color-base-300);
 }
 

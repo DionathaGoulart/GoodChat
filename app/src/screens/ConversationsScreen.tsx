@@ -10,7 +10,7 @@
 // first poll overwrites them. The skeleton is now what a *cold* start shows —
 // a device that has never listed, or one whose copy belongs to somebody else.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { listConversations } from '../lib/api'
 import type { ConversationListItem } from '../lib/api'
 import { readCachedConversations, writeCachedConversations } from '../lib/conversationsCache'
@@ -26,7 +26,28 @@ import { RetroIconButton } from '../components/RetroIconButton'
 import { UserSearch } from '../components/UserSearch'
 import { navigate } from '../lib/router'
 
-const POLL_MS = 15_000
+/**
+ * Poll cadence. It starts fast and backs off while the answer keeps coming
+ * back the same, because an idle tab is the common case and it was spending a
+ * request every 15s to be told nothing had happened — and each of those costs
+ * the worker a Durable Object round trip per conversation, not just a query.
+ *
+ * Anything that suggests the person is back — the tab becoming visible, the
+ * window taking focus — drops it to the floor again, so the cost of backing
+ * off is never paid by someone who is actually looking at the screen.
+ */
+const MIN_POLL_MS = 15_000
+const MAX_POLL_MS = 60_000
+
+/**
+ * What "the same answer" means: the threads, their last message and their
+ * unread counts. Deliberately not the whole payload — presence rides along in
+ * it and moves every heartbeat (worker/src/lib/presence.ts), so comparing
+ * everything would mean the list never looked idle and never backed off.
+ */
+function signatureOf(conversations: readonly ConversationListItem[]): string {
+  return conversations.map((c) => `${c.id}:${c.last_message_at}:${c.unread_count}`).join('|')
+}
 
 export function ConversationsScreen() {
   const { user, setTheme } = useSession()
@@ -63,31 +84,87 @@ export function ConversationsScreen() {
   }, [setTheme, toggleMode])
 
   const ownerId = user?.id
-  const refresh = useCallback(() => {
-    listConversations()
+  const signatureRef = useRef<string | null>(null)
+  const inFlightRef = useRef(false)
+
+  /** Resolves to whether this answer differed from the last one. */
+  const refresh = useCallback((): Promise<boolean> => {
+    // Overlapping polls would let a wake-up and a scheduled tick both fire, and
+    // the slower one would land second with the older list.
+    if (inFlightRef.current) return Promise.resolve(false)
+    inFlightRef.current = true
+    return listConversations()
       .then(({ conversations }) => {
         setConversations(conversations)
         if (ownerId) writeCachedConversations(ownerId, conversations)
         setSettled(true)
         setFailed(false)
+        const signature = signatureOf(conversations)
+        const changed = signature !== signatureRef.current
+        signatureRef.current = signature
+        return changed
       })
       // The copy on screen stays: a poll that could not reach the server has
-      // nothing truer to put in its place, and the banner says so.
-      .catch(() => setFailed(true))
+      // nothing truer to put in its place, and the banner says so. It counts as
+      // "unchanged" so a server that is down is backed away from rather than
+      // hammered at the floor interval.
+      .catch(() => {
+        setFailed(true)
+        return false
+      })
+      .finally(() => {
+        inFlightRef.current = false
+      })
   }, [ownerId])
 
   useEffect(() => {
-    refresh()
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') refresh()
-    }, POLL_MS)
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') refresh()
+    let disposed = false
+    let delay = MIN_POLL_MS
+    let timer: number | undefined
+
+    // Always clears first, so a wake-up landing next to a scheduled tick
+    // replaces the pending timer instead of adding a second one.
+    const schedule = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(tick, delay)
     }
-    document.addEventListener('visibilitychange', onVisible)
+
+    const tick = () => {
+      // A hidden tab is not someone waiting for the list. Skip the request but
+      // keep the chain alive, so becoming visible again is not the only way
+      // back — the wake-up below may never fire on a tab that was never hidden
+      // in the browser's sense (a covered window, a second monitor).
+      if (document.visibilityState !== 'visible') {
+        schedule()
+        return
+      }
+      void refresh().then((changed) => {
+        if (disposed) return
+        delay = changed ? MIN_POLL_MS : Math.min(delay * 2, MAX_POLL_MS)
+        schedule()
+      })
+    }
+
+    // Coming back is the strongest signal there is that the list matters right
+    // now: ask immediately and start counting from the floor again.
+    const wake = () => {
+      if (document.visibilityState !== 'visible') return
+      delay = MIN_POLL_MS
+      void refresh().then(() => {
+        if (!disposed) schedule()
+      })
+    }
+
+    void refresh().then(() => {
+      if (!disposed) schedule()
+    })
+    document.addEventListener('visibilitychange', wake)
+    window.addEventListener('focus', wake)
     return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
+      disposed = true
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', wake)
+      window.removeEventListener('focus', wake)
     }
   }, [refresh])
 
@@ -95,14 +172,14 @@ export function ConversationsScreen() {
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 p-6 sm:p-8">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} conversas
+          <p className="screen-kicker font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> conversas
           </p>
-          <h1 className="text-3xl font-black uppercase italic tracking-tighter sm:text-4xl">
+          <h1 className="screen-title text-3xl font-black uppercase italic tracking-tighter sm:text-4xl">
             GoodChat
           </h1>
           {user && (
-            <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
+            <p className="screen-meta mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
               logado como @{user.username}
             </p>
           )}
@@ -148,8 +225,8 @@ export function ConversationsScreen() {
           className="animate-enter"
           bodyClassName="gap-2"
         >
-          <p className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} awaiting_first_contact<span className="terminal-cursor">_</span>
+          <p className="prompt-line font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> awaiting_first_contact<span className="terminal-cursor">_</span>
           </p>
           <p className="text-sm font-medium leading-relaxed opacity-70">
             Nenhuma conversa ainda. Busque alguém por @username acima — a

@@ -29,7 +29,7 @@ function formatBytes(bytes: number): string {
 }
 
 const TOOL_BUTTON_CLASS =
-  'retro-border cursor-pointer self-stretch bg-base-100 px-3 text-lg font-black transition-all duration-300 hover:-translate-y-1 hover:bg-accent hover:text-accent-content hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40'
+  'tool-btn retro-border cursor-pointer self-stretch bg-base-100 px-3 text-lg font-black transition-all duration-300 hover:-translate-y-1 hover:bg-accent hover:text-accent-content hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40'
 
 export function Composer({
   conversationId,
@@ -196,7 +196,7 @@ export function Composer({
         </p>
       )}
       <form
-        className="retro-border flex items-end gap-2 bg-base-200 p-2"
+        className="composer retro-border flex items-end gap-2 bg-base-200 p-2"
         onSubmit={(event) => {
           event.preventDefault()
           submit()
@@ -252,7 +252,7 @@ export function Composer({
         </div>
         <textarea
           ref={textareaRef}
-          className="max-h-32 min-h-11 flex-1 resize-none bg-transparent p-2 font-mono text-sm outline-none [field-sizing:content] placeholder:uppercase placeholder:tracking-widest placeholder:opacity-40"
+          className="composer-input max-h-32 min-h-11 flex-1 resize-none bg-transparent p-2 font-mono text-sm outline-none [field-sizing:content] placeholder:uppercase placeholder:tracking-widest placeholder:opacity-40"
           placeholder="mensagem_"
           rows={1}
           maxLength={MAX_BODY_LENGTH}

@@ -1,4 +1,6 @@
-// OS-window dots motif (styleguide §4.7): accent + two base-300 circles.
+// OS-window dots motif — accent + two base-300 circles under the retro skin
+// (styleguides/retro.md §4.7); the terminal skin fades one accent across the
+// three (styleguides/terminal.md §4.7) off the `window-dots` hook.
 //
 // The `window-dots` class is the hook the terminal skin re-colors through
 // (styles/skins.css) — the component itself stays skin-agnostic, which is the

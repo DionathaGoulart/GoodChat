@@ -58,13 +58,13 @@ export function AppearanceScreen() {
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 p-6 sm:p-8">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} aparência
+          <p className="screen-kicker font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> aparência
           </p>
-          <h1 className="text-3xl font-black uppercase italic tracking-tighter sm:text-4xl">
+          <h1 className="screen-title text-3xl font-black uppercase italic tracking-tighter sm:text-4xl">
             Aparência
           </h1>
-          <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
+          <p className="screen-meta mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
             skin + tema · salvo na conta
           </p>
         </div>
@@ -79,8 +79,8 @@ export function AppearanceScreen() {
 
       <Panel title="skins.cfg">
         <div>
-          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} skins
+          <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> skins
           </h2>
           <p className="mt-1 text-sm opacity-70">
             A geometria: espessura das molduras, sombra dura ou brilho de CRT. As cores
@@ -105,8 +105,8 @@ export function AppearanceScreen() {
 
       <Panel title="temas.cfg">
         <div>
-          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} temas
+          <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> temas
           </h2>
           <p className="mt-1 text-sm opacity-70">
             Claro, escuro ou o que o dispositivo pedir — e qual paleta cada modo usa.
@@ -185,7 +185,7 @@ function SkinButton({
       <span
         data-skin={skin.id}
         aria-hidden="true"
-        className="retro-border size-8 shrink-0 bg-base-100 retro-shadow-sm"
+        className="skin-swatch retro-border size-8 shrink-0 bg-base-100 retro-shadow-sm"
       />
       <span className="flex min-w-0 flex-col gap-1">
         <span className="font-mono text-[11px] font-black uppercase tracking-widest">
@@ -222,7 +222,7 @@ function PaletteGroup({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
+        <h3 className="section-label font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-70">
           {title}
         </h3>
         <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">

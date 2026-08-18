@@ -55,7 +55,7 @@ export function Avatar({
 
   return (
     <div
-      className={`retro-border relative flex shrink-0 items-center justify-center overflow-hidden bg-accent text-accent-content ${SIZES[size]} ${className}`}
+      className={`avatar-sq retro-border relative flex shrink-0 items-center justify-center overflow-hidden bg-accent text-accent-content ${SIZES[size]} ${className}`}
       aria-hidden="true"
     >
       {user.avatar_key && state !== 'failed' ? (

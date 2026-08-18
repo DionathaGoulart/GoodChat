@@ -94,8 +94,8 @@ export function ProfileCard() {
   return (
     <Panel title="perfil.cfg">
       <div>
-        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-          {'>'} perfil
+        <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          <span className="sigil">{'>'}</span> perfil
         </h2>
         <p className="mt-1 text-sm opacity-70">
           Como você aparece pra quem conversa com você. O @username não muda.

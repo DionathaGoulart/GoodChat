@@ -1,6 +1,8 @@
 /*
  * GoodChat theme entry point.
- * Recipe: harness/styleguide.md §7 (CSS-first Tailwind v4 + daisyUI 5).
+ * Recipe: .harness/styleguide.md §4 (CSS-first Tailwind v4 + daisyUI 5).
+ * Everything here is skin-agnostic: the per-skin looks live in
+ * .harness/styleguides/<skin>.md and in styles/skins.css.
  * Colors only via var(--palette-*) from styles/palettes.css — never raw hex here.
  */
 @import "tailwindcss";
@@ -9,8 +11,12 @@
 /* After themes.css on purpose: a skin overrides tokens the theme blocks also
    declare, and equal specificity means source order decides. */
 @import "./styles/skins.css";
+/* The terminal skin's takeover — the half of that skin that is rules rather
+   than tokens. Split off for size only; it must stay right after skins.css. */
+@import "./styles/skin-terminal.css";
 
-/* JetBrains Mono — the single type family for everything (styleguide §3) */
+/* JetBrains Mono — the single type family for everything (styleguide.md §2.3;
+   the family is shared, the treatment is each skin's own) */
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/400-italic.css";
 @import "@fontsource/jetbrains-mono/500.css";
@@ -31,9 +37,11 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* --- Retro utilities (styleguide §4) ---
-   The frame tokens come from the active skin (styles/skins.css): the retro skin
-   resolves them to the hard offset shadow, the terminal skin to a CRT glow. */
+/* --- Frame utilities (the skin contract, styleguide.md §3.1) ---
+   The tokens come from the active skin (styles/skins.css): the retro skin
+   resolves them to the hard offset shadow (styleguides/retro.md §4), the
+   terminal skin to a CRT glow (styleguides/terminal.md §5). The `retro-` prefix
+   is historical — these are the frame hooks every skin repaints. */
 
 @utility retro-shadow {
   box-shadow: var(--frame-shadow);
@@ -79,7 +87,9 @@
 }
 
 /* Button variants extend daisyUI's btn through its own tokens, so btn keeps
-   providing focus/active/disabled behavior (styleguide §6 technique). */
+   providing focus/active/disabled behavior (styleguide.md §4, rule 2). The
+   metrics below are the retro skin's CTA (styleguides/retro.md §6); the
+   terminal skin overrides the same tokens (styleguides/terminal.md §6). */
 @utility btn-goodchat {
   --btn-color: var(--color-accent);
   --btn-fg: var(--color-accent-content);

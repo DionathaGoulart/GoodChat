@@ -13,6 +13,17 @@
 //
 // Adding a skin: declare its `[data-skin='<id>']` block in styles/skins.css,
 // add it here, and add the id to SKINS in the worker.
+//
+// Every skin repaints the whole app, so every skin gets its own style guide —
+// `.harness/styleguides/<id>.md`, one per skin, never one for the site. A skin
+// that only sets the three frame tokens can ship without one; the moment it
+// invents rules an implementer would have to guess, it needs the file
+// (.harness/styleguide.md §5).
+//
+// `terminal` outgrew that one block: its tokens live in styles/skins.css next
+// to retro's, and the rules that turn the app into a CRT — prompt headings, the
+// thread as an IRC log, the list as a directory listing — live in
+// styles/skin-terminal.css. Both files are still only CSS; no component knows.
 
 export interface SkinOption {
   id: string
@@ -31,7 +42,7 @@ export const SKINS: readonly SkinOption[] = [
   {
     id: 'terminal',
     label: 'terminal',
-    hint: 'moldura 1px, brilho crt',
+    hint: 'crt, prompt e log de tty',
   },
 ] as const
 

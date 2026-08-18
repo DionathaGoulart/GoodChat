@@ -48,8 +48,8 @@ export function GuestCredentialsCard() {
   return (
     <section className="animate-enter card card-border border-accent bg-base-200 retro-shadow">
       <div className="card-body gap-3">
-        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-          {'>'} anote suas credenciais
+        <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          <span className="sigil">{'>'}</span> anote suas credenciais
         </h2>
         <p className="text-sm leading-relaxed opacity-70">
           Servem para voltar nesta conta de outro navegador enquanto ela durar. A senha

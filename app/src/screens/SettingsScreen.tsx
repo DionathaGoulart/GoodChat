@@ -26,13 +26,13 @@ export function SettingsScreen() {
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 p-6 sm:p-8">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} configurações
+          <p className="screen-kicker font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> configurações
           </p>
-          <h1 className="text-3xl font-black uppercase italic tracking-tighter sm:text-4xl">
+          <h1 className="screen-title text-3xl font-black uppercase italic tracking-tighter sm:text-4xl">
             Ajustes
           </h1>
-          <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
+          <p className="screen-meta mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
             @{user.username}
             {isOwner && ' · owner'}
           </p>
@@ -46,8 +46,8 @@ export function SettingsScreen() {
 
       <Panel title="aparencia.cfg">
         <div>
-          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} aparência
+          <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> aparência
           </h2>
           <p className="mt-1 text-sm opacity-70">
             Skins e temas. Salvo na sua conta — vale em qualquer dispositivo onde você
@@ -64,8 +64,8 @@ export function SettingsScreen() {
 
       <Panel title="notificacoes.cfg">
         <div>
-          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} notificações
+          <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> notificações
           </h2>
           <p className="mt-1 text-sm opacity-70">
             {push.state === 'unsupported'
@@ -99,8 +99,8 @@ export function SettingsScreen() {
       {isOwner && (
         <Panel title="administracao.cfg">
           <div>
-            <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-              {'>'} administração
+            <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+              <span className="sigil">{'>'}</span> administração
             </h2>
             <p className="mt-1 text-sm opacity-70">
               Contas, uso de armazenamento e limpeza de histórico.
@@ -114,8 +114,8 @@ export function SettingsScreen() {
 
       <Panel title="sessao.cfg">
         <div>
-          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} sessão
+          <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> sessão
           </h2>
           <p className="mt-1 text-sm opacity-70">
             Encerra a sessão neste dispositivo e remove as notificações dele.

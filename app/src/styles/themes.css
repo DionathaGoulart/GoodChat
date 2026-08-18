@@ -61,6 +61,7 @@
   /* GoodChat extras (consumed by retro-* utilities) */
   --shadow: var(--palette-ink);
   --scanline-color: var(--palette-scanline-light);
+  --crt-edge: var(--palette-crt-edge-light);
   --frame-border: 2px;
 }
 
@@ -101,6 +102,7 @@
 
   --shadow: var(--palette-rose);
   --scanline-color: var(--palette-scanline-dark);
+  --crt-edge: var(--palette-crt-edge-dark);
 }
 
 @plugin "daisyui/theme" {
@@ -139,6 +141,7 @@
 
   --shadow: var(--palette-abyss);
   --scanline-color: var(--palette-scanline-light);
+  --crt-edge: var(--palette-crt-edge-light);
 }
 
 @plugin "daisyui/theme" {
@@ -177,6 +180,7 @@
 
   --shadow: var(--palette-forest-green);
   --scanline-color: var(--palette-scanline-light);
+  --crt-edge: var(--palette-crt-edge-light);
 }
 
 @plugin "daisyui/theme" {
@@ -215,6 +219,7 @@
 
   --shadow: var(--palette-copper);
   --scanline-color: var(--palette-scanline-light);
+  --crt-edge: var(--palette-crt-edge-light);
 }
 
 @plugin "daisyui/theme" {
@@ -253,6 +258,7 @@
 
   --shadow: var(--palette-gold);
   --scanline-color: var(--palette-scanline-dark);
+  --crt-edge: var(--palette-crt-edge-dark);
 }
 
 @plugin "daisyui/theme" {
@@ -291,6 +297,7 @@
 
   --shadow: var(--palette-ember);
   --scanline-color: var(--palette-scanline-dark);
+  --crt-edge: var(--palette-crt-edge-dark);
 }
 
 @plugin "daisyui/theme" {
@@ -329,6 +336,7 @@
 
   --shadow: var(--palette-cyan);
   --scanline-color: var(--palette-scanline-dark);
+  --crt-edge: var(--palette-crt-edge-dark);
 }
 
 @plugin "daisyui/theme" {
@@ -367,6 +375,7 @@
 
   --shadow: var(--palette-violet);
   --scanline-color: var(--palette-scanline-dark);
+  --crt-edge: var(--palette-crt-edge-dark);
 }
 
 @plugin "daisyui/theme" {
@@ -405,4 +414,5 @@
 
   --shadow: var(--palette-matrix-green);
   --scanline-color: var(--palette-scanline-dark);
+  --crt-edge: var(--palette-crt-edge-dark);
 }

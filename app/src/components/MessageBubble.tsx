@@ -1,5 +1,12 @@
-// Chat bubble (styleguide §6): received = base-200 + retro-border, sent =
-// accent + retro-border, radius 0, retro-shadow-sm. Body is plain text —
+// Chat bubble (styleguides/retro.md §6): received = base-200 + retro-border, sent =
+// accent + retro-border, radius 0, retro-shadow-sm.
+//
+// The wrapper also carries the message as data — who sent it, at what time, how
+// far it got — next to the `msg` hook class. The retro skin ignores all four:
+// they exist so the terminal skin can rebuild the bubble as a line of an IRC
+// log (`[14:22] <rafael> oi ✓✓`, styles/skin-terminal.css) out of a `::before`,
+// without this component ever learning which skin is on. `sender` is passed in
+// rather than derived here because only the screen knows both handles. Body is plain text —
 // React escapes it; never rendered as HTML (PRD §3.6). Image/video messages
 // render straight from the public media URL (media_key), image click opens a
 // retro lightbox (native <dialog> + daisyUI modal). Stickers skip the bubble
@@ -28,7 +35,7 @@ function MetaLine({ message, mine, className = '' }: {
   className?: string
 }) {
   return (
-    <p className={`mt-1 font-mono text-[10px] uppercase tracking-[0.2em] ${className}`}>
+    <p className={`msg-meta mt-1 font-mono text-[10px] uppercase tracking-[0.2em] ${className}`}>
       {message.status === 'sending' ? (
         <>
           enviando<span className="terminal-cursor">_</span>
@@ -126,11 +133,28 @@ function StickerContent({ stickerId }: { stickerId: string }) {
   )
 }
 
-export function MessageBubble({ message, mine }: { message: ThreadMessage; mine: boolean }) {
+export function MessageBubble({
+  message,
+  mine,
+  sender,
+}: {
+  message: ThreadMessage
+  mine: boolean
+  /** Handle of whoever wrote it, without the `@` — the log line's nick. */
+  sender: string
+}) {
+  const data = {
+    'data-mine': mine ? 'true' : 'false',
+    'data-sender': sender,
+    'data-time': formatTime(message.created_at),
+    'data-status': message.status,
+  }
+
   if (message.msg_type === 'sticker') {
     return (
       <div
-        className={`animate-enter flex max-w-[80%] flex-col ${
+        {...data}
+        className={`msg msg-sticker animate-enter flex max-w-[80%] flex-col ${
           mine ? 'items-end self-end' : 'items-start self-start'
         }`}
       >
@@ -143,13 +167,14 @@ export function MessageBubble({ message, mine }: { message: ThreadMessage; mine:
   const isMedia = message.msg_type === 'image' || message.msg_type === 'video'
   return (
     <div
-      className={`animate-enter max-w-[80%] p-3 retro-border retro-shadow-sm sm:max-w-[70%] ${
+      {...data}
+      className={`msg animate-enter max-w-[80%] p-3 retro-border retro-shadow-sm sm:max-w-[70%] ${
         mine ? 'self-end bg-accent text-accent-content' : 'self-start bg-base-200'
       }`}
     >
       {isMedia && <MediaContent message={message} />}
       {message.body.length > 0 && (
-        <p className="whitespace-pre-wrap break-words text-sm">{message.body}</p>
+        <p className="msg-body whitespace-pre-wrap break-words text-sm">{message.body}</p>
       )}
       <MetaLine message={message} mine={mine} className={mine ? 'opacity-60' : 'opacity-40'} />
     </div>

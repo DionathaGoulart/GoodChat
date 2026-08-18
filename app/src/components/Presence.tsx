@@ -1,8 +1,8 @@
 // Presence indicators: the square dot that sits on an avatar and the micro-text
 // label next to a name.
 //
-// A square, not a circle: every corner in the app is straight (styleguide §4.3),
-// and a round dot would be the only radius on the screen. Online is `success`,
+// A square, not a circle: every corner in the app is straight (retro §4.3 in
+// .harness/styleguides/), and a round dot would be the only radius on the screen. Online is `success`,
 // offline is the frame color at low opacity — present but quiet, so a list of
 // mostly-offline peers does not turn into a wall of indicators.
 
@@ -24,7 +24,10 @@ export function PresenceDot({
       role="img"
       aria-label={label}
       title={label}
-      className={`size-3 border-2 border-base-200 ${
+      /* The terminal skin only haloes a dot that is lit, and CSS cannot read
+         which of the two fill classes below is on (styles/skin-terminal.css). */
+      data-online={online ? 'true' : 'false'}
+      className={`presence-dot size-3 border-2 border-base-200 ${
         online ? 'bg-success' : 'bg-base-300 opacity-50'
       } ${className}`}
     />

@@ -1,243 +1,209 @@
-# GoodChat — Style Guide (extraído do projeto Portfolio)
+# GoodChat — Style Guide (índice)
 
-**Fonte:** `~/desktop/good/Portfolio` (Next.js 16 + Tailwind CSS v4 + daisyUI 5).
-Todos os valores abaixo foram lidos diretamente do código-fonte do Portfolio — nenhum valor foi inventado ou aproximado. Arquivos de origem citados em cada seção.
+**Não existe um style guide do site.** Existe **um style guide por skin**.
+
+Este arquivo é só o índice e a base compartilhada: as cores, a fonte, o contrato
+que toda skin obedece e a receita de CSS. O que uma tela *parece* — moldura,
+sombra, tipografia de título, se a lista é card ou listagem de diretório, se a
+thread é balão ou log — está no style guide **da skin**, não aqui.
+
+| Skin | `data-skin` | Style guide |
+|---|---|---|
+| neobrutal | `retro` (default) | [styleguides/retro.md](styleguides/retro.md) |
+| terminal | `terminal` | [styleguides/terminal.md](styleguides/terminal.md) |
 
 ---
 
-## 1. Nome do tema
+## 1. A regra
 
-O Portfolio chama sua unidade visual de **skin**. Existem duas:
+**Escopo do documento é por skin. Efeito da skin é o site inteiro.**
 
-| Skin | Rotas | Caráter (descrição oficial em `docs/skins.md`) |
-|---|---|---|
-| **`retro`** | `/`, `/ti`, `/ti/cv` | **Neobrutalist** — cantos retos, bordas de 2px, sombras duras deslocadas (hard offset shadows), tipografia itálica superdimensionada |
-| `terminal` | `/dev`, `/dev/cv` | Shell/CRT — bordas 1px, micro-tipografia monoespaçada, glow no accent, overlay de scanline |
+As duas metades dessa frase importam:
 
-O nome exato da skin de referência para o GoodChat é **`retro`** (valor de `data-skin`, pasta `src/components/retro/`, entrada `id: "retro"` em `src/data/theme-config.ts`). Seus temas daisyUI se chamam **`retro-hub-light`**, **`retro-hub-dark`**, **`retro-ti-light`**, **`retro-ti-dark`** (`src/styles/themes.css`).
+- **Por skin:** cada skin tem sua própria linguagem visual, e ela vale só dentro
+  dela. "Sombra dura 6px" é lei sob `retro` e é proibido sob `terminal`. Quando
+  uma decisão visual for tomada, ela entra no style guide da skin em que vale —
+  nunca neste arquivo, a menos que valha para **todas** as skins, presentes e
+  futuras.
+- **Site inteiro:** trocar a skin não muda "um tema de componente". Muda login,
+  lista, thread, composer, console de admin, modais — tudo. Uma skin não é um
+  modo alternativo de uma tela; é outra pele do app inteiro. Por isso um style
+  guide de skin precisa cobrir o app inteiro, não só o que é diferente.
 
-> Observação: a skin `retro` é "híbrida" — a página hub (`src/app/page.tsx`) renderiza também o overlay `terminal-scanline` com `opacity-10`, comentado no código como *"Background Terminal Scanline (Hybrid)"*. Ou seja, o scanline não é exclusivo da skin terminal.
+Duas coisas que **não** são skin:
 
----
-
-## 2. Cores
-
-### 2.1 Paleta bruta (`src/styles/palettes.css`)
-
-Regra do Portfolio: **uma cor existe uma única vez**, como `--palette-*` em `:root`. Nenhum hex fora desse arquivo (única exceção: `THEME_COLOR_LIGHT/DARK` em `theme-config.ts`, por limitação da tag `<meta theme-color>`).
-
-Subconjunto usado pelos temas `retro`:
-
-| Token | Hex | Papel |
-|---|---|---|
-| `--palette-cream` | `#f2efe7` | Fundo claro (base-100 light) |
-| `--palette-white` | `#ffffff` | Superfície elevada light / conteúdo sobre accent |
-| `--palette-ink` | `#1a0a0a` | Texto/bordas no light (base-content, base-300) |
-| `--palette-noir` | `#121212` | Fundo escuro hub (base-100 dark) |
-| `--palette-noir-raised` | `#1a1a1a` | Superfície elevada dark hub (base-200) |
-| `--palette-near-black` | `#0d0d0d` | Texto sobre cores de status soft (dark) |
-| `--palette-crimson` | `#dc143c` | **Accent/primary do retro light** |
-| `--palette-rose` | `#e8729a` | **Accent/primary do retro-hub-dark** |
-| `--palette-ember` | `#ff6b45` | Accent do retro-ti-dark; hover ti no hub dark |
-| `--palette-gold` | `#c8a96e` | Hover dev no hub dark |
-| `--palette-midnight` | `#0d1117` | Fundo dark ti (base-100) |
-| `--palette-midnight-raised` | `#121a12` | Superfície elevada dark ti (base-200) |
-| `--palette-mint` | `#e0ffe0` | Texto dark ti (base-content) |
-| `--palette-abyss` | `#0a0f1e` | Hover dev no hub light |
-
-Cores de status (duas forças: cheia para temas light, suavizada para dark):
-
-| Semântica | Light | Dark (soft) |
-|---|---|---|
-| info | `#2563eb` | `#60a5fa` |
-| success | `#16a34a` | `#4ade80` |
-| warning | `#d97706` | `#fbbf24` |
-| error | `#dc2626` | `#f87171` |
-
-Overlays: `--palette-scanline-light: rgba(0,0,0,0.05)` · `--palette-scanline-dark: rgba(0,0,0,0.2)`.
-
-### 2.2 Mapeamento nos temas daisyUI (`src/styles/themes.css`)
-
-Os quatro temas retro completos (valores resolvidos):
-
-| Token daisyUI | retro-hub-light | retro-hub-dark | retro-ti-light | retro-ti-dark |
-|---|---|---|---|---|
-| `base-100` (página) | cream `#f2efe7` | noir `#121212` | cream `#f2efe7` | midnight `#0d1117` |
-| `base-200` (elevado) | white `#ffffff` | noir-raised `#1a1a1a` | white | midnight-raised `#121a12` |
-| `base-300` (bordas) | ink `#1a0a0a` | cream `#f2efe7` | ink | ember `#ff6b45` |
-| `base-content` (texto) | ink `#1a0a0a` | cream `#f2efe7` | ink | mint `#e0ffe0` |
-| `primary` = `accent` | crimson `#dc143c` | rose `#e8729a` | crimson | ember `#ff6b45` |
-| `primary/accent-content` | white | white | white | white |
-| `secondary` | ink | cream | ink | mint |
-| `neutral` | ink | cream | ink | mint |
-| `--shadow` (extra) | ink | rose | ink | ember |
-| `--scanline-color` (extra) | scanline-light | scanline-dark | scanline-light | scanline-dark |
-
-Extras exclusivos do hub: `--hub-dev-hover` (abyss / gold) e `--hub-ti-hover` (crimson / ember) — cores de hover dos cards de persona; não relevantes para o GoodChat.
-
-**Padrão notável:** no dark, a cor da borda (`base-300`) vira a cor clara do texto (cream/ember) — bordas fortes e visíveis nos dois modos, nunca cinza sutil.
+- **Paleta** (`data-theme`, dez opções) — só decide as cores. Toda paleta
+  funciona sob toda skin: 10 paletas × 2 skins = 20 aparências, não 20 temas
+  para manter. Paleta é escolha do usuário na tela de ajustes; skin é escolha do
+  usuário na tela de aparência. Independentes de propósito.
+- **Base compartilhada** (§2–§4 aqui) — o que nenhuma skin pode redefinir sem
+  quebrar as outras.
 
 ---
 
-## 3. Tipografia
+## 2. Base compartilhada
 
-**Uma única família para tudo: JetBrains Mono** (arquivos woff2 locais em `src/assets/fonts/`, carregados via `next/font/local` em `src/app/layout.tsx`). Em `globals.css`, tanto `--font-sans` quanto `--font-mono` apontam para `--font-jetbrains-mono` — não existe fonte "sans" separada; o monoespaçado universal é parte central do feel retro.
+### 2.1 Paleta bruta (`app/src/styles/palettes.css`)
 
-- **Pesos disponíveis:** 400 (Regular), 500 (Medium), 700 (Bold), 800 (ExtraBold), todos com itálico.
-- ⚠️ O código usa `font-black` (peso 900) extensivamente, mas a face mais pesada declarada é 800 — o browser resolve para 800 (ou sintetiza). Documentado aqui para não "corrigir" sem querer: o rendering que o autor aprovou é esse.
-- `preload: false` no next/font (evita 1.1MB de fontes render-blocking); `display: swap`; `antialiased` no body.
+Regra herdada do Portfolio: **uma cor existe uma única vez**, como token
+`--palette-*` em `:root`. Nenhum hex em qualquer outro arquivo do repositório —
+temas, skins e componentes só referenciam `var(--palette-*)` ou os tokens
+daisyUI derivados deles.
 
-### Escala e tratamentos observados (componentes retro)
+Famílias: cream/ink (claro), noir/rose e midnight/mint (escuro), frost, forest,
+sand, gold, cyan, violet, matrix. Status em duas forças (cheia para temas claros,
+suavizada para escuros). Overlays: `--palette-scanline-light/-dark` e
+`--palette-crt-edge-light/-dark`.
 
-| Uso | Classes |
+O arquivo é a fonte; não duplicar a tabela de hex aqui.
+
+### 2.2 Temas daisyUI (`app/src/styles/themes.css`)
+
+Dez temas, um bloco `@plugin "daisyui/theme"` cada, nomeados `goodchat-*`:
+crimson, frost, forest, sand (claros) · rose, gold, ember, cyan, violet, matrix
+(escuros). Catalogados em `app/src/lib/themes.ts` e validados no worker
+(`worker/src/routes/settings.ts`) — o mesmo id nos três lugares.
+
+Cada tema declara, além dos tokens daisyUI: `--shadow`, `--scanline-color`,
+`--crt-edge`. São os ganchos que as skins consomem — o tema diz *com que cor*,
+a skin diz *com que forma*.
+
+### 2.3 Tipografia base
+
+**Uma família para tudo: JetBrains Mono** (`@fontsource/jetbrains-mono`, pesos
+400/500/700/800 + itálicos). Em `index.css` tanto `--font-sans` quanto
+`--font-mono` apontam para ela — não existe fonte sans separada.
+
+A família é compartilhada; **o tratamento não é**. Tamanho, peso, caixa,
+tracking, itálico e glow são decisões de skin (retro §3, terminal §3).
+
+### 2.4 Motion, foco e acessibilidade
+
+Valem sob qualquer skin:
+
+- Entrada: fade + slide curto, ease-out, **zero overshoot** (`animate-enter`,
+  200ms). Sem spring, sem bounce, sem elastic — regra de time, sem exceção.
+- Movimento ambiente contínuo (scanline, caret piscando, roll do CRT) é
+  permitido; movimento de entrada que "assenta" não é.
+- `:focus-visible` sempre visível, 2px na cor de accent (a skin pode trocar o
+  *estilo* da linha — o terminal usa `dashed` — nunca removê-la).
+- `prefers-reduced-motion` respeitado: animações congeladas, scanline escondida.
+  Efeito ambiente que fica feio congelado deve ser desligado explicitamente pela
+  skin (é o que o `crt-roll` faz).
+- Seleção de texto tematizada (`::selection` accent/accent-content).
+
+---
+
+## 3. O contrato de skin
+
+O que uma skin pode mexer, e como. Vale para as duas skins atuais e para
+qualquer skin futura.
+
+### 3.1 Tokens de moldura
+
+Três tokens, declarados por skin em `app/src/styles/skins.css`, lidos pelas
+utilities `retro-border` / `retro-shadow` / `retro-shadow-sm` (`index.css`):
+
+| Token | Papel |
 |---|---|
-| Título de seção (assinatura da skin) | `text-4xl sm:text-5xl md:text-8xl font-black tracking-tighter italic underline decoration-accent decoration-4 md:decoration-8 underline-offset-4 md:underline-offset-8 uppercase` |
-| H1 hero | `text-4xl sm:text-5xl md:text-6xl xl:text-7xl font-black leading-[1.05–1.1] tracking-tighter uppercase` |
-| Corpo | `text-base sm:text-lg md:text-xl font-medium leading-relaxed`, cor `text-base-content/70` |
-| Eyebrow/label | `font-mono text-accent font-bold uppercase tracking-widest text-xs sm:text-base` (com prefixo literal `">"`) |
-| Tag de projeto | `text-[10px] md:text-xs font-black uppercase tracking-widest` |
-| Micro-texto decorativo (status/footers) | `text-[8px] md:text-[10px] uppercase tracking-[0.2em]` com `opacity-30`–`40` |
+| `--frame-border` | espessura de toda moldura |
+| `--frame-shadow` | sombra/relevo padrão |
+| `--frame-shadow-sm` | idem, versão compacta |
 
-Padrões-chave: **UPPERCASE em quase tudo que não é corpo**, `tracking-tighter` em títulos grandes, `tracking-widest`/`tracking-[0.2em]` em micro-labels, itálico como recurso de destaque, `font-black`/`font-bold` dominantes.
+Uma skin mínima é só esses três valores. Foi assim que a skin `terminal` começou.
 
----
+### 3.2 Hook classes
 
-## 4. Efeitos e motifs retrô (o que EXISTE de verdade)
+Além dos tokens, uma skin pode reescrever qualquer elemento pela **hook class**
+que o componente carrega sob *todas* as skins:
 
-Confirmados no código da skin `retro` (`src/styles/retro.css`, componentes):
+`crt` · `panel` / `panel-body` · `window-bar` / `window-bar-title` /
+`window-dots` · `screen-kicker` / `screen-title` / `screen-meta` / `sigil` ·
+`section-label` · `prompt-line` · `tile` / `tile-name` / `tile-unread` ·
+`avatar-sq` · `presence-dot` · `thread-log` / `thread-bar` / `thread-name` ·
+`msg` / `msg-body` / `msg-meta` / `msg-sticker` (+ `data-time`, `data-sender`,
+`data-mine`, `data-status`) · `composer` / `composer-input` · `icon-btn` /
+`tool-btn` · `stat-tile` / `stat-label` / `stat-value` · `admin-row` /
+`admin-handle` · `tag` + `tag-accent|error|warning|muted` · `usage-track` /
+`usage-fill` · `dialog-box` · `skeleton` · `skin-swatch`.
 
-1. **Sombra dura deslocada (hard offset shadow)** — assinatura nº 1 da skin:
-   - `.retro-shadow` → `box-shadow: 6px 6px 0 0 var(--shadow)`
-   - `.retro-shadow-sm` → `box-shadow: 3px 3px 0 0 var(--shadow)`
-   - Sem blur, sem spread; cor vem do token `--shadow` do tema.
-2. **Bordas grossas retas** — `.retro-border` → `border: var(--frame-border) solid var(--color-base-300)` com `--frame-border: 2px`.
-3. **Zero border-radius** — todos os temas: `--radius-selector/field/box: 0rem`. Cantos 100% retos (exceções deliberadas: anéis/avatares circulares no hero ti).
-4. **Scanline CRT** (`.terminal-scanline`, definida em `terminal.css` mas usada também no hub retro com `opacity-10`): gradiente horizontal repetido a cada 4px com `--scanline-color`, `position: fixed`, `pointer-events: none`, opacity 0.3 base.
-5. **Cursor piscando** (`.terminal-cursor` + `@keyframes blink` 1s step-end) — usado no `TypingText` compartilhado e na skin terminal. Disponível para o GoodChat (composer, indicador de digitação).
-6. **Texto estilo terminal decorativo** — prefixo `">"` em eyebrows, micro-textos tipo `Session: active` / `Access: full_root`, footer de status com `ENC: AES-256-GCM`, coordenadas, string de build (`DG_OS_V1.0`).
-7. **WindowDots** — três circulos estilo janela de SO: `bg-accent`, `bg-base-300`, `bg-base-300`.
-8. **Canto decorativo** — quadrado `bg-accent` rotacionado 45° estourando o canto do card (hero ti).
-9. **Anéis decorativos girando** — bordas dashed `border-accent/20` com `animate-[spin_40s_linear_infinite]` (movimento ambiente contínuo, lento).
-10. **Seleção de texto temática** — `selection:bg-accent selection:text-accent-content`.
-11. **Tooltip retro** (`.tooltip-retro`) — daisyUI tooltip achatado: borda 2px, uppercase 10px/900, `letter-spacing: 0.1em`, sem seta, radius 0, fundo accent.
-12. **Foco visível global** — `:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px }`.
-13. **`prefers-reduced-motion`** respeitado: mata animações e esconde o scanline.
+Uma hook class nova é adicionada quando uma skin precisa de um gancho que ainda
+não existe — e nasce já disponível para todas as outras.
 
-**NÃO existem na skin retro** (não inventar): glow de texto (`terminal-glow` é só da skin terminal), curvatura/vignette CRT, dithering, glitch, pixel fonts (a fonte é JetBrains Mono, não bitmap), bordas pixel-stepped.
+### 3.3 As duas leis
 
-### Motion (framer-motion 12)
+1. **Nenhum componente ramifica por skin.** Não existe `if (skin === 'terminal')`
+   no React. O componente escreve a hook class e os `data-*`; a skin decide o
+   resto no CSS. Skin nova não toca em `.tsx`.
+2. **As regras de skin são unlayered de propósito.** Utilities do Tailwind vivem
+   em `@layer utilities`, e regra fora de layer ganha de qualquer regra dentro de
+   um — é o que permite sobrescrever sem `!important`. Consequência: uma skin
+   nunca deve mirar direto numa utility que o componente combina com variante
+   (`bg-base-200` + `hover:bg-accent` pararia de fazer hover). Mira na hook class.
 
-- Entradas: fade + slide sutil — `initial={{ opacity: 0, y: 30 }}` → `animate={{ opacity: 1, y: 0 }}`, `transition={{ duration: 0.6 }}`. Sem spring, sem overshoot.
-- Hover interativo: `-translate-y-1` + sombra cresce (`retro-shadow-sm` → `retro-shadow`); `active:translate-y-0` (pressiona de volta). `transition-all duration-300`.
-- Movimento ambiente: spins lentos (20–40s), cursor piscando.
-- Existe um `animate-bounce` pontual num card decorativo de Projects (seta "→"). É movimento ambiente contínuo, não entrada — **para o GoodChat, não usar** (regra do time: nada de bounce; preferir os padrões acima).
+Ordem de import (`index.css`): `palettes` → `themes` → `skins` → arquivos de
+skin. `[data-skin]` e `[data-theme]` têm a mesma especificidade e casam no mesmo
+`<html>`; é a ordem do arquivo que faz a skin ganhar.
 
 ---
 
-## 5. Espaçamento, geometria e sombras (tokens)
+## 4. Receita CSS-first (Tailwind v4 + daisyUI 5)
 
-| Token (todos os temas retro) | Valor |
-|---|---|
-| `--radius-selector` / `--radius-field` / `--radius-box` | `0rem` |
-| `--border` (controles daisyUI) | `2px` (skin terminal usa 1px) |
-| `--frame-border` (molduras `.retro-border`) | `2px` |
-| `--size-selector` / `--size-field` | `0.25rem` |
-| `--depth` / `--noise` | `0` |
-| Sombra padrão / pequena | `6px 6px 0 0` / `3px 3px 0 0` |
+Não existe `tailwind.config.js` — tudo é CSS. `index.css` é o ponto de entrada:
+`@plugin "daisyui" { themes: false; logs: false }`, imports na ordem acima, fonte,
+`@theme` com os aliases de família, e as utilities compartilhadas
+(`retro-border`, `retro-shadow(-sm)`, `terminal-cursor`, `terminal-scanline`,
+`animate-enter`, `btn-goodchat`, `btn-goodchat-outline`).
 
-Convenções de espaçamento observadas (escala Tailwind padrão, sem customização):
-- Padding de cards/painéis: `p-6 sm:p-8 md:p-12` (hero chega a `lg:p-16`); tiles menores `p-4`–`p-6`.
-- Gaps de grid: `gap-3 sm:gap-4` (compacto), `gap-4 md:gap-6` (padrão), `gap-12 lg:gap-16` (seções).
-- Margens de título de seção: `mb-12 md:mb-20`.
+Regras da receita:
 
----
-
-## 6. Referência de componentes (tratamentos → equivalentes GoodChat)
-
-### Botões (`src/styles/retro.css` — variantes via tokens do `btn` daisyUI)
-
-| Variante | Tokens | Uso GoodChat |
-|---|---|---|
-| `btn-retro` | fundo accent, texto accent-content, altura `3.25rem` (md: `3.75rem`), padding-x `2rem`, fonte `0.875rem`→`1rem`, borda base-300, `font-weight: 900`, uppercase | CTA primário (Login, Enviar) |
-| `btn-retro-outline` | fundo transparente, texto base-content, mesma geometria | Ação secundária |
-| `btn-retro-invert` | fundo base-content, texto base-100, altura `2.75rem`→`3rem`, fonte `0.75rem`→`0.875rem` | Ações compactas |
-
-Padrão importante: variantes estendem o `btn` do daisyUI **pelos tokens dele** (`--btn-color`, `--btn-fg`, `--btn-p`, `--size`, `--fontsize`) — o `btn` continua fornecendo focus/active/disabled. Replicar essa técnica no GoodChat (ex.: `btn-goodchat`).
-
-### Card / Painel (`RetroCard`)
-
-`card card-border border-base-300 bg-base-200` + `retro-shadow` (ou `-sm`, ou nenhuma). Cantos retos vêm do tema. → Base para: painel de conversa, modais, container de login.
-
-### Badges (`RetroBadge`)
-
-Base `badge h-auto gap-0 border-base-300`; variantes `accent` (bloco accent uppercase 900), `chip` (nome bold sobre base-100), `tag` (10px, 900, `tracking-widest`). → Contador de não lidas, timestamps, labels de estado.
-
-### Tiles interativos (RetroSocialLinks)
-
-`retro-border bg-base-200` + hover `bg-accent text-accent-content -translate-y-1` + sombra sm→md + `active:translate-y-0`. → Padrão perfeito para itens da lista de conversas.
-
-### Composição para o GoodChat (novos, na mesma família)
-
-- **Bolha de mensagem:** daisyUI `chat` + `chat-bubble` herdará radius 0 e cores do tema; recebida = `bg-base-200` + `retro-border`, enviada = `bg-accent text-accent-content` + `retro-border`; `retro-shadow-sm`. Metadados (hora/status) em micro-texto `text-[10px] font-mono uppercase opacity-40`.
-- **Composer:** campo com `retro-border`, fundo `base-200`, radius 0; cursor/caret pode usar o motif `terminal-cursor`. Atenção: o Portfolio **exclui** o componente `input` do daisyUI (ver §7); decidir no GoodChat entre incluí-lo ou estilizar campo próprio.
-- **Indicador de digitação:** micro-texto uppercase + cursor piscando (motif nº 5) em vez de três bolinhas saltitantes.
-- **Cabeçalho de conversa:** padrão `ModuleHeader` do terminal (`bg-accent/10 border-b border-accent/20`, label `[ NOME ]`) é opcional; alternativa retro: barra com `retro-border` + WindowDots.
+1. Hex só em `palettes.css`.
+2. Variantes de botão estendem o `btn` do daisyUI **pelos tokens dele**
+   (`--btn-color`, `--btn-fg`, `--btn-border`, `--btn-p`, `--size`, `--fontsize`),
+   nunca redefinindo `.btn` — assim focus/active/disabled continuam vindo de lá.
+3. Um componente nunca hardcoda cor, espessura ou sombra: usa token de tema ou
+   token de moldura.
 
 ---
 
-## 7. Mapeamento para tema daisyUI custom no GoodChat
+## 5. Criar uma skin nova
 
-**Importante:** o Portfolio usa **Tailwind v4 + daisyUI 5 — não existe `tailwind.config.js`**; tudo é CSS-first. O approach "via `daisyui.themes` no `tailwind.config`" citado no kickoff é o formato antigo (Tailwind v3/daisyUI 4). Recomendação: **replicar o formato CSS-first do Portfolio** (verificar docs atuais do daisyUI na hora da implementação, conforme `inicial.md` exige).
+O contrato acima é o suficiente para uma skin caber no app sem tocar em React.
+Passos mecânicos, iguais para qualquer skin:
 
-Receita:
+1. Declarar `[data-skin='<id>']` em `app/src/styles/skins.css` com os três tokens
+   de moldura (§3.1). Se a skin for grande, o excedente vai para um
+   `styles/skin-<id>.css` importado logo depois — foi o que a `terminal` fez.
+2. Adicionar a entrada em `app/src/lib/skins.ts` (`id`, `label`, `hint`).
+3. Adicionar o id a `SKINS` em `worker/src/routes/settings.ts` — o worker rejeita
+   o que não conhece, e os três lugares precisam concordar.
+4. Se a skin reclamar de um elemento sem gancho, adicionar a hook class no
+   componente (vale para todas as skins) — nunca um `if` de skin.
 
-```css
-/* app/src/index.css */
-@import "tailwindcss";
-@plugin "daisyui" {
-  themes: false; /* só os temas custom; evita 35 temas mortos e typos silenciosos */
-  logs: false;
-}
+### 5.1 Com style guide novo
 
-/* palettes.css — copiar os --palette-* usados (seção 2.1) */
+O caminho recomendado para uma skin com identidade própria (é o caso das duas
+atuais). Criar `.harness/styleguides/<id>.md` seguindo o mesmo esqueleto de
+seções das existentes — §1 identidade, §2 cores, §3 tipografia, §4 motifs +
+motion, §5 geometria, §6 componentes, §7 origem/decisões — e listá-lo na tabela
+do topo deste arquivo.
 
-@plugin "daisyui/theme" {
-  name: "goodchat-light";
-  default: true;
-  color-scheme: light;
-  /* copiar bloco retro-hub-light integralmente (seção 2.2), inclusive:
-     --radius-*: 0rem; --border: 2px; --depth: 0; --noise: 0;
-     --shadow: var(--palette-ink); --scanline-color: var(--palette-scanline-light);
-     --frame-border: 2px; */
-}
+O style guide da skin descreve o **app inteiro sob aquela skin**, não só o
+delta: quem for implementar uma tela nova precisa saber como ela se comporta em
+cada skin, e não vai deduzir isso de uma lista de diferenças.
 
-@plugin "daisyui/theme" {
-  name: "goodchat-dark";
-  color-scheme: dark;
-  /* copiar retro-hub-dark; declarar DEPOIS do light (regra de cascata::root) */
-}
-```
+### 5.2 Sem style guide
 
-Regras herdadas do Portfolio que valem para o GoodChat:
+**Também é válido.** Uma skin que só mexe nos três tokens de moldura — outra
+espessura, outra sombra — não tem linguagem própria para documentar: ela é a
+base compartilhada com outra geometria. Nesse caso basta a entrada em
+`skins.ts` (o `hint` de uma linha é a documentação) e o comentário no bloco de
+`skins.css`.
 
-1. **Cor existe uma vez** — hex só em `palettes.css`; temas referenciam `var(--palette-*)` (daisyUI aceita `var()` nos tokens, validado pelo Portfolio).
-2. **Primeiro tema é `default: true` e cai no `:root`** — os demais vêm depois no arquivo.
-3. **Extras por tema:** `--shadow` e `--scanline-color` sempre; `--frame-border` uma vez no primeiro tema.
-4. **Utilities como `@utility`:** portar `retro-shadow`, `retro-shadow-sm`, `retro-border`, `tooltip-retro`, `terminal-scanline` (opcional, overlay `opacity-10`), `terminal-cursor` + `@keyframes blink`; criar variantes `btn-goodchat*` via tokens do `btn`.
-5. **`themes: false`** no plugin; considerar `exclude` de componentes não usados (técnica do Portfolio; o guard script `check-excluded.mjs` é opcional).
-6. Body: `background: var(--color-base-100)`, transição suave de cores (0.3s ease), `:focus-visible` accent, bloco `prefers-reduced-motion`.
-7. Fonte: copiar os woff2 de JetBrains Mono (OFL — pode) ou instalar `@fontsource/jetbrains-mono`; alias `--font-sans` e `--font-mono` para ela.
+A régua: **a skin inventa regra que um implementador precisaria adivinhar?**
+Se sim, ganha style guide. Se não — se tudo o que ela faz está visível nos
+poucos tokens que declara — não ganha, e forçar um arquivo só cria documento
+para envelhecer.
 
-Base recomendada: **par `retro-hub-light` / `retro-hub-dark`** (cream/crimson · noir/rose) — é o par default do Portfolio e o de maior identidade. Ver ambiguidade nº 1 abaixo.
-
----
-
-## 8. Ambiguidades / decisões pendentes
-
-1. **Qual par dark?** `retro-hub-dark` (noir `#121212` + rose `#e8729a`) e `retro-ti-dark` (midnight `#0d1117` + ember `#ff6b45` + texto mint) divergem. Recomendo o par **hub** (é o default e o "rosto" do site); confirmar com o usuário.
-2. **`font-black` (900) vs. face máxima 800** — comportamento herdado do Portfolio (browser resolve para 800/sintetiza). Manter igual ou padronizar em `font-extrabold`? Recomendo manter classes idênticas às do Portfolio.
-3. **Scanline no GoodChat** — o hub usa `terminal-scanline opacity-10` sobre a skin retro ("hybrid"). Sugiro incluir (barato, muito característico), mas é opcional; respeitar `prefers-reduced-motion`.
-4. **Componente `input` do daisyUI** — excluído no Portfolio por razões próprias da skin terminal. GoodChat tem formulários reais (login, composer); provavelmente **incluir** e estilizar via tema (radius 0 + borda 2px já vêm dos tokens). Decidir na implementação.
-5. **Nome do tema no GoodChat** — tokens aqui propostos como `goodchat-light`/`goodchat-dark` (derivados de `retro-hub-*`). Alternativa: manter os nomes `retro-hub-*` literais. Proposta: nomes próprios, origem documentada aqui.
-
-Nada além disso ficou sem fonte clara — todos os valores têm arquivo de origem citado.
+Uma skin pode começar sem style guide e ganhar um quando crescer; foi
+exatamente o que aconteceu com a `terminal`.

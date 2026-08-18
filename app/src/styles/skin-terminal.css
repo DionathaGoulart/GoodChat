@@ -1,0 +1,730 @@
+/*
+ * Skin `terminal` — the takeover.
+ *
+ * styles/skins.css holds the *token* half of the skin layer (frame width, frame
+ * shadow) plus the handful of motif overrides both skins share a hook for. This
+ * file is the other half: the rules that stop the terminal skin from being a
+ * thinner retro skin and make it read as a machine — a CRT with a log scrolling
+ * on it, the way the Portfolio's /dev does (src/styles/terminal.css and
+ * components/terminal/* there).
+ *
+ * Split into its own file only for size; the cascade is identical to skins.css
+ * (imported right after it, from index.css) and every rule here still obeys the
+ * two laws that layer rests on:
+ *
+ *   1. Nothing branches in a component. Every rule below hangs off a hook class
+ *      the markup carries under *both* skins (`msg`, `tile`, `composer`,
+ *      `screen-title`, `sigil`…), so a component never learns which skin is on
+ *      and a third skin can claim the same hooks.
+ *   2. The rules are unlayered on purpose. Tailwind utilities live in
+ *      `@layer utilities`, and an unlayered rule outranks any layered one — that
+ *      is what lets `align-self: stretch` here beat a `self-end` on the element
+ *      without an `!important` anywhere in the file. It is also why every rule
+ *      is scoped to a hook class rather than to a utility: overriding
+ *      `bg-base-200` itself would break the elements that pair it with a
+ *      `hover:bg-accent`, since the hover variant is layered and would lose.
+ *
+ * What the skin actually changes, top to bottom:
+ *   · the page is a CRT — vignette, dot grid, a slow roll band, a hairline bezel
+ *   · headings become a shell prompt, section labels become `[ LABEL ]` bars
+ *   · the conversation list becomes a directory listing, one hairline row each
+ *   · the thread stops being bubbles and becomes an IRC-style log
+ *   · the composer becomes a prompt line, the buttons become `[ bracketed ]`
+ *   · the neobrutal lift (`hover:-translate-y-1`) is gone: nothing floats on a
+ *     screen made of phosphor.
+ */
+
+/* ------------------------------------------------------------------ *
+ * The glass
+ * ------------------------------------------------------------------ */
+
+/*
+ * The CRT overlay (rendered once by App.tsx). It exists in the markup under
+ * every skin and is simply not painted outside this one, which keeps App.tsx
+ * from reading the skin to decide whether to mount it.
+ *
+ * `inset` rather than `inset: 0`: the 0.25rem gap plus the border below is the
+ * bezel of the screen, drawn just inside the viewport. Purely decorative and
+ * `pointer-events: none`, so it never takes a click and never moves layout —
+ * which is what makes it safe on the one screen that is sized to the viewport
+ * (the thread, `h-dvh`).
+ */
+.crt {
+  display: none;
+}
+
+[data-skin='terminal'] .crt {
+  display: block;
+  position: fixed;
+  inset: 0.25rem;
+  z-index: 90;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 16%, transparent);
+  pointer-events: none;
+}
+
+/*
+ * Vignette + phosphor dot grid. Pulled out to `-0.25rem` so the darkening
+ * reaches the true edge of the viewport instead of stopping at the bezel.
+ *
+ * The vignette is `--crt-edge` (themes.css) and not a token mixed with the
+ * theme's own colors — see the note in palettes.css for why a derived value
+ * lights up the corners on exactly the palettes this is for.
+ */
+[data-skin='terminal'] .crt::before {
+  content: '';
+  position: absolute;
+  inset: -0.25rem;
+  background-image:
+    radial-gradient(ellipse 130% 110% at 50% 50%, transparent 45%, var(--crt-edge) 100%),
+    radial-gradient(
+      color-mix(in srgb, var(--color-accent) 9%, transparent) 1px,
+      transparent 1px
+    );
+  background-size:
+    100% 100%,
+    26px 26px;
+}
+
+/*
+ * The roll: the soft band a CRT's refresh drags down the tube. Ambient motion,
+ * which is the kind the team rules allow — it never announces an element, it is
+ * just the screen being a screen. Killed outright under reduced motion (the
+ * global rule in index.css only freezes animations, and a frozen band would
+ * park a bright stripe across the page).
+ */
+[data-skin='terminal'] .crt::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 30%;
+  background-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--color-accent) 5%, transparent) 50%,
+    transparent 100%
+  );
+  animation: crt-roll 7s linear infinite;
+}
+
+@keyframes crt-roll {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(400%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-skin='terminal'] .crt::after {
+    display: none;
+  }
+}
+
+/* Typed input belongs to the machine: the caret is phosphor, and focus is a
+   dashed ring rather than the retro skin's solid one. */
+[data-skin='terminal'] input,
+[data-skin='terminal'] textarea {
+  caret-color: var(--color-accent);
+}
+
+[data-skin='terminal'] :focus-visible {
+  outline-style: dashed;
+  outline-offset: 1px;
+}
+
+/*
+ * The neobrutal lift, retired. `hover:-translate-y-1` is written at a dozen call
+ * sites (tiles, buttons, palette swatches) and it is the single most retro thing
+ * on the screen — a physical card being picked up. Nothing is physical here.
+ *
+ * Reached through the three frame utilities every one of those call sites also
+ * carries, so no component needs a new class for it, and safe because `transform`
+ * is the only thing being taken away: the hover *colors* stay, and those are
+ * what the terminal skin leans on instead.
+ */
+[data-skin='terminal'] .retro-border:hover,
+[data-skin='terminal'] .retro-shadow:hover,
+[data-skin='terminal'] .retro-shadow-sm:hover {
+  transform: none;
+}
+
+/* ------------------------------------------------------------------ *
+ * Type: prompts, headings, labels
+ * ------------------------------------------------------------------ */
+
+/*
+ * `.sigil` wraps the bare `>` every screen writes before its label. The retro
+ * skin shows it as-is; here it is the place the shell prompt is spliced in.
+ *
+ * `font-size: 0` rather than `display: none` because the span is an inline
+ * flow element with a space after it: hiding the box would eat that space and
+ * glue the prompt to the label. Zeroing the glyph keeps the space and lets
+ * ::before bring its own size back.
+ */
+/* Lowercase: a prompt that shouts is not a prompt. The rest of the app's
+   micro-type stays uppercase — this line is the one piece of it the machine is
+   supposed to have printed itself. */
+[data-skin='terminal'] .screen-kicker {
+  text-transform: lowercase;
+}
+
+[data-skin='terminal'] .screen-kicker > .sigil {
+  font-size: 0;
+}
+
+[data-skin='terminal'] .screen-kicker > .sigil::before {
+  content: 'goodchat@tty1:~$';
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+}
+
+/* The screen title: the retro skin's fat italic display type is the other half
+   of its signature, so it goes too. What is left is a machine name in wide
+   phosphor caps, followed by the block caret that is idling on it. */
+[data-skin='terminal'] .screen-title {
+  font-size: 1.375rem;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-decoration: none;
+  color: var(--color-accent);
+  text-shadow: 0 0 12px currentColor;
+}
+
+@media (width >= 40rem) {
+  [data-skin='terminal'] .screen-title {
+    font-size: 1.75rem;
+  }
+}
+
+[data-skin='terminal'] .screen-title::after {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 0.85em;
+  margin-left: 0.35em;
+  background-color: currentColor;
+  animation: blink 1s step-end infinite;
+}
+
+/* The line under the title (`logado como @rafael`) reads as a status line. */
+[data-skin='terminal'] .screen-meta {
+  color: var(--color-accent);
+  opacity: 0.45;
+}
+
+/*
+ * Section headings become the Portfolio's module bar: `[ LABEL ]`, the `>` they
+ * carry under the retro skin dropped entirely. `display: none` is right here
+ * where it was wrong above — the bracket supplies its own separation.
+ */
+[data-skin='terminal'] .section-label > .sigil {
+  display: none;
+}
+
+[data-skin='terminal'] .section-label {
+  display: block;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 15%, transparent);
+  padding-bottom: 0.375rem;
+  letter-spacing: 0.2em;
+}
+
+[data-skin='terminal'] .section-label::before {
+  content: '[ ';
+  opacity: 0.45;
+}
+
+[data-skin='terminal'] .section-label::after {
+  content: ' ]';
+  opacity: 0.45;
+}
+
+/* A line of shell output (the empty-list state): the `>` becomes the `$` of a
+   command that has already run. */
+[data-skin='terminal'] .prompt-line > .sigil {
+  font-size: 0;
+}
+
+[data-skin='terminal'] .prompt-line > .sigil::before {
+  content: '$';
+  font-size: 0.75rem;
+  opacity: 0.55;
+}
+
+/* ------------------------------------------------------------------ *
+ * Surfaces
+ * ------------------------------------------------------------------ */
+
+/*
+ * Panels lose the raised base-200 fill. On a terminal every surface is the same
+ * black glass and the *lines* are what separate them, so the body is the page
+ * color with a breath of accent in it — the wash the Portfolio puts behind its
+ * HUD modules (`bg-accent/5`).
+ */
+[data-skin='terminal'] .panel {
+  border-width: var(--frame-border);
+  border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  background-color: color-mix(in srgb, var(--color-accent) 3%, var(--color-base-100));
+}
+
+[data-skin='terminal'] .panel-body {
+  padding: 1rem;
+}
+
+/* The window bar's filename in shell spelling: `contas.cfg` becomes
+   `~/contas.cfg`, lowercase, where the retro bar shouts `CONTAS.CFG`. */
+[data-skin='terminal'] .window-bar-title {
+  text-transform: lowercase;
+}
+
+[data-skin='terminal'] .window-bar-title::before {
+  content: '~/';
+  opacity: 0.6;
+}
+
+/* Inputs: no raised field, just a phosphor hairline over the glass. */
+[data-skin='terminal'] .input {
+  background-color: color-mix(in srgb, var(--color-accent) 4%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+/* Loading bars stop being grey blocks and become dim phosphor. */
+[data-skin='terminal'] .skeleton {
+  background-color: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+/*
+ * The appearance screen's skin preview: the terminal swatch shows its own
+ * scanlines, so the two swatches differ by more than a border width.
+ *
+ * ...and the retro swatch takes its blank face back. The swatch is the one
+ * place in the app where a `data-skin` is stamped *inside* a page that already
+ * has one, so a plain descendant rule paints the retro preview with the
+ * terminal texture and the two previews stop telling the truth. Same reclaim
+ * skins.css writes for `.retro-border`, and the reason both files list the
+ * attribute explicitly instead of leaning on `:root`.
+ */
+[data-skin='terminal'] .skin-swatch {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-accent) 22%, transparent) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+[data-skin='retro'] .skin-swatch,
+.skin-swatch[data-skin='retro'] {
+  background-image: none;
+}
+
+/* ------------------------------------------------------------------ *
+ * Buttons
+ * ------------------------------------------------------------------ */
+
+/*
+ * Toolbar buttons become bracketed commands — `[ config ]`, `[ ← voltar ]` —
+ * ghosted onto the glass instead of sitting on a base-200 chip. The brackets are
+ * pseudo-elements so the label in the markup stays a plain word for a screen
+ * reader and for the retro skin.
+ */
+[data-skin='terminal'] .icon-btn {
+  background-color: color-mix(in srgb, var(--color-accent) 5%, transparent);
+  color: var(--color-accent);
+  letter-spacing: 0.1em;
+}
+
+[data-skin='terminal'] .icon-btn::before {
+  content: '[';
+  margin-right: 0.35em;
+  opacity: 0.5;
+}
+
+[data-skin='terminal'] .icon-btn::after {
+  content: ']';
+  margin-left: 0.35em;
+  opacity: 0.5;
+}
+
+[data-skin='terminal'] .icon-btn:not(:disabled):hover {
+  background-color: var(--color-accent);
+  color: var(--color-accent-content);
+}
+
+/* Composer tools (`+`, `:)`, `▦`): same ghost treatment, no brackets — they are
+   glyphs, not commands. */
+[data-skin='terminal'] .tool-btn {
+  background-color: color-mix(in srgb, var(--color-accent) 5%, transparent);
+  color: var(--color-accent);
+}
+
+/* ------------------------------------------------------------------ *
+ * The conversation list: a directory listing
+ * ------------------------------------------------------------------ */
+
+/*
+ * The tile stops being a card. No frame, no fill, no shadow — one hairline rule
+ * under each row and a `>` cursor in the gutter, which is what a list of things
+ * looks like on a terminal.
+ *
+ * The hover *keeps* the accent flood the markup already declares: an inverted
+ * full-width bar is the selection idiom of every TUI there has ever been, so it
+ * is more terminal than a subtle wash would be — and keeping it is what lets the
+ * `group-hover:` rules on the children (the online tag, the avatar frame) go on
+ * working untouched.
+ */
+[data-skin='terminal'] .tile {
+  border-width: 0 0 var(--frame-border) 0;
+  border-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  background-color: transparent;
+  box-shadow: none;
+  padding: 0.625rem 0.5rem;
+}
+
+[data-skin='terminal'] .tile:hover {
+  box-shadow: none;
+}
+
+[data-skin='terminal'] .tile::before {
+  content: '>';
+  align-self: center;
+  font-weight: 700;
+  color: var(--color-accent);
+  opacity: 0.3;
+}
+
+[data-skin='terminal'] .tile:hover::before {
+  color: var(--color-accent-content);
+  opacity: 1;
+}
+
+/* The name is the only thing on the row allowed to glow. */
+[data-skin='terminal'] .tile-name {
+  color: var(--color-accent);
+  text-shadow: 0 0 10px currentColor;
+  letter-spacing: 0.05em;
+}
+
+[data-skin='terminal'] .tile:hover .tile-name {
+  color: var(--color-accent-content);
+}
+
+/* The unread count as `[3]` — a chip is a UI object, a bracketed number is
+   output. Both states are written out because the markup's `group-hover:`
+   inversion is a layered utility this rule would otherwise beat in one
+   direction only, leaving accent-on-accent on the hovered row. */
+[data-skin='terminal'] .tile-unread {
+  background-color: transparent;
+  color: var(--color-accent);
+  padding: 0;
+}
+
+[data-skin='terminal'] .tile-unread::before {
+  content: '[';
+}
+
+[data-skin='terminal'] .tile-unread::after {
+  content: ']';
+}
+
+[data-skin='terminal'] .tile:hover .tile-unread {
+  background-color: transparent;
+  color: var(--color-accent-content);
+}
+
+/*
+ * Avatars: a hairline square holding a phosphor initial, not a solid accent
+ * block. Same reason as the tile — fills belong to the retro skin, lines belong
+ * to this one. The hover pair is spelled out for the same reason as above.
+ */
+[data-skin='terminal'] .avatar-sq {
+  background-color: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  color: var(--color-accent);
+}
+
+[data-skin='terminal'] .tile:hover .avatar-sq {
+  background-color: color-mix(in srgb, var(--color-accent-content) 12%, transparent);
+  color: var(--color-accent-content);
+}
+
+/*
+ * Presence: the square dot loses its base-200 ring (there is no raised surface
+ * for it to cut out of) and gains the halo of a lit pixel — only when it is
+ * actually lit, which is what `data-online` is on the element for. An offline
+ * dot glowing green would say the opposite of what it means.
+ */
+[data-skin='terminal'] .presence-dot {
+  border-width: 0;
+}
+
+[data-skin='terminal'] .presence-dot[data-online='true'] {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-success) 80%, transparent);
+}
+
+/* ------------------------------------------------------------------ *
+ * The thread: a chat log, not bubbles
+ * ------------------------------------------------------------------ */
+
+/*
+ * This is the skin's centerpiece. Under the retro skin a message is a framed
+ * bubble on one side of the column; here every message is a line of a log:
+ *
+ *   [14:22] <rafael> oi
+ *   [14:23] <dionatha> e aí ✓✓
+ *
+ * The bubble chrome (frame, fill, shadow, 80% width, `self-end`) is stripped and
+ * the identity moves into a `::before` built from the `data-time` / `data-sender`
+ * attributes the component always writes — the retro skin ignores them, so the
+ * markup carries one shape and each skin reads what it needs.
+ *
+ * Own messages are told apart by color rather than by side: accent for mine,
+ * base-content for theirs, which is what a client with two nicks does.
+ */
+[data-skin='terminal'] .thread-log {
+  gap: 0.125rem;
+}
+
+[data-skin='terminal'] .msg {
+  align-self: stretch;
+  max-width: 100%;
+  border-width: 0;
+  background-color: transparent;
+  box-shadow: none;
+  padding: 0.0625rem 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+[data-skin='terminal'] .msg::before {
+  content: '[' attr(data-time) '] <' attr(data-sender) '> ';
+  white-space: pre;
+  font-weight: 700;
+  color: var(--color-accent);
+  opacity: 0.5;
+}
+
+[data-skin='terminal'] .msg[data-mine='true'] {
+  color: var(--color-accent);
+}
+
+[data-skin='terminal'] .msg[data-mine='true']::before {
+  opacity: 0.75;
+}
+
+/* The body has to be inline for the prefix and the text to share a line — as a
+   block it would wrap under it and the log would double in height. */
+[data-skin='terminal'] .msg-body {
+  display: inline;
+}
+
+/* The meta line is now redundant: the time is in the prefix and the delivery
+   state is the trailing glyph below. */
+[data-skin='terminal'] .msg-meta {
+  display: none;
+}
+
+[data-skin='terminal'] .msg[data-mine='true'][data-status='sending']::after {
+  content: ' …';
+  opacity: 0.4;
+}
+
+[data-skin='terminal'] .msg[data-mine='true'][data-status='sent']::after {
+  content: ' ✓';
+  opacity: 0.35;
+}
+
+[data-skin='terminal'] .msg[data-mine='true'][data-status='delivered']::after {
+  content: ' ✓✓';
+  opacity: 0.35;
+}
+
+[data-skin='terminal'] .msg[data-mine='true'][data-status='read']::after {
+  content: ' ✓✓';
+  opacity: 1;
+}
+
+/*
+ * Attachments hang under their log line, framed by a hairline like everything
+ * else. `display: block` is what puts them on the line below the prefix.
+ *
+ * Direct children only, and never a sticker: the lightbox `<dialog>` lives
+ * inside the same bubble and holds a second copy of the image (an 80vh one),
+ * and a sticker carries its own baked plate that a frame would double up.
+ */
+[data-skin='terminal'] .msg:not(.msg-sticker) > img,
+[data-skin='terminal'] .msg:not(.msg-sticker) > video {
+  display: block;
+  margin-top: 0.25rem;
+  max-height: 14rem;
+  width: auto;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 25%, transparent);
+}
+
+/* Stickers keep their baked plate but line up with the log's left rail instead
+   of hugging the far side of the column. */
+[data-skin='terminal'] .msg-sticker {
+  align-items: flex-start;
+}
+
+/*
+ * The thread header as a status bar: a wash of accent under a hairline, the
+ * peer's name in phosphor. Same information, arranged the way a client puts it
+ * across the top of a channel.
+ */
+[data-skin='terminal'] .thread-bar {
+  background-color: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  box-shadow: none;
+  padding: 0.5rem 0.75rem;
+}
+
+[data-skin='terminal'] .thread-name {
+  color: var(--color-accent);
+  text-shadow: 0 0 10px currentColor;
+  letter-spacing: 0.08em;
+}
+
+/* ------------------------------------------------------------------ *
+ * The composer: a prompt
+ * ------------------------------------------------------------------ */
+
+/*
+ * No framed field floating over the page — a rule across the bottom of the log
+ * and a prompt in front of the caret, so writing a message looks like typing a
+ * command. The tool buttons and the send button keep their own boxes; they are
+ * the only things on the row that are still buttons.
+ */
+[data-skin='terminal'] .composer {
+  border-width: var(--frame-border) 0 0 0;
+  border-color: color-mix(in srgb, var(--color-accent) 25%, transparent);
+  background-color: transparent;
+  box-shadow: none;
+  padding: 0.5rem 0;
+}
+
+[data-skin='terminal'] .composer::before {
+  content: 'msg>';
+  align-self: center;
+  padding-left: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--color-accent);
+  text-shadow: 0 0 10px currentColor;
+}
+
+[data-skin='terminal'] .composer-input::placeholder {
+  color: var(--color-accent);
+  opacity: 0.35;
+}
+
+/* ------------------------------------------------------------------ *
+ * The owner console: a readout, not a dashboard
+ * ------------------------------------------------------------------ */
+
+/*
+ * The totals grid stops being six raised cards and becomes the block a status
+ * command prints: hairline cells over the glass, a dim label, the number in
+ * phosphor. Same grid, same order — only the material changes.
+ */
+[data-skin='terminal'] .stat-tile {
+  background-color: transparent;
+  box-shadow: none;
+  padding: 0.625rem 0.75rem;
+}
+
+[data-skin='terminal'] .stat-label::before {
+  content: '# ';
+  opacity: 0.5;
+}
+
+[data-skin='terminal'] .stat-value {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--color-accent);
+  text-shadow: 0 0 10px currentColor;
+}
+
+/*
+ * Account and conversation rows: the same hairline-and-no-fill treatment the
+ * conversation list gets, so the console reads as more output from the same
+ * machine rather than as a second design.
+ */
+[data-skin='terminal'] .admin-row {
+  background-color: transparent;
+  border-width: 0 0 var(--frame-border) 0;
+  border-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  padding-inline: 0.25rem;
+}
+
+[data-skin='terminal'] .admin-handle {
+  color: var(--color-accent);
+  text-shadow: 0 0 10px currentColor;
+}
+
+/*
+ * Status chips become bracketed words. The fill is dropped and the *state*
+ * colors are restated here, because the markup carries them as `-content`
+ * tokens meant to sit on that fill: `text-error-content` over nothing at all
+ * would be near-invisible. One class per state rather than one per element, so
+ * a new chip only has to say which of the four it is.
+ */
+[data-skin='terminal'] .tag {
+  background-color: transparent;
+  padding: 0;
+  font-weight: 700;
+}
+
+[data-skin='terminal'] .tag::before {
+  content: '[';
+  opacity: 0.5;
+}
+
+[data-skin='terminal'] .tag::after {
+  content: ']';
+  opacity: 0.5;
+}
+
+[data-skin='terminal'] .tag-accent {
+  color: var(--color-accent);
+}
+
+[data-skin='terminal'] .tag-error {
+  color: var(--color-error);
+}
+
+[data-skin='terminal'] .tag-warning {
+  color: var(--color-warning);
+}
+
+[data-skin='terminal'] .tag-muted {
+  color: inherit;
+  opacity: 0.5;
+}
+
+/*
+ * The storage meter as a row of blocks — `▮▮▮▮▮░░░` is how a terminal draws a
+ * bar, and a repeating gradient is how CSS draws that without the markup
+ * growing a segment per block. The track keeps the width; only the fill is cut
+ * into segments, so the proportion it reports is still exact.
+ */
+[data-skin='terminal'] .usage-track {
+  background-color: transparent;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+  padding: 1px;
+}
+
+[data-skin='terminal'] .usage-fill {
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--color-accent) 0 4px,
+    transparent 4px 6px
+  );
+}
+
+/* Dialogs are windows of the same shell: hairline frame, accent-washed glass. */
+[data-skin='terminal'] .dialog-box {
+  background-color: color-mix(in srgb, var(--color-accent) 4%, var(--color-base-100));
+}

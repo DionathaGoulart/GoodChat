@@ -57,18 +57,28 @@ export function ConversationListSkeleton({ rows = 4 }: { rows?: number }) {
   )
 }
 
-/**
- * Thread being resolved: the header exists (it is the way back out) and the
- * bubbles alternate sides, which is what a thread looks like from across the
- * room.
- */
-export function ThreadSkeleton() {
+/** Bubbles alternating sides — a thread seen from across the room. */
+function Bubbles() {
   const bubbles = [
     { mine: false, width: 'w-40' },
     { mine: true, width: 'w-28' },
     { mine: false, width: 'w-56' },
     { mine: true, width: 'w-36' },
   ]
+  return (
+    <div className="flex flex-1 flex-col gap-3">
+      {bubbles.map((bubble, index) => (
+        <span
+          key={index}
+          className={`skeleton h-12 ${bubble.width} ${bubble.mine ? 'self-end' : 'self-start'}`}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** Thread being resolved: the header exists (it is the way back out), plus bubbles. */
+export function ThreadSkeleton() {
   return (
     <Loading label="abrindo conversa">
       <div className="flex flex-1 flex-col gap-4">
@@ -79,15 +89,22 @@ export function ThreadSkeleton() {
             <Bar className="mt-2 w-16" />
           </span>
         </div>
-        <div className="flex flex-1 flex-col gap-3">
-          {bubbles.map((bubble, index) => (
-            <span
-              key={index}
-              className={`skeleton h-12 ${bubble.width} ${bubble.mine ? 'self-end' : 'self-start'}`}
-            />
-          ))}
-        </div>
+        <Bubbles />
       </div>
+    </Loading>
+  )
+}
+
+/**
+ * The thread is resolved and its header is already painted; only the messages
+ * are still coming. Shown when the conversation is known to hold some (the
+ * resolve said so) and the `history` frame has not landed — never for a thread
+ * that has never had a message, which has nothing to wait for.
+ */
+export function MessagesSkeleton() {
+  return (
+    <Loading label="carregando mensagens">
+      <Bubbles />
     </Loading>
   )
 }
@@ -122,7 +139,7 @@ export function StatTilesSkeleton({ tiles = 6 }: { tiles?: number }) {
     <Loading label="carregando totais">
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         {Array.from({ length: tiles }, (_, index) => (
-          <div key={index} className="retro-border bg-base-200 p-3 retro-shadow-sm">
+          <div key={index} className="stat-tile retro-border bg-base-200 p-3 retro-shadow-sm">
             <Bar className="w-16" />
             <span className="skeleton mt-2 block h-6 w-20" />
             <Bar className="mt-2 w-24" />
@@ -139,7 +156,7 @@ export function CardListSkeleton({ label, rows = 3 }: { label: string; rows?: nu
     <Loading label={label}>
       <ul className="flex flex-col gap-2">
         {Array.from({ length: rows }, (_, index) => (
-          <li key={index} className="retro-border bg-base-100 p-3">
+          <li key={index} className="admin-row retro-border bg-base-100 p-3">
             <Bar className="w-48" />
             <Bar className="mt-2 w-32" />
           </li>

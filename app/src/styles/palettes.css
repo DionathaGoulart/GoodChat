@@ -2,7 +2,7 @@
  * GoodChat raw palette — single source of every color in the app.
  * Rule (inherited from Portfolio): a color exists exactly once, as a
  * --palette-* token here. No hex values anywhere else in the codebase.
- * Origin: harness/styleguide.md §2.1 (retro-hub pair); the eight extra
+ * Origin: .harness/styleguide.md §2.1 (retro-hub pair); the eight extra
  * families come from the Portfolio terminal skin, so both projects draw
  * from the same catalog and a palette can never drift between them.
  */
@@ -79,4 +79,11 @@
   /* Overlays */
   --palette-scanline-light: rgba(0, 0, 0, 0.05);
   --palette-scanline-dark: rgba(0, 0, 0, 0.2);
+
+  /* CRT vignette of the terminal skin — the darkening at the edges of the
+     glass. Always black, never the theme's ink: on a dark palette base-300 is
+     the *light* color, so deriving it from a token would brighten the corners
+     of exactly the themes the effect exists for. */
+  --palette-crt-edge-light: rgba(0, 0, 0, 0.16);
+  --palette-crt-edge-dark: rgba(0, 0, 0, 0.55);
 }

@@ -72,10 +72,10 @@ export function LoginScreen() {
   return (
     <main className="flex min-h-screen items-center justify-center p-6">
       <div className="animate-enter w-full max-w-md">
-        <p className="mb-3 font-mono text-xs font-bold uppercase tracking-widest text-accent">
-          {'>'} goodchat_login
+        <p className="screen-kicker mb-3 font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          <span className="sigil">{'>'}</span> goodchat_login
         </p>
-        <h1 className="mb-8 text-5xl font-black uppercase italic leading-[1.05] tracking-tighter underline decoration-accent decoration-4 underline-offset-4 sm:text-6xl">
+        <h1 className="screen-title mb-8 text-5xl font-black uppercase italic leading-[1.05] tracking-tighter underline decoration-accent decoration-4 underline-offset-4 sm:text-6xl">
           GoodChat
         </h1>
 
@@ -139,8 +139,8 @@ export function LoginScreen() {
 
         {guestsOffered && (
           <section className="mt-4 retro-border bg-base-200 p-4">
-            <p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-accent">
-              {'>'} sem conta?
+            <p className="section-label font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-accent">
+              <span className="sigil">{'>'}</span> sem conta?
             </p>
             <p className="mt-1 text-sm leading-relaxed opacity-70">
               Entre como convidado: a conta dura 5 horas e depois some, levando junto

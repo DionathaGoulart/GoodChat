@@ -38,6 +38,10 @@ export default function App() {
   return (
     <SessionProvider>
       <div className="terminal-scanline opacity-10" aria-hidden="true" />
+      {/* The CRT glass — vignette, dot grid, roll band and bezel. Mounted under
+          every skin and painted only by the terminal one (styles/
+          skin-terminal.css), so the shell never has to read the preference. */}
+      <div className="crt" aria-hidden="true" />
       <Screens />
     </SessionProvider>
   )
