@@ -6,6 +6,11 @@
 // Every destructive action goes through one confirmation dialog that spells
 // out what disappears, because none of them are undoable. The Worker enforces
 // the role and the hierarchy independently; this screen only reflects them.
+//
+// Not reachable without the role, on purpose and in three places: the entry
+// point in SettingsScreen only exists for an owner, the route in App.tsx sends
+// anyone else back to the list, and a 403 from the API does the same. An
+// account that is not an owner is never shown a door it cannot open.
 
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -13,9 +18,12 @@ import * as api from '../lib/api'
 import type { AdminConversation, AdminOverview, AdminUser } from '../lib/api'
 import { ApiError } from '../lib/api'
 import { useSession } from '../hooks/useSession'
+import { Modal } from '../components/Modal'
 import { Panel } from '../components/Panel'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { CardListSkeleton, StatTilesSkeleton } from '../components/Skeleton'
+import { retentionOr } from '../lib/protocol'
+import { retentionShort } from '../lib/retention'
 import { navigate } from '../lib/router'
 import { formatRemaining } from '../lib/time'
 
@@ -76,11 +84,16 @@ export function AdminScreen() {
         setConversations(conversationsResult.conversations)
       })
       .catch((err: unknown) => {
-        setError(
-          err instanceof ApiError && err.status === 403
-            ? 'esta conta não é owner'
-            : 'falha ao carregar o painel',
-        )
+        // 403 means this account is not an owner. Nothing on this screen is
+        // theirs to see, and telling them so is a dead end — the entry point
+        // is hidden from them (SettingsScreen) and the route already bounces
+        // (App.tsx); this is the same answer for the case where the role
+        // changed under a session that was already here.
+        if (err instanceof ApiError && err.status === 403) {
+          navigate({ name: 'list' })
+          return
+        }
+        setError('falha ao carregar o painel')
       })
   }, [])
 
@@ -116,13 +129,13 @@ export function AdminScreen() {
     <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 p-6 sm:p-8">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} owner_console
+          <p className="screen-kicker font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> owner_console
           </p>
-          <h1 className="text-3xl font-black uppercase italic tracking-tighter sm:text-4xl">
+          <h1 className="screen-title text-3xl font-black uppercase italic tracking-tighter sm:text-4xl">
             Administração
           </h1>
-          <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
+          <p className="screen-meta mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
             @{user.username} · owner
           </p>
         </div>
@@ -150,8 +163,8 @@ export function AdminScreen() {
       <Panel title="contas.db">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-              {'>'} contas
+            <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+              <span className="sigil">{'>'}</span> contas
             </h2>
             <p className="mt-1 text-sm opacity-70">
               Espaço por conta: mensagens (banco) + mídia (bucket).
@@ -266,15 +279,15 @@ function OverviewPanel({ overview }: { overview: AdminOverview | null }) {
   return (
     <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
       {tiles.map((tile) => (
-        <div key={tile.label} className="retro-border bg-base-200 p-3 retro-shadow-sm">
-          <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
+        <div key={tile.label} className="stat-tile retro-border bg-base-200 p-3 retro-shadow-sm">
+          <p className="stat-label font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
             {tile.label}
           </p>
-          <p className="mt-1 break-words text-lg font-black tracking-tighter sm:text-xl">
+          <p className="stat-value mt-1 break-words text-lg font-black tracking-tighter sm:text-xl">
             {tile.value}
           </p>
           {tile.hint && (
-            <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
+            <p className="stat-hint font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
               {tile.hint}
             </p>
           )}
@@ -306,27 +319,27 @@ function AccountRow({
   const locked = isOtherOwner || busy
 
   return (
-    <li className="retro-border bg-base-100 p-4">
+    <li className="admin-row retro-border bg-base-100 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="font-mono text-sm font-black uppercase tracking-widest">
+          <p className="admin-handle font-mono text-sm font-black uppercase tracking-widest">
             @{account.username}
             {account.role === 'owner' && (
-              <span className="ml-2 bg-accent px-2 py-0.5 text-[10px] text-accent-content">
+              <span className="tag tag-accent ml-2 bg-accent px-2 py-0.5 text-[10px] text-accent-content">
                 owner
               </span>
             )}
             {account.deleted ? (
-              <span className="ml-2 bg-base-300 px-2 py-0.5 text-[10px]">expirada</span>
+              <span className="tag tag-muted ml-2 bg-base-300 px-2 py-0.5 text-[10px]">expirada</span>
             ) : (
               account.disabled && (
-                <span className="ml-2 bg-error px-2 py-0.5 text-[10px] text-error-content">
+                <span className="tag tag-error ml-2 bg-error px-2 py-0.5 text-[10px] text-error-content">
                   desativada
                 </span>
               )
             )}
             {account.is_temp && !account.deleted && account.expires_at !== null && (
-              <span className="ml-2 bg-warning px-2 py-0.5 text-[10px] text-warning-content">
+              <span className="tag tag-warning ml-2 bg-warning px-2 py-0.5 text-[10px] text-warning-content">
                 convidada · {formatRemaining(account.expires_at, Date.now())}
               </span>
             )}
@@ -345,12 +358,12 @@ function AccountRow({
       </div>
 
       <div
-        className="mt-3 h-2 w-full bg-base-300"
+        className="usage-track mt-3 h-2 w-full bg-base-300"
         role="img"
         aria-label={`uso de ${formatBytes(account.total_bytes)}`}
       >
         <div
-          className="h-full bg-accent"
+          className="usage-fill h-full bg-accent"
           style={{ width: `${Math.round((account.total_bytes / largest) * 100)}%` }}
         />
       </div>
@@ -431,8 +444,8 @@ function ConversationsPanel({
   return (
     <Panel title="conversas.db">
       <div>
-        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-          {'>'} conversas
+        <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          <span className="sigil">{'>'}</span> conversas
         </h2>
         <p className="mt-1 text-sm opacity-70">
           Cada conversa é um banco próprio, compartilhado pelos dois participantes.
@@ -450,16 +463,24 @@ function ConversationsPanel({
           {conversations.map((conversation) => (
             <li
               key={conversation.id}
-              className="retro-border flex flex-wrap items-center justify-between gap-3 bg-base-100 p-3"
+              className="admin-row retro-border flex flex-wrap items-center justify-between gap-3 bg-base-100 p-3"
             >
               <div>
-                <p className="font-mono text-xs font-black uppercase tracking-widest">
+                <p className="admin-handle font-mono text-xs font-black uppercase tracking-widest">
                   {conversation.participants.map((p) => `@${p.username}`).join(' ↔ ')}
                 </p>
                 <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
                   {conversation.messages} mensagens · {formatBytes(conversation.storage_bytes)} ·{' '}
                   {conversation.media_objects} mídias · {formatDate(conversation.last_message_at)}
                   {conversation.unreachable && ' · indisponível'}
+                </p>
+                {/* The window the pair chose, and when it next bites. Read-only
+                    here on purpose: retention belongs to the two people in the
+                    conversation, not to whoever runs the instance. */}
+                <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
+                  prazo {retentionShort(retentionOr(conversation.retention_ms))}
+                  {conversation.next_expiry_at !== null &&
+                    ` · próxima expiração ${formatDate(conversation.next_expiry_at)}`}
                 </p>
               </div>
               <RetroIconButton
@@ -495,8 +516,8 @@ function MaintenancePanel({
   return (
     <Panel title="manutencao.sh">
       <div>
-        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-          {'>'} manutenção
+        <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          <span className="sigil">{'>'}</span> manutenção
         </h2>
         <p className="mt-1 text-sm opacity-70">
           A limpeza roda de hora em hora sozinha; aqui é só para adiantar.
@@ -544,7 +565,7 @@ function ConfirmDialog({
 }) {
   return (
     <Modal onCancel={onCancel}>
-      <h3 className="font-mono text-sm font-black uppercase tracking-widest text-error">
+      <h3 className="section-label font-mono text-sm font-black uppercase tracking-widest text-error">
         {action.title}
       </h3>
       <p className="text-sm leading-relaxed opacity-80">{action.detail}</p>
@@ -580,7 +601,7 @@ function CreateUserDialog({
 
   return (
     <Modal onCancel={onCancel}>
-      <h3 className="font-mono text-sm font-black uppercase tracking-widest text-accent">
+      <h3 className="section-label font-mono text-sm font-black uppercase tracking-widest text-accent">
         nova conta
       </h3>
       <Field label="username" hint="3-20 caracteres: a-z, 0-9, _">
@@ -641,7 +662,7 @@ function PasswordDialog({
 
   return (
     <Modal onCancel={onCancel}>
-      <h3 className="font-mono text-sm font-black uppercase tracking-widest text-accent">
+      <h3 className="section-label font-mono text-sm font-black uppercase tracking-widest text-accent">
         nova senha de @{username}
       </h3>
       <p className="text-sm opacity-70">
@@ -685,22 +706,3 @@ function Field({
   )
 }
 
-/** Native <dialog> so Escape and the backdrop close it without extra wiring. */
-function Modal({ onCancel, children }: { onCancel: () => void; children: ReactNode }) {
-  const [element, setElement] = useState<HTMLDialogElement | null>(null)
-
-  useEffect(() => {
-    element?.showModal()
-  }, [element])
-
-  return (
-    <dialog ref={setElement} className="modal" onCancel={onCancel} onClose={onCancel}>
-      <div className="modal-box retro-border flex max-w-md flex-col gap-4 bg-base-100 retro-shadow">
-        {children}
-      </div>
-      <form method="dialog" className="modal-backdrop bg-base-300/60">
-        <button aria-label="fechar">fechar</button>
-      </form>
-    </dialog>
-  )
-}

@@ -1,5 +1,5 @@
 // Scheduled maintenance (wrangler.jsonc `triggers.crons` → the `scheduled`
-// handler in index.ts). Six jobs, all idempotent and all bounded so one run
+// handler in index.ts). Eight jobs, all idempotent and all bounded so one run
 // never exceeds the Worker CPU budget — whatever is left over is picked up by
 // the next tick.
 //
@@ -14,13 +14,21 @@
 //   5. orphan media — an upload that was presigned (or even completed) but
 //      whose message never landed is unreachable bytes in the bucket. Nothing
 //      else will ever find it: only the media index knows it exists;
-//   6. retention — deletes claimed media older than MEDIA_RETENTION_DAYS.
-//      OFF by default (unset/0): silently deleting a conversation's photos is
-//      a product decision, not a default. The bubbles degrade to an "expired"
-//      placeholder when the object is gone. Profile pictures are exempt: they
-//      are not history, and a retention window that blanked everyone's avatar
-//      after N days would be a bug, not a policy.
+//   6. instance-wide media cap — deletes claimed media older than
+//      MEDIA_RETENTION_DAYS. OFF by default (unset/0) and orthogonal to the
+//      per-conversation window below: this one is an operator's ceiling on the
+//      bucket, not a product promise. Profile pictures are exempt: they are not
+//      history, and a window that blanked everyone's avatar would be a bug;
+//   7. conversation retention, media half — bucket objects whose conversation
+//      window (migration 0008) has passed. The Durable Object deletes its own
+//      objects the moment a message expires; this catches what a failed DELETE
+//      left behind, and what belongs to a conversation nobody opens anymore;
+//   8. conversation retention, message half — pokes the conversations whose
+//      newest message is already past their window so they empty themselves
+//      even if their alarm was lost. `swept_at` keeps the same idle threads
+//      from being poked again on every tick.
 
+import { getAgentByName } from 'agents'
 import { sweepExpiredTempAccounts, sweepOrphanTombstones } from './accounts'
 import { deleteObjects, mediaConfig } from './media'
 import { UNCLAIMED_TTL_MS, forgetKeys } from './mediaIndex'
@@ -35,6 +43,13 @@ const MAX_DELETES_PER_RUN = 200
 const MAX_TEMP_ACCOUNTS_PER_RUN = 25
 const MAX_TOMBSTONES_PER_RUN = 50
 
+/**
+ * Conversations woken per run by the retention backstop. Each one is a Durable
+ * Object round trip, so this is small on purpose: the alarm inside the DO is
+ * the mechanism, and this is only the net under it.
+ */
+const MAX_CONVERSATIONS_PER_RUN = 20
+
 const LOGIN_ATTEMPT_TTL_MS = 60 * 60 * 1000
 
 export interface CleanupReport {
@@ -45,6 +60,8 @@ export interface CleanupReport {
   tombstones_removed: number
   orphan_media_deleted: number
   expired_media_deleted: number
+  retention_media_deleted: number
+  retention_conversations_swept: number
 }
 
 export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupReport> {
@@ -56,6 +73,8 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
     tombstones_removed: 0,
     orphan_media_deleted: 0,
     expired_media_deleted: 0,
+    retention_media_deleted: 0,
+    retention_conversations_swept: 0,
   }
 
   const sessions = await env.DB.prepare('DELETE FROM sessions WHERE expires_at <= ?')
@@ -77,8 +96,23 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
   report.tombstones_removed =
     temp.tombstones_removed + (await sweepOrphanTombstones(env, MAX_TOMBSTONES_PER_RUN))
 
+  // Message expiry does not depend on the bucket being configured: the rows
+  // are what the promise is about, and the DO deletes its own objects.
+  report.retention_conversations_swept = await sweepExpiredConversations(env, now)
+
   const config = mediaConfig(env)
   if (!config) return report
+
+  report.retention_media_deleted = await sweep(
+    env,
+    `SELECT m.key FROM media_objects m
+     JOIN conversations c ON c.id = m.conversation_id
+     WHERE m.claimed_at IS NOT NULL
+       AND m.created_at <= ?1 - c.retention_ms
+       AND m.key NOT LIKE 'avatars/%'
+     ORDER BY m.created_at LIMIT ?2`,
+    [now, MAX_DELETES_PER_RUN],
+  )
 
   report.orphan_media_deleted = await sweep(
     env,
@@ -101,6 +135,45 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
   }
 
   return report
+}
+
+/**
+ * Wakes the conversations whose whole history is already past their window and
+ * asks each one to run its own sweep — the DO is the only thing that can delete
+ * its messages, and it is also what tells any live socket they are gone.
+ *
+ * Only fully-expired conversations are selected: a thread that is still being
+ * used has an alarm armed for its oldest message, and poking it would be
+ * redundant. `swept_at` is written after a successful pass so an idle thread
+ * costs one round trip, not one per tick.
+ */
+async function sweepExpiredConversations(env: Env, now: number): Promise<number> {
+  const { results } = await env.DB.prepare(
+    `SELECT id FROM conversations
+     WHERE last_message_at IS NOT NULL
+       AND last_message_at <= ?1 - retention_ms
+       AND (swept_at IS NULL OR swept_at < last_message_at)
+     ORDER BY last_message_at LIMIT ?2`,
+  )
+    .bind(now, MAX_CONVERSATIONS_PER_RUN)
+    .all<{ id: string }>()
+
+  let swept = 0
+  for (const row of results) {
+    try {
+      const agent = await getAgentByName(env.ConversationAgent, row.id)
+      const response = await agent.fetch('https://do/expire', { method: 'POST' })
+      if (!response.ok) continue
+      await env.DB.prepare('UPDATE conversations SET swept_at = ?1 WHERE id = ?2')
+        .bind(now, row.id)
+        .run()
+      swept += 1
+    } catch (error) {
+      // Left unmarked on purpose: the next tick tries this conversation again.
+      console.error('retention sweep failed', row.id, error)
+    }
+  }
+  return swept
 }
 
 /**

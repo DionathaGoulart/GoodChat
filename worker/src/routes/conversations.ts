@@ -9,7 +9,7 @@ import {
   sessionHeaders,
   type PublicUser,
 } from '../lib/session'
-import type { WireMessage } from '../protocol'
+import { retentionOr, type WireMessage } from '../protocol'
 
 // Conversations REST (PRD §3.3). Rows are created lazily on first message
 // (phase 4); these endpoints only read and resolve ids.
@@ -18,6 +18,8 @@ interface ConversationRow {
   id: string
   created_at: number | null
   last_message_at: number | null
+  /** The pair's message window (migration 0008). */
+  retention_ms: number
   other_id: string
   other_username: string
   other_display_name: string | null
@@ -34,7 +36,7 @@ export async function listConversations(request: Request, env: Env): Promise<Res
   if (auth instanceof Response) return auth
 
   const { results } = await env.DB.prepare(
-    `SELECT c.id, c.created_at, c.last_message_at,
+    `SELECT c.id, c.created_at, c.last_message_at, c.retention_ms,
             u.id AS other_id, u.username AS other_username,
             u.display_name AS other_display_name, u.avatar_key AS other_avatar_key,
             u.created_at AS other_created_at, u.last_seen_at AS other_last_seen_at,
@@ -63,6 +65,10 @@ export async function listConversations(request: Request, env: Env): Promise<Res
     last_message_at: row.last_message_at,
     last_message: summaries[i]?.last_message ?? null,
     unread_count: summaries[i]?.unread_count ?? 0,
+    // What the tile's preview is allowed to outlive (PRD §3.9): the local copy
+    // of this list drops a preview that is already past it, so a cached tile
+    // cannot quote a message the server has deleted.
+    retention_ms: retentionOr(row.retention_ms),
     other_user: {
       id: row.other_id,
       username: row.other_username,
@@ -118,9 +124,11 @@ export async function resolveConversation(request: Request, env: Env): Promise<R
   if (!deleted && row.disabled_at !== null) return apiError('not_found', 404, 'user not found')
 
   const conversationId = await conversationIdFor(auth.user.id, row.id)
-  const existing = await env.DB.prepare('SELECT 1 FROM conversations WHERE id = ?')
+  const existing = await env.DB.prepare(
+    'SELECT retention_ms FROM conversations WHERE id = ?',
+  )
     .bind(conversationId)
-    .first()
+    .first<{ retention_ms: number }>()
   if (deleted && existing === null) return apiError('not_found', 404, 'user not found')
 
   const { disabled_at, deleted_at, ...publicUser } = row
@@ -128,6 +136,12 @@ export async function resolveConversation(request: Request, env: Env): Promise<R
     {
       conversation_id: conversationId,
       exists: existing !== null,
+      // The disappearing-message window (PRD §3.9), so the thread can label
+      // itself before the socket is up. This is D1's mirror of what the
+      // Durable Object holds; the `retention` frame on connect is the
+      // authority and corrects it a round trip later — which only matters for
+      // a window chosen before the conversation had a row at all.
+      retention_ms: retentionOr(existing?.retention_ms),
       other_user: {
         ...publicUser,
         online: !deleted && isOnline(publicUser.last_seen_at, Date.now()),

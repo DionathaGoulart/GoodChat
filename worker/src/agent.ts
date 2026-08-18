@@ -9,14 +9,34 @@
 // verifies the user pair matches the conversation id before forwarding, then
 // stamps x-goodchat-user-id / x-goodchat-peer-id. The DO additionally pins the
 // pair in a `participants` table on first connect and rejects anyone else.
+//
+// Retention (PRD §3.9) lives here too, because this is the only place that
+// holds messages. Each message dies `retention_ms` after it was written — the
+// row here and the bucket object it referenced — and the window is one shared
+// setting per conversation, changeable by either participant. Three things
+// keep the clock honest:
+//
+//   - an alarm (`expireTick`) armed for the moment the oldest message ages
+//     out, so a conversation nobody has open still empties itself;
+//   - a sweep on every wake (`onStart`) and on every connect, so no request
+//     can ever be answered with a message that should already be gone;
+//   - a sweep the instant the window is shortened, so choosing "3 horas" on a
+//     week-old thread deletes what is already past it right away.
+//
+// D1 only mirrors the window (migration 0008): the resolve endpoint needs it
+// before a socket exists, and lib/cleanup.ts needs it to sweep the bucket for
+// conversations that are never opened again.
 
 import { Agent, type Connection, type ConnectionContext, type WSMessage } from 'agents'
 import { ensureConversation } from './lib/conversation'
-import { claimUpload } from './lib/mediaIndex'
+import { deleteObjects, mediaConfig } from './lib/media'
+import { claimUpload, forgetKeys } from './lib/mediaIndex'
 import { notifyUser, previewFor } from './lib/push'
 import {
   ClientEventSchema,
   STICKER_ID_RE,
+  retentionOr,
+  type RetentionMs,
   type SendMessageEvent,
   type ServerEvent,
   type WireMessage,
@@ -74,6 +94,10 @@ export interface ConversationStats {
   storage_bytes: number
   first_at: number | null
   last_at: number | null
+  /** The conversation's message window (PRD §3.9). */
+  retention_ms: number
+  /** When the oldest surviving message ages out; null when there is none. */
+  next_expiry_at: number | null
   per_sender: { user_id: string; messages: number; body_bytes: number }[]
   media: { key: string; user_id: string }[]
   participants: string[]
@@ -94,7 +118,7 @@ export class ConversationAgent extends Agent<Env> {
     return false
   }
 
-  override onStart(): void {
+  override async onStart(): Promise<void> {
     // Schema exactly PRD §4.4 (column `type` on disk, `msg_type` on the wire).
     this.sql`
       CREATE TABLE IF NOT EXISTS messages (
@@ -118,6 +142,21 @@ export class ConversationAgent extends Agent<Env> {
     this.sql`
       CREATE TABLE IF NOT EXISTS participants (user_id TEXT PRIMARY KEY)
     `
+    // The expiry sweep is a range scan over this column on every wake.
+    this.sql`
+      CREATE INDEX IF NOT EXISTS messages_created_at ON messages (created_at)
+    `
+    // Conversation-level settings. One row per key so a second setting does
+    // not need a migration inside the DO.
+    this.sql`
+      CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)
+    `
+
+    // Waking up is the one moment this object is guaranteed to run code, so it
+    // is where the clock is caught up: delete whatever aged out while it slept
+    // and re-arm the alarm. Awaited rather than backgrounded — a connect that
+    // raced ahead of it would be served messages that should not exist.
+    await this.expireTick()
   }
 
   // Internal HTTP surface (only reachable through Worker code — the public
@@ -126,6 +165,7 @@ export class ConversationAgent extends Agent<Env> {
   //   GET  /stats    owner panel: message/byte counts, media keys, disk size
   //   POST /purge    owner action: wipe this conversation's history
   //   POST /destroy  no participant left: wipe the history and the storage
+  //   POST /expire   cleanup backstop: run the retention sweep now
   override async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
 
@@ -156,6 +196,14 @@ export class ConversationAgent extends Agent<Env> {
 
     if (request.method === 'POST' && url.pathname.endsWith('/destroy')) {
       return Response.json(await this.wipe())
+    }
+
+    // Reaching this object is already the point: `onStart` swept on the way in
+    // and re-armed the alarm. The call still runs a tick of its own so a
+    // conversation that was awake but somehow un-armed is fixed too, and so the
+    // caller gets a count worth logging.
+    if (request.method === 'POST' && url.pathname.endsWith('/expire')) {
+      return Response.json(await this.expireTick())
     }
 
     return new Response('not found', { status: 404 })
@@ -191,12 +239,17 @@ export class ConversationAgent extends Agent<Env> {
       // Not every runtime build exposes it; payload bytes are the fallback.
       storageBytes = totals[0].bytes
     }
+    const retention = this.retention()
     return {
       messages: totals[0].n,
       body_bytes: totals[0].bytes,
       storage_bytes: storageBytes,
       first_at: totals[0].first_at || null,
       last_at: totals[0].last_at || null,
+      retention_ms: retention,
+      // The clock, made visible: what the alarm is armed for, and the only
+      // way to see from outside that a conversation really is emptying itself.
+      next_expiry_at: totals[0].first_at ? totals[0].first_at + retention : null,
       per_sender: perSender.map((row) => ({
         user_id: row.sender_id,
         messages: row.n,
@@ -206,6 +259,152 @@ export class ConversationAgent extends Agent<Env> {
       participants: this.sql<{ user_id: string }>`SELECT user_id FROM participants`.map(
         (row) => row.user_id,
       ),
+    }
+  }
+
+  // --- retention (PRD §3.9) ---------------------------------------------
+
+  /** The window this conversation runs on. Unset means nobody chose: 7 days. */
+  private retention(): RetentionMs {
+    return retentionOr(numberOrNull(this.setting('retention_ms')))
+  }
+
+  private setting(key: string): string | null {
+    const rows = this.sql<{ value: string }>`SELECT value FROM settings WHERE key = ${key}`
+    return rows.length > 0 ? rows[0].value : null
+  }
+
+  private writeSetting(key: string, value: string): void {
+    this.sql`INSERT OR REPLACE INTO settings (key, value) VALUES (${key}, ${value})`
+  }
+
+  /**
+   * One tick of the clock: delete what aged out, then arm the alarm for the
+   * next message due. Public because the alarm calls it by name, and because
+   * the cleanup backstop pokes it over the internal HTTP surface.
+   */
+  async expireTick(): Promise<{ expired: number }> {
+    const expired = await this.sweepExpired()
+    await this.armExpiryAlarm()
+    return { expired: expired.length }
+  }
+
+  /**
+   * Deletes every message older than the window and tells both participants
+   * which ids went, so an open thread drops them without a reload.
+   *
+   * The bucket objects go too, in the background: a failed DELETE leaves the
+   * media_objects row behind on purpose, and the scheduled cleanup retries it
+   * (lib/cleanup.ts) — dropping the row first would leak the object forever.
+   */
+  private async sweepExpired(now = Date.now()): Promise<string[]> {
+    const cutoff = now - this.retention()
+    const expired = this.sql<{ id: string; media_key: string | null }>`
+      SELECT id, media_key FROM messages WHERE created_at <= ${cutoff}
+    `
+    if (expired.length === 0) return []
+
+    this.sql`DELETE FROM messages WHERE created_at <= ${cutoff}`
+    const ids = expired.map((row) => row.id)
+    for (const conn of this.getConnections<ConnState>()) {
+      this.send(conn, { type: 'messages_expired', ids })
+    }
+
+    const keys = expired
+      .map((row) => row.media_key)
+      .filter((key): key is string => key !== null)
+    if (keys.length > 0) this.ctx.waitUntil(this.deleteMedia(keys))
+    return ids
+  }
+
+  private async deleteMedia(keys: string[]): Promise<void> {
+    const config = mediaConfig(this.env)
+    if (!config) return
+    try {
+      const deleted = await deleteObjects(config, keys)
+      await forgetKeys(this.env.DB, deleted)
+    } catch (error) {
+      console.error('retention media delete failed', this.name, error)
+    }
+  }
+
+  /**
+   * Arms one alarm for the moment the oldest surviving message ages out. One
+   * schedule at a time — its id is kept in `settings` because the SDK has no
+   * "find my schedule by callback", and a stale one left behind would fire a
+   * second sweep for nothing.
+   *
+   * Nothing left to expire means nothing scheduled: an empty conversation must
+   * cost zero wake-ups.
+   */
+  private async armExpiryAlarm(): Promise<void> {
+    const previous = this.setting('expiry_schedule_id')
+    if (previous) {
+      try {
+        await this.cancelSchedule(previous)
+      } catch (error) {
+        console.error('cancelSchedule failed', this.name, error)
+      }
+      this.sql`DELETE FROM settings WHERE key = 'expiry_schedule_id'`
+    }
+
+    const oldest = this.sql<{ at: number | null }>`SELECT MIN(created_at) AS at FROM messages`
+    const at = oldest.length > 0 ? oldest[0].at : null
+    if (at === null) return
+
+    // A second of floor: a due-in-the-past message (the sweep above could not
+    // reach it only if the clock moved mid-run) must not schedule into the past.
+    const when = new Date(Math.max(at + this.retention(), Date.now() + 1000))
+    try {
+      const schedule = await this.schedule(when, 'expireTick')
+      this.writeSetting('expiry_schedule_id', schedule.id)
+    } catch (error) {
+      // The wake-time sweep and the cleanup backstop still catch this
+      // conversation; only the precision of the deletion is lost.
+      console.error('expiry schedule failed', this.name, error)
+    }
+  }
+
+  /**
+   * Either participant retunes the window. Both are told at once, and a
+   * *shorter* window is applied to the history immediately — the point of
+   * choosing "3 horas" on a week-old thread is that the week-old part goes.
+   */
+  private async handleSetRetention(userId: string, retentionMs: RetentionMs): Promise<void> {
+    const previous = this.retention()
+    this.writeSetting('retention_ms', String(retentionMs))
+    // Re-mirror even when the value is unchanged: this is also the moment a
+    // D1 row that did not exist at the last attempt may have appeared.
+    this.sql`DELETE FROM settings WHERE key = 'retention_mirrored'`
+
+    for (const conn of this.getConnections<ConnState>()) {
+      this.send(conn, { type: 'retention', retention_ms: retentionMs, changed_by: userId })
+    }
+
+    if (retentionMs < previous) await this.sweepExpired()
+    await this.armExpiryAlarm()
+    this.ctx.waitUntil(this.mirrorRetention(retentionMs))
+  }
+
+  /**
+   * Copies the window into D1 (migration 0008), where the resolve endpoint and
+   * the cleanup sweep can see it. The row is created lazily by the first
+   * message, so this can legitimately update nothing — the flag is only set
+   * once a row actually took the value, which is what makes the retry in
+   * handleSend stop at the right time.
+   */
+  private async mirrorRetention(retentionMs: number): Promise<void> {
+    try {
+      const result = await this.env.DB.prepare(
+        'UPDATE conversations SET retention_ms = ?1 WHERE id = ?2',
+      )
+        .bind(retentionMs, this.name)
+        .run()
+      if ((result.meta.changes ?? 0) > 0) {
+        this.writeSetting('retention_mirrored', String(retentionMs))
+      }
+    } catch (error) {
+      console.error('retention mirror failed', this.name, error)
     }
   }
 
@@ -273,6 +472,11 @@ export class ConversationAgent extends Agent<Env> {
     // Set by routes/ws.ts when the peer account no longer exists.
     conn.setState({ userId, readonly: ctx.request.headers.get('x-goodchat-readonly') === '1' })
 
+    // Nothing past the window may reach a client, so the sweep runs before the
+    // history is read rather than on a timer the connect could beat. Usually a
+    // single indexed range scan that matches nothing.
+    await this.expireTick()
+
     // Offline delivery: everything addressed to me that is still 'sent'
     // becomes 'delivered' now; the sender's live connections hear about it.
     const undelivered = this.sql<{ rowid: number; id: string; client_id: string }>`
@@ -309,6 +513,14 @@ export class ConversationAgent extends Agent<Env> {
       FROM messages WHERE rowid >= ${startRowid} ORDER BY rowid ASC
     `
     this.send(conn, { type: 'history', messages: rows.map(toWire) })
+
+    // Straight after the history, so the thread can label the window it just
+    // painted. `changed_by: null` — this frame reports, it does not announce.
+    this.send(conn, {
+      type: 'retention',
+      retention_ms: this.retention(),
+      changed_by: null,
+    })
   }
 
   override async onMessage(conn: Connection<ConnState>, raw: WSMessage): Promise<void> {
@@ -342,6 +554,9 @@ export class ConversationAgent extends Agent<Env> {
         return
       case 'read_receipt':
         this.handleReadReceipt(conn, userId, event.data.up_to_message_id)
+        return
+      case 'set_retention':
+        await this.handleSetRetention(userId, event.data.retention_ms)
         return
     }
   }
@@ -419,10 +634,24 @@ export class ConversationAgent extends Agent<Env> {
     }
     for (const c of this.getConnections<ConnState>()) this.send(c, frame)
 
+    // The message that starts a conversation is the one that arms its clock.
+    // Only then: re-arming per message would cancel and rewrite a schedule that
+    // is already pointing at the right message (the oldest one, which a new
+    // message never is).
+    if (this.setting('expiry_schedule_id') === null) {
+      this.ctx.waitUntil(this.armExpiryAlarm())
+    }
+
     // Lazy conversation row + last_message_at bump in D1 (phase-3 helper).
     // After the broadcast: D1 latency must not sit in the delivery path.
     try {
       await ensureConversation(this.env.DB, userId, peerId, now)
+      // The window may have been chosen before this conversation had a row to
+      // write it to. The flag stops this from being a write per message.
+      const retention = this.retention()
+      if (this.setting('retention_mirrored') !== String(retention)) {
+        this.ctx.waitUntil(this.mirrorRetention(retention))
+      }
     } catch (error) {
       console.error('ensureConversation failed', error)
     }
@@ -561,6 +790,13 @@ export class ConversationAgent extends Agent<Env> {
       // Connection already closing — nothing to do, close handler cleans up.
     }
   }
+}
+
+/** A `settings` value read back as a number — null when unset or garbage. */
+function numberOrNull(value: string | null): number | null {
+  if (value === null) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function toWire(row: MessageRow): WireMessage {

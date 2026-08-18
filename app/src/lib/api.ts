@@ -64,6 +64,8 @@ export interface ConversationListItem {
   last_message: WireMessage | null
   unread_count: number
   other_user: PublicUser
+  /** The conversation's message window (PRD §3.9). */
+  retention_ms: number
 }
 
 export interface ResolveResult {
@@ -72,6 +74,12 @@ export interface ResolveResult {
   other_user: PublicUser
   /** The peer no longer exists: history only, the composer is closed. */
   readonly: boolean
+  /**
+   * How long a message in this conversation lives (PRD §3.9). Comes from D1's
+   * mirror so the thread can label the window before the socket is up; the
+   * `retention` frame on connect is the authority.
+   */
+  retention_ms: number
 }
 
 /** Uniform worker error shape: { error: <code>, message? }. */
@@ -317,6 +325,10 @@ export interface AdminConversation {
   body_bytes: number
   storage_bytes: number
   media_objects: number
+  /** The conversation's message window (PRD §3.9). */
+  retention_ms: number
+  /** When its oldest message ages out; null when it holds none. */
+  next_expiry_at: number | null
   unreachable: boolean
 }
 

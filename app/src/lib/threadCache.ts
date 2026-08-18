@@ -21,8 +21,15 @@
 // the conversation list caches each thread's last message as its preview. It
 // stays on the same terms — one account, cleared the moment that account signs
 // out, and capped so it is a tail rather than an archive.
+//
+// ...and a fourth term, from the retention promise (PRD §3.9): a copy never
+// outlives the message it copies. Both the read and the write drop anything
+// already past the conversation's window, so a message the server deleted
+// cannot come back from localStorage — not on the next open, and not on a
+// device that was offline when it expired.
 
 import type { PublicUser } from './api'
+import { DEFAULT_RETENTION_MS, retentionOr } from './protocol'
 import type { ThreadMessage } from '../hooks/useConversation'
 
 const RESOLVE_KEY = 'goodchat-threads'
@@ -38,6 +45,20 @@ export interface CachedThread {
   conversationId: string
   otherUser: PublicUser
   readonly: boolean
+  /**
+   * The conversation's message window. Cached with the thread because it is
+   * what prunes the cached messages before they are ever painted; a copy from
+   * a build that predates retention reads as the 7-day default.
+   */
+  retentionMs: number
+  /**
+   * Whether the conversation has ever held a message. It decides between a
+   * loading state and nothing at all while `history` is in flight, so a copy
+   * written before this field existed defaults to true: a spinner that turns
+   * out to be unnecessary costs a round trip, an empty thread that was
+   * actually full costs the messages.
+   */
+  exists: boolean
 }
 
 interface Stored<T> {
@@ -88,7 +109,11 @@ export function readCachedThread(ownerId: string, userId: string): CachedThread 
   if (typeof entry?.conversationId !== 'string' || typeof entry.otherUser?.id !== 'string') {
     return null
   }
-  return entry
+  return {
+    ...entry,
+    exists: entry.exists !== false,
+    retentionMs: retentionOr(entry.retentionMs),
+  }
 }
 
 export function writeCachedThread(ownerId: string, userId: string, thread: CachedThread): void {
@@ -102,25 +127,47 @@ export function writeCachedThread(ownerId: string, userId: string, thread: Cache
   )
 }
 
-export function readCachedMessages(ownerId: string, conversationId: string): ThreadMessage[] | null {
+/**
+ * The tail of a thread, minus whatever has aged out since it was written.
+ * `retentionMs` is the window the caller knows about (the cached thread, or
+ * the live one); the default only applies to a call that has none yet, and it
+ * is the longest window, so it can never keep something too long by mistake —
+ * the server's `history` frame replaces all of this a connect later anyway.
+ */
+export function readCachedMessages(
+  ownerId: string,
+  conversationId: string,
+  retentionMs: number = DEFAULT_RETENTION_MS,
+): ThreadMessage[] | null {
   const entry = readBucket<ThreadMessage[]>(MESSAGES_KEY, ownerId)?.[conversationId]
   if (!Array.isArray(entry) || entry.length === 0) return null
   for (const message of entry) {
     if (typeof message?.client_id !== 'string' || typeof message?.sender_id !== 'string') return null
   }
-  return entry
+  const cutoff = Date.now() - retentionOr(retentionMs)
+  const live = entry.filter((message) => message.created_at > cutoff)
+  return live.length > 0 ? live : null
 }
 
 export function writeCachedMessages(
   ownerId: string,
   conversationId: string,
   messages: readonly ThreadMessage[],
+  retentionMs: number = DEFAULT_RETENTION_MS,
 ): void {
   // Only what the server has acknowledged. An optimistic message is still owned
   // by the socket that is trying to send it — restoring one from storage would
   // resurrect a send nobody is retrying and show it as forever "sending".
-  const acked = messages.filter((message) => message.status !== 'sending')
-  if (acked.length === 0) return
+  //
+  // ...and only what is still inside the window: writing an expired message
+  // back would be this cache re-creating what the retention sweep just deleted.
+  const cutoff = Date.now() - retentionOr(retentionMs)
+  const acked = messages.filter(
+    (message) => message.status !== 'sending' && message.created_at > cutoff,
+  )
+  // An empty list is written, not skipped: "nothing left" is exactly the state
+  // a thread reaches when its last message expires, and leaving the previous
+  // copy in place would be the cache holding on to what the server deleted.
   writeBucket(MESSAGES_KEY, ownerId, conversationId, acked.slice(-MAX_MESSAGES), MAX_THREADS)
 }
 

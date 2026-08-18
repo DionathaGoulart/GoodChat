@@ -4,6 +4,10 @@ Private real-time 1:1 chat with a retro terminal look. Built on Cloudflare
 Workers, Durable Objects, D1 and Backblaze B2. Ships as an installable PWA
 with native web push notifications, all within free tiers.
 
+It is not built to keep conversations. Every message deletes itself — from the
+database and from the bucket — within at most seven days, and a conversation
+can choose as little as three hours.
+
 ## Features
 
 - Real-time 1:1 messaging over WebSockets, with offline delivery and
@@ -24,6 +28,11 @@ with native web push notifications, all within free tiers.
   bytes), history purges, and on-demand maintenance
 - Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login
   with no timing oracle, case-insensitive usernames
+- Disappearing messages: every message deletes itself — from the database and
+  the bucket — within the window its conversation chose (3h, 5h, 12h, 1d, 3d,
+  5d or 7d; 7 days is the default and the maximum). One shared setting per
+  conversation, changed by either side from inside the thread, applied to the
+  history the moment it is shortened
 - Guest accounts: a throwaway account that lives 5 hours and then deletes
   itself with its data — while keeping the conversations whose other side is
   a permanent account, and taking a guest-to-guest thread with the last of
@@ -62,7 +71,8 @@ Browser ---https---> Cloudflare Worker
                       |- /*      SPA (assets re-emitted with the CSP)
                       |- D1: users, sessions, conversations, media index,
                       |      push subscriptions, rate-limit counters
-                      |- cron: hourly cleanup (sessions, orphan media)
+                      |- cron: hourly cleanup (sessions, orphan media,
+                      |        retention backstop)
                       |- Web Push -> FCM / Mozilla / Apple
 Browser ---PUT-----> Backblaze B2 (private bucket, presigned uploads)
 Worker  ---GET-----> Backblaze B2 (signed reads, streamed at /api/media/<key>)
@@ -76,8 +86,8 @@ Full details in [docs/architecture.md](docs/architecture.md).
 app/        React SPA (Vite)
 worker/     Cloudflare Worker: API, WebSockets, Durable Object, D1, scripts
 docs/       Architecture, development and deployment guides
-.harness/   Product docs (PRD, style guide)
-plan.md     Internal build log, kept in Portuguese
+.harness/   Product docs: the PRD, the shared style-guide index, and
+            styleguides/ — one per skin
 ```
 
 ## Quickstart
@@ -155,6 +165,7 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase10` | Guest accounts: quotas, expiry, deletion keeping the peer's history |
 | `smoke:phase11` | Profile: display name, avatar upload rules, adoption, read access, replacement |
 | `smoke:phase12` | Presence: heartbeat, online window, presence on the listing endpoints, skin preference |
+| `smoke:phase13` | Retention: the window on connect, either side changing it, the D1 mirror, the refusal of an unknown window, the deadline the alarm is armed for |
 
 ## Documentation
 
@@ -164,7 +175,9 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | [docs/development.md](docs/development.md)     | Local setup, workflows, conventions      |
 | [docs/deployment.md](docs/deployment.md)       | Full production deployment guide         |
 | [.harness/prd.md](.harness/prd.md)             | Product requirements                     |
-| [.harness/styleguide.md](.harness/styleguide.md) | Visual design system                   |
+| [.harness/styleguide.md](.harness/styleguide.md) | Shared visual foundation + how skins work |
+| [.harness/styleguides/retro.md](.harness/styleguides/retro.md) | Style guide of the `retro` skin (default) |
+| [.harness/styleguides/terminal.md](.harness/styleguides/terminal.md) | Style guide of the `terminal` skin |
 
 ## Deployment
 

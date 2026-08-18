@@ -106,7 +106,14 @@ npm run smoke:phase7   # stickers, emoji, typing broadcast
 npm run smoke:phase8   # web push: crypto roundtrip, REST, DO trigger
 npm run smoke:phase9   # headers, CORS, login timing, settings, owner console
 npm run smoke:phase10  # guest accounts: quotas, expiry, deletion rules
+npm run smoke:phase13  # retention: the shared window, its mirror, its deadline
 ```
+
+`smoke:phase13` also needs the owner account: the deadline it checks is read
+from the owner console. It cannot assert an actual expiry — the shortest
+window is three hours and nothing can move the DO's clock — so it asserts
+every input to that deletion instead: the window in force, who is told when it
+changes, the D1 mirror, and the `next_expiry_at` the alarm is armed for.
 
 `smoke:phase9` and `smoke:phase10` need the `good` owner account (see above)
 and the media stub. Both create and delete their own throwaway accounts, and

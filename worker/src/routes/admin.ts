@@ -68,6 +68,9 @@ interface ConversationRow {
   user_b: string
   created_at: number | null
   last_message_at: number | null
+  /** D1's mirror of the message window (migration 0008) — the fallback when
+      the conversation's DO cannot be reached. */
+  retention_ms: number
 }
 
 // --- reads ---------------------------------------------------------------
@@ -155,6 +158,10 @@ export async function listAllConversations(request: Request, env: Env): Promise<
         body_bytes: s?.body_bytes ?? 0,
         storage_bytes: s?.storage_bytes ?? 0,
         media_objects: s?.media.length ?? 0,
+        // The window and its next deadline (PRD §3.9). D1 mirrors the window
+        // too, but the DO is the authority and it is already being asked.
+        retention_ms: s?.retention_ms ?? conversation.retention_ms,
+        next_expiry_at: s?.next_expiry_at ?? null,
         unreachable: s === null,
       })),
     },
@@ -555,7 +562,7 @@ function allUsers(env: Env): Promise<UserRow[]> {
 
 function allConversations(env: Env): Promise<ConversationRow[]> {
   return env.DB.prepare(
-    'SELECT id, user_a, user_b, created_at, last_message_at FROM conversations',
+    'SELECT id, user_a, user_b, created_at, last_message_at, retention_ms FROM conversations',
   )
     .all<ConversationRow>()
     .then(({ results }) => results)

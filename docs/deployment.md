@@ -222,8 +222,11 @@ registers it. The hourly run clears expired sessions and stale rate-limit
 counters, tears down guest accounts past their expiry (keeping the threads
 whose other side is a permanent account), collects tombstones nothing
 references anymore, deletes uploads no message ever referenced (24h grace),
-and applies media retention when it is enabled. The owner console can
-trigger the same work on demand.
+backstops per-conversation message retention (PRD §3.9 — the Durable Objects
+do this on their own alarms; the sweep catches a lost one and any bucket
+object whose delete failed), and applies the instance-wide media cap when
+`MEDIA_RETENTION_DAYS` is set. The owner console can trigger the same work on
+demand.
 
 ## 5. Build and deploy
 

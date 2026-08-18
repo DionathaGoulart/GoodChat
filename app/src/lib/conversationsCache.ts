@@ -13,6 +13,11 @@
 //     session over its life, and a list of who someone talks to is not
 //     something the next account on that browser may paint, even for a frame.
 //     A mismatched owner is discarded, and logout drops the row entirely;
+//   - a preview never outlives the message it previews. Each tile quotes the
+//     conversation's last message, and messages expire (PRD §3.9), so both the
+//     read and the write drop a preview already past its conversation's window
+//     — otherwise the one place a deleted message could still be read would be
+//     this cache;
 //   - presence is not stored. resolvePresence (lib/presence.ts) trusts the
 //     `online` flag on the payload until the first heartbeat lands, so a cached
 //     `true` would claim somebody is around because they were around yesterday.
@@ -23,6 +28,7 @@
 // anything unreadable is treated as absent.
 
 import type { ConversationListItem } from './api'
+import { retentionOr } from './protocol'
 
 const STORAGE_KEY = 'goodchat-conversations'
 
@@ -32,6 +38,18 @@ const STORAGE_KEY = 'goodchat-conversations'
  * and the account row.
  */
 const MAX_ENTRIES = 50
+
+/**
+ * The same item with its preview removed when that message would already be
+ * gone from the server. The tile falls back to "— sem mensagens —", which is
+ * what the fresh list is about to say anyway.
+ */
+function withinWindow(item: ConversationListItem): ConversationListItem {
+  const last = item.last_message
+  if (!last) return item
+  const cutoff = Date.now() - retentionOr(item.retention_ms)
+  return last.created_at > cutoff ? item : { ...item, last_message: null }
+}
 
 interface StoredList {
   /** Account the list belongs to; anything else is another person's. */
@@ -59,7 +77,7 @@ export function readCachedConversations(ownerId: string): ConversationListItem[]
     for (const item of parsed.items) {
       if (typeof item?.id !== 'string' || typeof item?.other_user?.id !== 'string') return null
     }
-    return parsed.items
+    return parsed.items.map(withinWindow)
   } catch {
     return null
   }
@@ -72,7 +90,7 @@ export function writeCachedConversations(
   const stored: StoredList = {
     owner: ownerId,
     items: items.slice(0, MAX_ENTRIES).map((item) => ({
-      ...item,
+      ...withinWindow(item),
       // See the note at the top: the flag is dropped, the timestamp is not.
       other_user: { ...item.other_user, online: false },
     })),

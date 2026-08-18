@@ -2,7 +2,9 @@
 
 System design reference for GoodChat. For product requirements see
 [.harness/prd.md](../.harness/prd.md); for the visual system see
-[.harness/styleguide.md](../.harness/styleguide.md).
+[.harness/styleguide.md](../.harness/styleguide.md) — the shared foundation and
+the skin contract, with one style guide per skin under
+[.harness/styleguides/](../.harness/styleguides/).
 
 ## Overview
 
@@ -165,11 +167,14 @@ Wire protocol (Zod-validated in both directions):
 | client    | `send_message`   | `client_id` (UUID), `msg_type`, `body`, `media_key` |
 | client    | `typing`         | Ephemeral, never persisted                          |
 | client    | `read_receipt`   | `up_to_message_id`, marks everything up to it       |
+| client    | `set_retention`  | Retunes the message window; either side may         |
 | server    | `history`        | On connect: last 50 plus anything undelivered       |
 | server    | `message`        | Full message; your own echo is the "sent" ack       |
 | server    | `message_status` | `sent -> delivered -> read` transitions             |
 | server    | `typing`         | Forwarded to the peer only (not your own tabs)      |
 | server    | `read_receipt`   | Broadcast of the peer's read position               |
+| server    | `retention`      | The window: on connect, and on every change         |
+| server    | `messages_expired` | Ids just deleted by the retention sweep           |
 | server    | `error`          | Validation errors; the socket stays open            |
 
 Delivery semantics: at-least-once with dedup by `(sender_id, client_id)`
@@ -177,6 +182,38 @@ Delivery semantics: at-least-once with dedup by `(sender_id, client_id)`
 broadcast as `delivered`; otherwise it is stored as `sent` and promoted to
 `delivered` when the peer connects, which also notifies the sender.
 Messages are kept in the DO's internal SQLite, one table per PRD 4.4.
+
+### Message retention
+
+Every message deletes itself `retention_ms` after it was written — the row in
+the DO and the bucket object it referenced. The window belongs to the
+conversation (3h, 5h, 12h, 1d, 3d, 5d, 7d; 7 days is the default and the
+ceiling), is shared by both participants, and either of them can change it
+from inside the thread. PRD §3.9 is the product spec; this is the mechanism.
+
+Source of truth is the DO's `settings` table, because that is where the
+messages are. D1's `conversations.retention_ms` mirrors it for the two things
+that happen outside the object: the resolve endpoint, which labels the thread
+before a socket exists, and the scheduled cleanup.
+
+Three layers, so the promise does not depend on anyone being connected:
+
+| Layer | When it runs | What it covers |
+| ----- | ------------ | -------------- |
+| Alarm (`expireTick`, one schedule at a time) | The moment the oldest message ages out | The normal case, including conversations nobody has open |
+| Sweep on wake (`onStart`) and on connect | Every time the object runs code | Any request being served — no answer may contain a message past the window |
+| Cron backstop (`lib/cleanup.ts`) | Every scheduled tick, bounded | Conversations whose whole history is past the window (a lost alarm), and bucket objects whose delete failed. `conversations.swept_at` keeps idle threads from being poked twice |
+
+Shortening is applied immediately, not only at the next deadline: the DO
+sweeps the history the moment a shorter window lands, which is the entire
+point of choosing one. Both sockets get `messages_expired` with the ids, so
+an open thread drops them without a reload.
+
+Clients enforce it too, since a tab can be offline while a message expires:
+the thread filters what it paints against the window, and the local copies
+(`threadCache`, the conversation-list previews) drop anything past it on both
+read and write. The one place a deleted message could survive is a cache, and
+that is closed by construction.
 
 ### Media pipeline
 
@@ -253,8 +290,11 @@ so existing threads keep rendering) or are refused (`deny`, after running
 
 Maintenance runs hourly (`triggers.crons` → `scheduled` → `lib/cleanup.ts`):
 expired sessions, stale rate-limit counters, expired guest accounts and
-orphan tombstones, unclaimed uploads older than 24h, and — only when
-`MEDIA_RETENTION_DAYS` is set — claimed media past that age. Each job is
+orphan tombstones, unclaimed uploads older than 24h, the per-conversation
+retention backstop (both halves: idle conversations that still hold expired
+messages, and their bucket objects), and — only when `MEDIA_RETENTION_DAYS`
+is set — claimed media past that instance-wide age, which is an operator's
+ceiling rather than the product's window. Each job is
 bounded per run, deletes bucket objects before forgetting index rows (a
 failed delete is retried instead of leaked), and bubbles whose object is
 gone render a "mídia indisponível" placeholder.
@@ -369,7 +409,7 @@ D1 (metadata):
 | -------------------- | --------------------------------------------------- |
 | `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `skin`, `last_seen_at`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
-| `conversations`      | Deterministic id, ordered pair, last_message_at     |
+| `conversations`      | Deterministic id, ordered pair, last_message_at, `retention_ms` (mirror of the DO's window), `swept_at` |
 | `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads) |
 | `push_subscriptions` | Endpoint (PK), user, p256dh, auth                   |
 | `media_objects`      | Every presigned object: uploader, conversation, mime, size, claim timestamp |
@@ -380,6 +420,7 @@ Durable Object SQLite (per conversation):
 | -------------- | -------------------------------------------------------- |
 | `messages`     | id, client_id, sender, type, body, media_key, status     |
 | `participants` | The pinned user pair, defense in depth for connections   |
+| `settings`     | The retention window, and the id of the expiry alarm     |
 
 ## Roles
 

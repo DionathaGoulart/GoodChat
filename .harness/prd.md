@@ -15,6 +15,8 @@ A private, invite-only, real-time messaging application designed for direct (1:1
 
 The product is explicitly **not** a general-purpose messaging platform: no public discovery, no group chats, no virality mechanics. It is a personal tool that borrows the best UX ideas from WhatsApp/Telegram/Discord (stickers, emoji, rich media, instant delivery) while staying small, fast, and cheap to run indefinitely.
 
+**GoodChat is not a place messages are kept — it is a place they pass through.** Everything a conversation holds expires on its own, message by message, within at most seven days (§3.9). The point of the product is privacy, and the strongest privacy guarantee a server can offer is not holding the data: what has been deleted cannot leak, cannot be subpoenaed, and cannot be read by whoever runs the instance. A conversation history is not a feature here; its absence is.
+
 ### 1.2 Problem Statement
 Mainstream chat apps (WhatsApp, Telegram, Discord, iMessage) are excellent but:
 - Require phone numbers or heavyweight account systems.
@@ -29,14 +31,15 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
 2. Support rich conversational features: text, emoji, stickers, images, video, and file attachments.
 3. Keep the entire stack inside free infrastructure tiers for as long as technically feasible (target: $0/month at the group's expected scale of ~5–50 users, low-hundreds of conversations).
 4. Provide strong, simple privacy guarantees: no public profile discovery beyond exact `@username` lookup, secure session handling, and an optional end-to-end encryption (E2EE) path for message bodies.
-5. Ship a functional MVP quickly, then iterate.
+5. **Keep nothing longer than it has to be kept:** every message — text, image, video, audio, file — deletes itself from the database and the object store within the window its conversation chose, at most seven days (§3.9).
+6. Ship a functional MVP quickly, then iterate.
 
 ### 1.4 Non-Goals (Out of Scope for v1)
 - Group chats / channels / servers.
 - Public user discovery, search engines, or social graph features (follow/friend suggestions).
 - Voice/video calling (real-time media streaming — RTC).
 - Multi-device sync beyond "log in anywhere with the same account" (no cross-device message queue merge logic beyond what the DB naturally provides).
-- Message backup/export tooling (may become a fast-follow).
+- Message backup/export tooling, searchable archives, or any "history" feature. Not merely out of scope: retention (§3.9) is the product, and a tool whose purpose is to keep messages around contradicts it.
 - Monetization, ads, or growth mechanics of any kind.
 - Native mobile apps (v1 targets installable PWA only).
 
@@ -120,17 +123,37 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
   - Per-conversation symmetric key derived via an X25519 key exchange (Signal-style double ratchet is the gold standard but heavy to implement solo; a simpler static/rotating shared-secret model via `libsodium`/`tweetnacl` can be a pragmatic v1.5).
   - If implemented, the server (Durable Object/D1) only ever stores ciphertext for message bodies; media files are optionally encrypted client-side before upload with the key stored only on participant devices.
   - This is explicitly called out as **not required for v1 launch** but strongly recommended as the defining "actually private" feature — flagged as high value, high effort.
-- **Admin/operator transparency:** since this is a small trusted-operator deployment, the PRD assumes the operator (you) has infrastructure-level access to the database regardless of E2EE status for operational reasons (backups, debugging) — E2EE protects against external breach/subpoena/third-party exposure, not against the operator themselves, and this should be disclosed to users.
+- **Retention as the primary privacy mechanism (§3.9):** messages delete themselves within at most 7 days, and a conversation can choose as little as 3 hours. This is the guarantee that holds without any cryptography: what is not stored cannot be breached, subpoenaed or read by the operator. E2EE, if it ships, narrows *who* can read a live message; retention narrows *how long anyone* can.
+- **Admin/operator transparency:** since this is a small trusted-operator deployment, the PRD assumes the operator (you) has infrastructure-level access to the database regardless of E2EE status for operational reasons (backups, debugging) — E2EE protects against external breach/subpoena/third-party exposure, not against the operator themselves, and this should be disclosed to users. Retention is what bounds that access in time: the operator can read what exists, and within a week nothing does. The owner console can see a conversation's window and when its next message expires, but cannot extend it.
 
 ### 3.7 UI/UX
 - **Frontend framework:** React (Vite or Next.js) styled with **Tailwind CSS + DaisyUI** component classes for rapid, consistent, themeable UI (DaisyUI ships light/dark themes out of the box, which is a good fit for a chat app).
 - **Visual style reference:** the UI must follow the **retro skin/theme** already established in the sibling project `~/desktop/good/Portfolio` (same author's existing portfolio site). That project's retro aesthetic (color palette, typography, borders/shadows, iconography, motion/animation feel) is the canonical style reference for this app — GoodChat should feel like a sibling product to the Portfolio site, not a generic DaisyUI default theme.
-  - The extracted design tokens live in **`harness/styleguide.md`**. That file is generated by directly analyzing the Portfolio project's source (its Tailwind config / CSS variables / component markup) — see `inicial.md` for the exact process the coding agent follows to produce it.
+  - **Skins, not one site-wide look:** the visual system is split per skin. `.harness/styleguide.md` holds only the shared foundation (palettes, type family, motion rules, the skin contract, the CSS recipe); each skin has its own file under `.harness/styleguides/` — `retro.md` (the Portfolio-derived default) and `terminal.md` (CRT/shell). A skin is not a variant of one screen: switching it repaints the whole app, so a skin's style guide describes the whole app under that skin.
+  - The shared tokens were extracted by directly analyzing the Portfolio project's source (its Tailwind config / CSS variables / component markup) — see `inicial.md` for the exact process the coding agent follows to produce it.
+  - New skins may be added at any time, with a new style guide of their own or with none at all when they only re-set the frame tokens (criteria in `.harness/styleguide.md` §5).
   - Implementation should map the retro theme onto a custom DaisyUI theme (via `daisyui.themes` config) rather than hand-rolling one-off CSS, so the whole component library (buttons, inputs, modals, chat bubbles) inherits the retro look consistently.
 
 ### 3.8 Notifications (P2 — stretch)
 - Web Push API (works with PWAs) to notify users of new messages when the tab/app is not focused, subject to browser support and user opt-in.
 - No dependency on a paid push service required — Web Push works over VAPID keys directly from the Worker.
+
+### 3.9 Message Retention (Disappearing Messages)
+The defining privacy behavior of the product. Every message carries its own clock and deletes itself when it runs out — permanently, from the Durable Object's storage and from the B2 bucket.
+
+- **Per message, not per conversation.** The window is counted from each message's own `created_at`, so a conversation empties continuously from its oldest end rather than being wiped all at once. Nothing about the conversation itself expires: the pair, the thread and the settings survive; only what was said in it goes.
+- **Windows offered:** 3 hours, 5 hours, 12 hours, 1 day, 3 days, 5 days, 7 days.
+- **7 days is both the default and the maximum.** A conversation nobody has configured deletes after a week; no option, request or setting can extend anything beyond it.
+- **One setting per conversation, shared by both participants.** Either side can change it, from a settings control inside that conversation, and the change applies to both immediately — there is no "my copy" and "their copy" of a window. Both are told who changed it and to what; the change is announced in the thread rather than applied silently.
+- **Shortening applies to the history at once.** Choosing 3 hours on a week-old thread deletes everything already older than 3 hours in that moment, on both sides. That is the point of the control, and the UI says so before the choice is made.
+- **What "deleted" means:** the message row in the conversation's Durable Object, and the object in the bucket for any media it carried. Not a tombstone, not a "deleted message" placeholder, not an entry in a log. A failed bucket delete leaves the index row behind so the scheduled cleanup retries it; the row is only forgotten once the object is actually gone.
+- **Enforcement (three layers, since a promise about deletion cannot depend on someone being connected):**
+  1. an alarm inside the conversation's Durable Object, armed for the moment its oldest message ages out;
+  2. a sweep on every wake of that object and on every connect, so no request can be served a message that should already be gone;
+  3. a scheduled backstop (the cron cleanup) that pokes conversations whose whole history is already past its window, and sweeps bucket objects the DO could not delete.
+- **Client side:** the window is applied locally as well — the thread filters what it paints, and the local copies (thread cache, conversation-list previews) drop anything past it. A device that was offline while a message expired must not be the one place it survives.
+- **Profile pictures are not messages** and are not subject to this window; they are account data, replaced when the account replaces them.
+- **Out of scope for the window:** a per-message "delete for both" action, and pinning/saving a message past it. The second is a deliberate refusal — an exception to retention is a hole in the promise.
 
 ---
 
@@ -194,6 +217,8 @@ conversations
   user_b        TEXT FK -> users.id
   created_at    INTEGER
   last_message_at INTEGER
+  retention_ms  INTEGER           -- §3.9 window; mirror of the DO's value
+  swept_at      INTEGER NULL      -- last time the cleanup backstop ran on it
 ```
 
 ### 4.4 Data Model (Durable Object internal SQLite — per conversation)
@@ -209,7 +234,16 @@ messages
   status            TEXT         -- sent | delivered | read
   edited_at         INTEGER NULL
   deleted_at        INTEGER NULL
+
+participants
+  user_id           TEXT PK      -- the pinned pair; outsiders are refused
+
+settings
+  key               TEXT PK      -- 'retention_ms' (§3.9), and the bookkeeping
+  value             TEXT         -- the expiry alarm's id, the mirror flag
 ```
+
+The retention window lives here rather than in D1 because this is where the messages are: the object that deletes them is the object that owns the clock. D1 keeps a mirror so the REST layer and the scheduled cleanup can read it without waking anything.
 
 ### 4.5 Real-Time Protocol (WebSocket message shapes — illustrative)
 ```jsonc
@@ -217,12 +251,16 @@ messages
 { "type": "send_message", "client_id": "uuid", "msg_type": "text", "body": "oi!" }
 { "type": "typing" }
 { "type": "read_receipt", "up_to_message_id": "..." }
+{ "type": "set_retention", "retention_ms": 10800000 }              // §3.9, either side
 
 // Server -> Client
 { "type": "message", "id": "...", "sender_id": "...", "msg_type": "text", "body": "oi!", "created_at": 172839... }
 { "type": "message_status", "client_id": "uuid", "status": "delivered" }
 { "type": "typing", "user_id": "..." }
 { "type": "read_receipt", "up_to_message_id": "...", "user_id": "..." }
+{ "type": "retention", "retention_ms": 604800000, "changed_by": null }   // on connect
+{ "type": "retention", "retention_ms": 10800000, "changed_by": "..." }   // on change
+{ "type": "messages_expired", "ids": ["...", "..."] }                    // just deleted
 ```
 
 ### 4.6 Latency Budget (target: 50–300ms end-to-end)
@@ -308,9 +346,12 @@ Since this is not a growth product, success is defined operationally rather than
 
 The definitive visual reference for this project is the retro theme/skin used in the sibling **Portfolio** project (`~/desktop/good/Portfolio`). GoodChat should visually read as part of the same "product family" as that portfolio — same retro sensibility, not a generic UI kit look.
 
-- Canonical token file: **`harness/styleguide.md`**.
-- This file is **not written by hand in advance** — it is generated by the coding agent at project kickoff by directly reading and analyzing the Portfolio project's source (colors, fonts, spacing, retro effects, component treatments). The exact process is specified in `inicial.md`, which is the first prompt the agent receives.
-- Any implementation work on UI **must read `harness/styleguide.md` before writing component code**, and must treat it as an authoritative constraint equal in weight to the functional requirements in this PRD.
+- Canonical entry point: **`.harness/styleguide.md`** — the shared foundation (palettes, type family, motion, the skin contract, the CSS recipe) plus the index of skins.
+- **One style guide per skin**, under `.harness/styleguides/`: `retro.md` (default, the Portfolio-derived neobrutalist look) and `terminal.md` (CRT/shell). There is deliberately no single style guide for "the site": a rule like "hard 6px offset shadow" is law under `retro` and forbidden under `terminal`.
+- Each skin nevertheless applies to the **entire app** — login, list, thread, composer, admin console, dialogs. Skins are chosen by the user in the appearance screen and are independent of the palette (`data-theme`), so ten palettes × N skins.
+- The retro file was **not written by hand in advance** — it was generated by the coding agent at project kickoff by directly reading the Portfolio project's source (colors, fonts, spacing, retro effects, component treatments). The exact process is specified in `inicial.md`, the first prompt the agent receives.
+- Any implementation work on UI **must read `.harness/styleguide.md` plus the style guide of every skin it touches before writing component code**, and must treat them as authoritative constraints equal in weight to the functional requirements in this PRD. A new screen is only done when it is right under *every* skin.
+- Adding a skin is allowed and cheap: it may ship with a new style guide of its own, or with none when it only re-sets the frame tokens (§5 of `.harness/styleguide.md`).
 
 ## 10. Open Questions
 1. **User visibility model** (3.2.1): fully open `@username` lookup within the instance, or gated by an explicit connection/approval step?
