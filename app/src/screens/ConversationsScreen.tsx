@@ -3,13 +3,21 @@
 // Light polling keeps the list fresh while visible — real-time list updates are
 // a phase-7+ debt. Presence is not part of that poll: it rides its own
 // heartbeat (lib/presence.ts), which refreshes faster than the list does.
+//
+// The first paint comes from the local copy (lib/conversationsCache.ts), on the
+// same stale-while-revalidate terms the session already runs on: an account
+// restored from cache lands on its threads instead of on a skeleton, and the
+// first poll overwrites them. The skeleton is now what a *cold* start shows —
+// a device that has never listed, or one whose copy belongs to somebody else.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { listConversations } from '../lib/api'
 import type { ConversationListItem } from '../lib/api'
+import { readCachedConversations, writeCachedConversations } from '../lib/conversationsCache'
 import { usePresence } from '../hooks/usePresence'
 import { useSession } from '../hooks/useSession'
 import { useTheme } from '../hooks/useTheme'
+import { Panel } from '../components/Panel'
 import { ConversationTile } from '../components/ConversationTile'
 import { MoonIcon, SunIcon } from '../components/Icons'
 import { ConversationListSkeleton } from '../components/Skeleton'
@@ -23,7 +31,20 @@ const POLL_MS = 15_000
 export function ConversationsScreen() {
   const { user, setTheme } = useSession()
   const { mode, toggleMode } = useTheme()
-  const [conversations, setConversations] = useState<ConversationListItem[] | null>(null)
+  // Read once, at mount: `user` is replaced by revalidation but keeps its id,
+  // and re-reading on every render would fight the fetched list for the state.
+  const [cached] = useState<ConversationListItem[] | null>(() =>
+    user ? readCachedConversations(user.id) : null,
+  )
+  const [conversations, setConversations] = useState(cached)
+  /**
+   * Whether the server has answered once. An empty *cached* list is the one
+   * copy that must not be believed on sight: a thread started on another device
+   * would show "awaiting_first_contact" — not a stale detail like a nickname,
+   * but a screen claiming the person has no conversations at all. So an empty
+   * copy waits behind the skeleton, while a non-empty one paints at once.
+   */
+  const [settled, setSettled] = useState(cached === null)
   const [failed, setFailed] = useState(false)
 
   // One heartbeat asks about every peer on screen at once.
@@ -41,14 +62,19 @@ export function ConversationsScreen() {
     void setTheme(toggleMode())
   }, [setTheme, toggleMode])
 
+  const ownerId = user?.id
   const refresh = useCallback(() => {
     listConversations()
       .then(({ conversations }) => {
         setConversations(conversations)
+        if (ownerId) writeCachedConversations(ownerId, conversations)
+        setSettled(true)
         setFailed(false)
       })
+      // The copy on screen stays: a poll that could not reach the server has
+      // nothing truer to put in its place, and the banner says so.
       .catch(() => setFailed(true))
-  }, [])
+  }, [ownerId])
 
   useEffect(() => {
     refresh()
@@ -113,20 +139,23 @@ export function ConversationsScreen() {
         </p>
       )}
 
-      {conversations === null ? (
+      {conversations === null || (conversations.length === 0 && !settled) ? (
         <ConversationListSkeleton />
       ) : conversations.length === 0 ? (
-        <div className="animate-enter card card-border border-base-300 bg-base-200 retro-shadow">
-          <div className="card-body gap-2">
-            <p className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-              {'>'} awaiting_first_contact<span className="terminal-cursor">_</span>
-            </p>
-            <p className="text-sm font-medium leading-relaxed opacity-70">
-              Nenhuma conversa ainda. Busque alguém por @username acima — a
-              conversa é criada na primeira mensagem.
-            </p>
-          </div>
-        </div>
+        <Panel
+          title="inbox.log"
+          as="div"
+          className="animate-enter"
+          bodyClassName="gap-2"
+        >
+          <p className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            {'>'} awaiting_first_contact<span className="terminal-cursor">_</span>
+          </p>
+          <p className="text-sm font-medium leading-relaxed opacity-70">
+            Nenhuma conversa ainda. Busque alguém por @username acima — a
+            conversa é criada na primeira mensagem.
+          </p>
+        </Panel>
       ) : (
         <ul className="flex flex-col gap-3">
           {conversations.map((item) => (

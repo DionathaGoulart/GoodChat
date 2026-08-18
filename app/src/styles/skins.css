@@ -56,13 +56,20 @@
 }
 
 /*
- * Phosphor glow on the accent micro-type — the skin's other signature. The
- * shadow reads `currentColor` rather than the accent token so it survives the
- * hover states that invert the text (a tile going accent-content over accent
- * would otherwise keep glowing in the old color).
+ * Phosphor glow on the accent micro-type — the skin's other signature, at the
+ * Portfolio skin's full strength (`terminal-glow` there is `0 0 10px` of the
+ * accent, undiluted). Every element this lands on is the kind the Portfolio
+ * hands the class to by hand: prompt lines, section labels, the empty and
+ * typing states. Applying it through `.text-accent` instead of an opt-in class
+ * is what keeps the components from knowing which skin is on.
+ *
+ * The one departure from the Portfolio's spelling: the shadow reads
+ * `currentColor` rather than the accent token, so it survives the hover states
+ * that invert the text — a tile going accent-content over accent would
+ * otherwise keep glowing in the color it just stopped being.
  */
 [data-skin='terminal'] .text-accent {
-  text-shadow: 0 0 8px color-mix(in srgb, currentColor 55%, transparent);
+  text-shadow: 0 0 10px currentColor;
 }
 
 /* Block caret instead of a blinking underscore (Portfolio's `terminal-cursor`).
@@ -88,4 +95,132 @@
   );
   background-size: 100% 4px;
   opacity: 0.22;
+}
+
+/*
+ * Accent hairlines — the terminal skin's frames, matching the Portfolio
+ * skin's `border-color: color-mix(accent 30%)` (terminal.css there).
+ *
+ * This is what separates the two skins more than the border width does: the
+ * retro skin draws in base-300 and puts the color in the fill, the terminal
+ * skin draws every line in phosphor and leaves the fill nearly black. 30% is
+ * the same ratio the frame's hairline ring already uses above, so a panel's
+ * border and its glow read as one edge instead of two.
+ *
+ * Unlayered on purpose (see the header): it must outrank the layered
+ * `retro-border` utility. Safe because no component pairs `retro-border` with
+ * a `border-<color>` utility — the ones that set a border color (the error
+ * banners) use `border-2` on their own and are untouched here.
+ *
+ * On an accent-filled surface (sent bubble, hovered tile, avatar) the line
+ * disappears into the fill by design — the same thing the Portfolio skin does
+ * with its `bg-accent` states. Those elements keep their edge from the glow
+ * ring, which sits outside the fill.
+ */
+[data-skin='terminal'] .retro-border {
+  border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+/*
+ * ...and the retro skin claims its own line back. Both selectors carry the
+ * same specificity, so source order is what makes this one win — which is the
+ * whole point: the appearance screen stamps `data-skin` on each preview
+ * swatch, and a retro swatch sitting inside a terminal-skinned page would
+ * otherwise match the descendant rule above and preview the wrong frame.
+ *
+ * Only the attribute is listed: an un-stamped document already gets base-300
+ * from the `retro-border` utility itself, and a bare `:root` here would match
+ * every framed element on the page — terminal ones included — and, sitting
+ * later in the file, would beat the rule above at equal specificity.
+ */
+[data-skin='retro'] .retro-border {
+  border-color: var(--color-base-300);
+}
+
+/*
+ * Buttons — Portfolio's `btn-terminal` (terminal.css), token for token: a 5%
+ * accent ghost fill with accent type, a 30% accent border, and the compact
+ * mono metrics (2.5rem tall, .75rem type, 1rem padding) instead of the retro
+ * skin's 3.25/3.75rem CTA.
+ *
+ * Overriding the *tokens* rather than `.btn` keeps daisyUI computing its own
+ * focus/active/disabled states from them, and keeps the weight/tracking edit
+ * scoped to the variant. `--btn-border` carries the border instead of a direct
+ * `border-color` (Portfolio's spelling) so the disabled state dims the frame
+ * along with everything else.
+ */
+[data-skin='terminal'] .btn-goodchat,
+[data-skin='terminal'] .btn-goodchat-outline {
+  --btn-color: color-mix(in srgb, var(--color-accent) 5%, transparent);
+  --btn-fg: var(--color-accent);
+  --btn-border: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  --btn-p: 1rem;
+  --size: 2.5rem;
+  --fontsize: 0.75rem;
+  font-weight: 700;
+
+  @media (width >= 48rem) {
+    --size: 2.5rem;
+    --fontsize: 0.75rem;
+  }
+}
+
+/*
+ * The ghost fill is too faint to read a hover from, so the skin supplies the
+ * accent flood the Portfolio call sites write inline
+ * (`hover:bg-accent hover:text-accent-content` on every btn-terminal). Written
+ * here rather than at the three call sites because the retro skin must not get
+ * it — and no `btn-goodchat` call site pairs a `hover:bg-*`, so nothing is
+ * being overridden.
+ */
+[data-skin='terminal'] .btn-goodchat:not(:disabled):hover,
+[data-skin='terminal'] .btn-goodchat-outline:not(:disabled):hover {
+  background-color: var(--color-accent);
+  color: var(--color-accent-content);
+}
+
+/*
+ * Window dots — the Portfolio terminal skin's `["bg-accent", "bg-accent/40",
+ * "bg-accent/20"]` (components/terminal/ui/index.tsx there): one accent circle
+ * fading out across three, instead of the retro motif's accent-then-two-greys.
+ *
+ * Reached through the `window-dots` hook class rather than by the component
+ * branching on the skin. The nth-child pair is the only way to say "the second
+ * and third one" without the markup carrying skin-specific classes.
+ */
+[data-skin='terminal'] .window-dots > :nth-child(2) {
+  background-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+
+[data-skin='terminal'] .window-dots > :nth-child(3) {
+  background-color: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+/*
+ * Window title bar — the terminal skin's `chrome: "bar"` (TermWindow in the
+ * Portfolio): a 1px accent hairline over a 5% accent wash, tighter than the
+ * retro bar's 2px base-300 line over base-100.
+ *
+ * The width reads `--frame-border` rather than a literal 1px so the bar tracks
+ * whatever the active skin already decided a frame weighs — it is the same
+ * line, and a third skin would get it for free.
+ */
+[data-skin='terminal'] .window-bar {
+  border-bottom-width: var(--frame-border);
+  border-bottom-color: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  background-color: color-mix(in srgb, var(--color-accent) 5%, transparent);
+  padding: 0.5rem 1rem;
+}
+
+/*
+ * ...and its label: phosphor at half strength with the skin's wider tracking,
+ * where the retro bar dims a bold base-content instead. No `text-shadow` here
+ * — the glow above keys off `.text-accent`, and a filename in the chrome is
+ * meant to sit behind the content, not compete with it.
+ */
+[data-skin='terminal'] .window-bar-title {
+  color: var(--color-accent);
+  opacity: 0.5;
+  font-weight: 400;
+  letter-spacing: 0.05em;
 }

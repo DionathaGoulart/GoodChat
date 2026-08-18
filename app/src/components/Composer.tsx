@@ -6,12 +6,13 @@
 // first open). Pickers are daisyUI focus dropdowns — clicking outside (or
 // blurring after a sticker send) closes them.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent } from 'react'
 import { MAX_BODY_LENGTH } from '../lib/protocol'
 import { IMAGE_MIMES, MediaError, VIDEO_MIMES, prepareMedia, uploadMedia } from '../lib/media'
 import type { UploadHandle } from '../lib/media'
 import { ApiError } from '../lib/api'
+import { readDraft, writeDraft } from '../lib/drafts'
 import { EmojiPicker } from './EmojiPicker'
 import { StickerPicker } from './StickerPicker'
 
@@ -31,17 +32,20 @@ const TOOL_BUTTON_CLASS =
   'retro-border cursor-pointer self-stretch bg-base-100 px-3 text-lg font-black transition-all duration-300 hover:-translate-y-1 hover:bg-accent hover:text-accent-content hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40'
 
 export function Composer({
+  conversationId,
   onSend,
   onSendMedia,
   onSendSticker,
   onTyping,
 }: {
+  /** Which thread the unsent text belongs to (lib/drafts.ts). */
+  conversationId: string
   onSend: (body: string) => void
   onSendMedia: (msgType: 'image' | 'video', mediaKey: string) => void
   onSendSticker: (stickerId: string) => void
   onTyping: () => void
 }) {
-  const [body, setBody] = useState('')
+  const [body, setBody] = useState(() => readDraft(conversationId))
   const [attachment, setAttachment] = useState<Attachment | null>(null)
   const [mediaError, setMediaError] = useState<string | null>(null)
   /** "12.4mb → 3.1mb" after a compression that actually won. */
@@ -53,6 +57,15 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const uploadRef = useRef<UploadHandle | null>(null)
   const canSend = body.trim().length > 0
+
+  // Debounced so a fast typist is not writing to storage on every keystroke.
+  // The cleanup cancels rather than flushes, which is what makes a send land
+  // correctly: submit() clears the body, the pending timer for the old text is
+  // dropped, and the timer for the empty string removes the key.
+  useEffect(() => {
+    const timer = window.setTimeout(() => writeDraft(conversationId, body), 300)
+    return () => window.clearTimeout(timer)
+  }, [body, conversationId])
 
   const submit = () => {
     if (!canSend) return

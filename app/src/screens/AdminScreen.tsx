@@ -13,6 +13,7 @@ import * as api from '../lib/api'
 import type { AdminConversation, AdminOverview, AdminUser } from '../lib/api'
 import { ApiError } from '../lib/api'
 import { useSession } from '../hooks/useSession'
+import { Panel } from '../components/Panel'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { CardListSkeleton, StatTilesSkeleton } from '../components/Skeleton'
 import { navigate } from '../lib/router'
@@ -146,41 +147,39 @@ export function AdminScreen() {
 
       <OverviewPanel overview={overview} />
 
-      <section className="card card-border border-base-300 bg-base-200 retro-shadow">
-        <div className="card-body gap-4">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-                {'>'} contas
-              </h2>
-              <p className="mt-1 text-sm opacity-70">
-                Espaço por conta: mensagens (banco) + mídia (bucket).
-              </p>
-            </div>
-            <RetroIconButton disabled={busy} onClick={() => setCreating(true)}>
-              + conta
-            </RetroIconButton>
+      <Panel title="contas.db">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
+              {'>'} contas
+            </h2>
+            <p className="mt-1 text-sm opacity-70">
+              Espaço por conta: mensagens (banco) + mídia (bucket).
+            </p>
           </div>
-
-          {users === null ? (
-            <CardListSkeleton label="carregando contas" rows={4} />
-          ) : (
-            <ul className="flex flex-col gap-3">
-              {users.map((account) => (
-                <AccountRow
-                  key={account.id}
-                  account={account}
-                  isSelf={account.id === user.id}
-                  largest={largest}
-                  busy={busy}
-                  onAction={setPending}
-                  onPerform={perform}
-                />
-              ))}
-            </ul>
-          )}
+          <RetroIconButton disabled={busy} onClick={() => setCreating(true)}>
+            + conta
+          </RetroIconButton>
         </div>
-      </section>
+
+        {users === null ? (
+          <CardListSkeleton label="carregando contas" rows={4} />
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {users.map((account) => (
+              <AccountRow
+                key={account.id}
+                account={account}
+                isSelf={account.id === user.id}
+                largest={largest}
+                busy={busy}
+                onAction={setPending}
+                onPerform={perform}
+              />
+            ))}
+          </ul>
+        )}
+      </Panel>
 
       <ConversationsPanel
         conversations={conversations}
@@ -430,59 +429,57 @@ function ConversationsPanel({
   onAction: (action: PendingAction) => void
 }) {
   return (
-    <section className="card card-border border-base-300 bg-base-200 retro-shadow">
-      <div className="card-body gap-4">
-        <div>
-          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} conversas
-          </h2>
-          <p className="mt-1 text-sm opacity-70">
-            Cada conversa é um banco próprio, compartilhado pelos dois participantes.
-          </p>
-        </div>
-
-        {conversations === null ? (
-          <CardListSkeleton label="carregando conversas" />
-        ) : conversations.length === 0 ? (
-          <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
-            nenhuma conversa ainda
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {conversations.map((conversation) => (
-              <li
-                key={conversation.id}
-                className="retro-border flex flex-wrap items-center justify-between gap-3 bg-base-100 p-3"
-              >
-                <div>
-                  <p className="font-mono text-xs font-black uppercase tracking-widest">
-                    {conversation.participants.map((p) => `@${p.username}`).join(' ↔ ')}
-                  </p>
-                  <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
-                    {conversation.messages} mensagens · {formatBytes(conversation.storage_bytes)} ·{' '}
-                    {conversation.media_objects} mídias · {formatDate(conversation.last_message_at)}
-                    {conversation.unreachable && ' · indisponível'}
-                  </p>
-                </div>
-                <RetroIconButton
-                  disabled={busy}
-                  onClick={() =>
-                    onAction({
-                      title: `limpar ${conversation.participants.map((p) => `@${p.username}`).join(' ↔ ')}`,
-                      detail: `Apaga as ${conversation.messages} mensagens desta conversa para os dois lados e remove ${conversation.media_objects} mídias do bucket.`,
-                      confirmLabel: 'limpar conversa',
-                      run: () => api.adminPurgeConversation(conversation.id),
-                    })
-                  }
-                >
-                  limpar
-                </RetroIconButton>
-              </li>
-            ))}
-          </ul>
-        )}
+    <Panel title="conversas.db">
+      <div>
+        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          {'>'} conversas
+        </h2>
+        <p className="mt-1 text-sm opacity-70">
+          Cada conversa é um banco próprio, compartilhado pelos dois participantes.
+        </p>
       </div>
-    </section>
+
+      {conversations === null ? (
+        <CardListSkeleton label="carregando conversas" />
+      ) : conversations.length === 0 ? (
+        <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-40">
+          nenhuma conversa ainda
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {conversations.map((conversation) => (
+            <li
+              key={conversation.id}
+              className="retro-border flex flex-wrap items-center justify-between gap-3 bg-base-100 p-3"
+            >
+              <div>
+                <p className="font-mono text-xs font-black uppercase tracking-widest">
+                  {conversation.participants.map((p) => `@${p.username}`).join(' ↔ ')}
+                </p>
+                <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
+                  {conversation.messages} mensagens · {formatBytes(conversation.storage_bytes)} ·{' '}
+                  {conversation.media_objects} mídias · {formatDate(conversation.last_message_at)}
+                  {conversation.unreachable && ' · indisponível'}
+                </p>
+              </div>
+              <RetroIconButton
+                disabled={busy}
+                onClick={() =>
+                  onAction({
+                    title: `limpar ${conversation.participants.map((p) => `@${p.username}`).join(' ↔ ')}`,
+                    detail: `Apaga as ${conversation.messages} mensagens desta conversa para os dois lados e remove ${conversation.media_objects} mídias do bucket.`,
+                    confirmLabel: 'limpar conversa',
+                    run: () => api.adminPurgeConversation(conversation.id),
+                  })
+                }
+              >
+                limpar
+              </RetroIconButton>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
   )
 }
 
@@ -496,43 +493,41 @@ function MaintenancePanel({
   onPerform: (label: string, action: () => Promise<unknown>) => void
 }) {
   return (
-    <section className="card card-border border-base-300 bg-base-200 retro-shadow">
-      <div className="card-body gap-4">
-        <div>
-          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} manutenção
-          </h2>
-          <p className="mt-1 text-sm opacity-70">
-            A limpeza roda de hora em hora sozinha; aqui é só para adiantar.
-            {overview?.retention_days
-              ? ` Retenção de mídia: ${overview.retention_days} dias.`
-              : ' Retenção de mídia desligada (MEDIA_RETENTION_DAYS=0).'}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <RetroIconButton
-            disabled={busy}
-            onClick={() => onPerform('limpeza', () => api.adminCleanup())}
-            title="sessões expiradas, contadores de rate limit e uploads órfãos"
-          >
-            rodar limpeza
-          </RetroIconButton>
-          <RetroIconButton
-            disabled={busy}
-            onClick={() => onPerform('reindexar mídia', () => api.adminReindexMedia())}
-            title="indexa objetos anteriores à migration 0003"
-          >
-            reindexar mídia
-          </RetroIconButton>
-        </div>
-        {overview?.legacy_media_reads === 'allow' && (
-          <p className="font-mono text-[10px] uppercase leading-relaxed tracking-[0.2em] opacity-50">
-            leitura legada liberada: objetos fora do índice ainda são servidos a qualquer sessão.
-            reindexe e defina MEDIA_LEGACY_READS=deny para fechar.
-          </p>
-        )}
+    <Panel title="manutencao.sh">
+      <div>
+        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          {'>'} manutenção
+        </h2>
+        <p className="mt-1 text-sm opacity-70">
+          A limpeza roda de hora em hora sozinha; aqui é só para adiantar.
+          {overview?.retention_days
+            ? ` Retenção de mídia: ${overview.retention_days} dias.`
+            : ' Retenção de mídia desligada (MEDIA_RETENTION_DAYS=0).'}
+        </p>
       </div>
-    </section>
+      <div className="flex flex-wrap gap-2">
+        <RetroIconButton
+          disabled={busy}
+          onClick={() => onPerform('limpeza', () => api.adminCleanup())}
+          title="sessões expiradas, contadores de rate limit e uploads órfãos"
+        >
+          rodar limpeza
+        </RetroIconButton>
+        <RetroIconButton
+          disabled={busy}
+          onClick={() => onPerform('reindexar mídia', () => api.adminReindexMedia())}
+          title="indexa objetos anteriores à migration 0003"
+        >
+          reindexar mídia
+        </RetroIconButton>
+      </div>
+      {overview?.legacy_media_reads === 'allow' && (
+        <p className="font-mono text-[10px] uppercase leading-relaxed tracking-[0.2em] opacity-50">
+          leitura legada liberada: objetos fora do índice ainda são servidos a qualquer sessão.
+          reindexe e defina MEDIA_LEGACY_READS=deny para fechar.
+        </p>
+      )}
+    </Panel>
   )
 }
 

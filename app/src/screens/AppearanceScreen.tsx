@@ -20,6 +20,7 @@ import {
   type ModePreference,
   type PaletteOption,
 } from '../lib/themes'
+import { Panel } from '../components/Panel'
 import { PaletteSwatch } from '../components/PaletteSwatch'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { navigate } from '../lib/router'
@@ -76,84 +77,80 @@ export function AppearanceScreen() {
         </p>
       )}
 
-      <section className="card card-border border-base-300 bg-base-200 retro-shadow">
-        <div className="card-body gap-4">
-          <div>
-            <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-              {'>'} skins
-            </h2>
-            <p className="mt-1 text-sm opacity-70">
-              A geometria: espessura das molduras, sombra dura ou brilho de CRT. As cores
-              continuam sendo as do tema.
-            </p>
-          </div>
+      <Panel title="skins.cfg">
+        <div>
+          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            {'>'} skins
+          </h2>
+          <p className="mt-1 text-sm opacity-70">
+            A geometria: espessura das molduras, sombra dura ou brilho de CRT. As cores
+            continuam sendo as do tema.
+          </p>
+        </div>
 
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {SKINS.map((skin) => (
-              <SkinButton
-                key={skin.id}
-                skin={skin}
-                selected={skin.id === prefs.skin}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {SKINS.map((skin) => (
+            <SkinButton
+              key={skin.id}
+              skin={skin}
+              selected={skin.id === prefs.skin}
+              disabled={saving}
+              onPick={() => {
+                if (skin.id !== prefs.skin) save({ ...prefs, skin: skin.id })
+              }}
+            />
+          ))}
+        </div>
+      </Panel>
+
+      <Panel title="temas.cfg">
+        <div>
+          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            {'>'} temas
+          </h2>
+          <p className="mt-1 text-sm opacity-70">
+            Claro, escuro ou o que o dispositivo pedir — e qual paleta cada modo usa.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          {MODE_OPTIONS.map((option) => {
+            const selected = option.value === prefs.mode
+            return (
+              <button
+                key={option.label}
+                type="button"
+                aria-pressed={selected}
                 disabled={saving}
-                onPick={() => {
-                  if (skin.id !== prefs.skin) save({ ...prefs, skin: skin.id })
+                onClick={() => {
+                  if (option.value !== prefs.mode) save({ ...prefs, mode: option.value })
                 }}
-              />
-            ))}
-          </div>
+                className={`retro-border flex cursor-pointer flex-col gap-1 px-3 py-3 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 ${
+                  selected ? 'bg-accent text-accent-content' : 'bg-base-100'
+                }`}
+              >
+                <span className="font-mono text-xs font-black uppercase tracking-widest">
+                  {option.label}
+                </span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] opacity-60">
+                  {option.hint}
+                </span>
+              </button>
+            )
+          })}
         </div>
-      </section>
 
-      <section className="card card-border border-base-300 bg-base-200 retro-shadow">
-        <div className="card-body gap-4">
-          <div>
-            <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-              {'>'} temas
-            </h2>
-            <p className="mt-1 text-sm opacity-70">
-              Claro, escuro ou o que o dispositivo pedir — e qual paleta cada modo usa.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            {MODE_OPTIONS.map((option) => {
-              const selected = option.value === prefs.mode
-              return (
-                <button
-                  key={option.label}
-                  type="button"
-                  aria-pressed={selected}
-                  disabled={saving}
-                  onClick={() => {
-                    if (option.value !== prefs.mode) save({ ...prefs, mode: option.value })
-                  }}
-                  className={`retro-border flex cursor-pointer flex-col gap-1 px-3 py-3 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 ${
-                    selected ? 'bg-accent text-accent-content' : 'bg-base-100'
-                  }`}
-                >
-                  <span className="font-mono text-xs font-black uppercase tracking-widest">
-                    {option.label}
-                  </span>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.15em] opacity-60">
-                    {option.hint}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-
-          <PaletteGroup
-            title={mode === 'dark' ? 'paleta escura' : 'paleta clara'}
-            options={mode === 'dark' ? DARK_PALETTES : LIGHT_PALETTES}
-            selected={mode === 'dark' ? prefs.dark : prefs.light}
-            disabled={saving}
-            onPick={(id) => {
-              const current = mode === 'dark' ? prefs.dark : prefs.light
-              if (id !== current) save({ ...prefs, [mode]: id })
-            }}
-          />
-        </div>
-      </section>
+        <PaletteGroup
+          title={mode === 'dark' ? 'paleta escura' : 'paleta clara'}
+          options={mode === 'dark' ? DARK_PALETTES : LIGHT_PALETTES}
+          selected={mode === 'dark' ? prefs.dark : prefs.light}
+          disabled={saving}
+          onPick={(id) => {
+            const current = mode === 'dark' ? prefs.dark : prefs.light
+            if (id !== current) save({ ...prefs, [mode]: id })
+          }}
+        />
+      </Panel>
     </main>
   )
 }

@@ -15,6 +15,7 @@ import { ApiError } from '../lib/api'
 import { useSession } from '../hooks/useSession'
 import { MediaError, uploadAvatar } from '../lib/media'
 import { Avatar } from './Avatar'
+import { Panel } from './Panel'
 import { RetroIconButton } from './RetroIconButton'
 
 const MAX_DISPLAY_NAME_LENGTH = 64
@@ -91,97 +92,95 @@ export function ProfileCard() {
   }
 
   return (
-    <section className="card card-border border-base-300 bg-base-200 retro-shadow">
-      <div className="card-body gap-4">
-        <div>
-          <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
-            {'>'} perfil
-          </h2>
-          <p className="mt-1 text-sm opacity-70">
-            Como você aparece pra quem conversa com você. O @username não muda.
-          </p>
-        </div>
+    <Panel title="perfil.cfg">
+      <div>
+        <h2 className="font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          {'>'} perfil
+        </h2>
+        <p className="mt-1 text-sm opacity-70">
+          Como você aparece pra quem conversa com você. O @username não muda.
+        </p>
+      </div>
 
-        {error && (
-          <p className="border-2 border-error bg-error/10 p-3 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
-            {error}
-          </p>
+      {error && (
+        <p className="border-2 border-error bg-error/10 p-3 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
+          {error}
+        </p>
+      )}
+      {notice && !error && (
+        <p className="border-2 border-success bg-success/10 p-3 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-success">
+          {notice}
+        </p>
+      )}
+
+      <div className="flex items-center gap-4">
+        {photoState === 'working' ? (
+          <span className="retro-border skeleton size-20 shrink-0" aria-label="enviando foto" />
+        ) : (
+          <Avatar user={user} size="lg" />
         )}
-        {notice && !error && (
-          <p className="border-2 border-success bg-success/10 p-3 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-success">
-            {notice}
-          </p>
-        )}
-
-        <div className="flex items-center gap-4">
-          {photoState === 'working' ? (
-            <span className="skeleton size-20 shrink-0" aria-label="enviando foto" />
-          ) : (
-            <Avatar user={user} size="lg" />
-          )}
-          <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
-            <div className="flex flex-wrap gap-2">
-              <RetroIconButton disabled={busy} onClick={() => fileRef.current?.click()}>
-                {photoState === 'working' ? 'enviando …' : user.avatar_key ? 'trocar foto' : 'add foto'}
-              </RetroIconButton>
-              {user.avatar_key && (
-                <RetroIconButton disabled={busy} onClick={removePhoto}>
-                  remover
-                </RetroIconButton>
-              )}
-            </div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
-              jpg, png ou webp — recortada num quadrado de 512px
-            </p>
-          </div>
-        </div>
-
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          className="hidden"
-          onChange={(event) => {
-            pickPhoto(event.target.files?.[0])
-            // Reset so picking the same file again still fires a change.
-            event.target.value = ''
-          }}
-        />
-
-        <div className="flex flex-col gap-2">
-          <label
-            htmlFor="display-name"
-            className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-70"
-          >
-            nome de exibição
-          </label>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              id="display-name"
-              type="text"
-              value={name}
-              maxLength={MAX_DISPLAY_NAME_LENGTH}
-              disabled={busy}
-              placeholder={user.username}
-              onChange={(event) => setName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') saveName()
-              }}
-              className="input input-bordered min-w-0 flex-1 border-2 border-base-300 bg-base-100 font-mono text-sm disabled:opacity-40"
-            />
-            <RetroIconButton
-              disabled={busy || !nameChanged}
-              onClick={saveName}
-              className={nameChanged ? 'bg-accent text-accent-content' : ''}
-            >
-              {savingName ? 'salvando …' : 'salvar'}
+        <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
+          <div className="flex flex-wrap gap-2">
+            <RetroIconButton disabled={busy} onClick={() => fileRef.current?.click()}>
+              {photoState === 'working' ? 'enviando …' : user.avatar_key ? 'trocar foto' : 'add foto'}
             </RetroIconButton>
+            {user.avatar_key && (
+              <RetroIconButton disabled={busy} onClick={removePhoto}>
+                remover
+              </RetroIconButton>
+            )}
           </div>
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
-            vazio = aparece como @{user.username}
+            jpg, png ou webp — recortada num quadrado de 512px
           </p>
         </div>
       </div>
-    </section>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        onChange={(event) => {
+          pickPhoto(event.target.files?.[0])
+          // Reset so picking the same file again still fires a change.
+          event.target.value = ''
+        }}
+      />
+
+      <div className="flex flex-col gap-2">
+        <label
+          htmlFor="display-name"
+          className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-70"
+        >
+          nome de exibição
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            id="display-name"
+            type="text"
+            value={name}
+            maxLength={MAX_DISPLAY_NAME_LENGTH}
+            disabled={busy}
+            placeholder={user.username}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') saveName()
+            }}
+            className="input input-bordered min-w-0 flex-1 border-2 border-base-300 bg-base-100 font-mono text-sm disabled:opacity-40"
+          />
+          <RetroIconButton
+            disabled={busy || !nameChanged}
+            onClick={saveName}
+            className={nameChanged ? 'bg-accent text-accent-content' : ''}
+          >
+            {savingName ? 'salvando …' : 'salvar'}
+          </RetroIconButton>
+        </div>
+        <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
+          vazio = aparece como @{user.username}
+        </p>
+      </div>
+    </Panel>
   )
 }

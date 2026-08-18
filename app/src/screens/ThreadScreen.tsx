@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, resolveConversation } from '../lib/api'
+import { readCachedThread, writeCachedThread } from '../lib/threadCache'
 import type { PublicUser } from '../lib/api'
 import { useConversation } from '../hooks/useConversation'
 import type { ConnectionState } from '../hooks/useConversation'
@@ -32,26 +33,35 @@ const LINK_LABEL: Record<Exclude<ConnectionState, 'online'>, { text: string; cla
 
 export function ThreadScreen({ userId }: { userId: string }) {
   const { user } = useSession()
+  const myId = user?.id
+  // The local copy (lib/threadCache.ts) is what the header and the thread paint
+  // while resolve is in flight — a conversation opened before starts with its
+  // peer already on screen instead of with a skeleton. `readonly` is the one
+  // field a stale copy can get wrong (the peer's account expired since), and it
+  // only ever opens a composer that the server refuses anyway; the answer
+  // closes it a round trip later.
   const [resolved, setResolved] = useState<{
     conversationId: string
     otherUser: PublicUser
     readonly: boolean
-  } | null>(null)
+  } | null>(() => (myId ? readCachedThread(myId, userId) : null))
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    setResolved(null)
+    setResolved(myId ? readCachedThread(myId, userId) : null)
     setError(null)
     resolveConversation(userId)
       .then((result) => {
         if (cancelled) return
-        setResolved({
+        const next = {
           conversationId: result.conversation_id,
           otherUser: result.other_user,
           // The peer's account is gone: history stays, the composer closes.
           readonly: result.readonly,
-        })
+        }
+        setResolved(next)
+        if (myId) writeCachedThread(myId, userId, next)
       })
       .catch((err: unknown) => {
         if (cancelled) return
@@ -64,7 +74,7 @@ export function ThreadScreen({ userId }: { userId: string }) {
     return () => {
       cancelled = true
     }
-  }, [userId])
+  }, [userId, myId])
 
   if (!user) return null
 
@@ -219,6 +229,7 @@ function LiveThread({
         </p>
       ) : (
         <Composer
+          conversationId={conversationId}
           onSend={send}
           onSendMedia={sendMedia}
           onSendSticker={sendSticker}

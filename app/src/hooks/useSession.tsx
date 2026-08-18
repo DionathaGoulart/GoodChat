@@ -13,6 +13,9 @@ import type { ReactNode } from 'react'
 import * as api from '../lib/api'
 import type { SessionUser } from '../lib/api'
 import { clearCachedAccount, readCachedAccount, writeCachedAccount } from '../lib/accountCache'
+import { clearCachedConversations } from '../lib/conversationsCache'
+import { clearDrafts } from '../lib/drafts'
+import { clearCachedThreads } from '../lib/threadCache'
 import { startHeartbeat } from '../lib/presence'
 import { disablePush } from '../lib/push'
 import { skinOr } from '../lib/skins'
@@ -53,6 +56,20 @@ function prefsOf(user: SessionUser): ThemePrefs {
   }
 }
 
+/**
+ * Everything this browser holds on behalf of the signed-in account. Both ways
+ * out of a session call it — a cookie that turned out to be gone, and a real
+ * logout — because a copy that survives one of them is a copy the next account
+ * on this device can read. One function so the next cache added is wired into
+ * both exits or neither.
+ */
+function forgetLocalState(): void {
+  clearCachedAccount()
+  clearCachedConversations()
+  clearCachedThreads()
+  clearDrafts()
+}
+
 const SessionContext = createContext<SessionContextValue | null>(null)
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -85,7 +102,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       .catch(() => {
         if (cancelled) return
         // The cookie is gone or was never there: the local copy is worthless.
-        clearCachedAccount()
+        forgetLocalState()
         setUser(null)
         setStatus('anonymous')
       })
@@ -133,7 +150,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } finally {
       // Cookie is gone (or was already invalid) — drop local state either way,
       // including the cached copy: the next account here is someone else.
-      clearCachedAccount()
+      forgetLocalState()
       setUser(null)
       setGuestCredentials(null)
       setStatus('anonymous')

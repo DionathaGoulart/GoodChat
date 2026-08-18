@@ -1,10 +1,12 @@
-// Login (phase-2 endpoint). Card retro-border + retro-shadow, status tokens
-// for errors, session persisted in the HttpOnly cookie set by the worker.
+// Login (phase-2 endpoint). The form is a Panel, so the front door carries the
+// same window chrome as the rest of the app; status tokens for errors, session
+// persisted in the HttpOnly cookie set by the worker.
 
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { ApiError, health } from '../lib/api'
 import { useSession } from '../hooks/useSession'
+import { Panel } from '../components/Panel'
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -77,64 +79,63 @@ export function LoginScreen() {
           GoodChat
         </h1>
 
-        <form
-          className="card card-border border-base-300 bg-base-200 retro-shadow"
+        <Panel
+          title="login.sh"
+          as="form"
           onSubmit={onSubmit}
         >
-          <div className="card-body gap-4">
-            <label className="flex flex-col gap-1">
-              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
-                username
-              </span>
-              <input
-                type="text"
-                className="input w-full font-mono"
-                autoComplete="username"
-                autoCapitalize="none"
-                required
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-              />
-            </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
+              username
+            </span>
+            <input
+              type="text"
+              className="input w-full font-mono"
+              autoComplete="username"
+              autoCapitalize="none"
+              required
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+            />
+          </label>
 
-            <label className="flex flex-col gap-1">
-              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
-                password
-              </span>
-              <input
-                type="password"
-                className="input w-full font-mono"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-            </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] opacity-60">
+              password
+            </span>
+            <input
+              type="password"
+              className="input w-full font-mono"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
 
-            {error && (
-              <p
-                role="alert"
-                className="border-2 border-error bg-error/10 p-2 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error"
-              >
-                {error}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={submitting}
-              className="btn btn-goodchat mt-2 w-full retro-shadow-sm transition-all duration-300 hover:-translate-y-1 hover:retro-shadow active:translate-y-0 disabled:opacity-60"
+          {error && (
+            <p
+              role="alert"
+              className="border-2 border-error bg-error/10 p-2 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error"
             >
-              {submitting ? (
-                <>
-                  autenticando<span className="terminal-cursor">_</span>
-                </>
-              ) : (
-                'Entrar'
-              )}
-            </button>
-          </div>
-        </form>
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitting}
+            className="btn btn-goodchat mt-2 w-full retro-shadow-sm transition-all duration-300 hover:-translate-y-1 hover:retro-shadow active:translate-y-0 disabled:opacity-60"
+          >
+            {submitting ? (
+              <>
+                autenticando<span className="terminal-cursor">_</span>
+              </>
+            ) : (
+              'Entrar'
+            )}
+          </button>
+        </Panel>
 
         {guestsOffered && (
           <section className="mt-4 retro-border bg-base-200 p-4">

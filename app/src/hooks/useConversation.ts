@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { wsUrl } from '../lib/api'
+import { readCachedMessages, writeCachedMessages } from '../lib/threadCache'
 import {
   ServerEventSchema,
   type MessageStatus,
@@ -111,7 +112,15 @@ export function useConversation(
   sendTyping: () => void
   markRead: (upToMessageId: string) => void
 } {
-  const [messages, dispatch] = useReducer(reduce, [])
+  // Seeded from the local copy: a thread opened before paints its tail at once
+  // and the `history` frame replaces it a connect later. `history` is a full
+  // resync, not a merge, so a stale copy cannot survive into the live state —
+  // the worst it can do is show the last screenful for the length of a connect.
+  const [messages, dispatch] = useReducer(
+    reduce,
+    null,
+    () => readCachedMessages(myId, conversationId) ?? [],
+  )
   const connectionRef = useRef<ConnectionState>('connecting')
   const [, forceRender] = useReducer((n: number) => n + 1, 0)
   const wsRef = useRef<WebSocket | null>(null)
@@ -333,6 +342,29 @@ export function useConversation(
     lastReadSentRef.current = upToMessageId
     ws.send(JSON.stringify({ type: 'read_receipt', up_to_message_id: upToMessageId }))
   }, [])
+
+  // Keeping the local copy fresh. A ref holds the latest list so the debounce
+  // can collapse a burst — an echo, its status upgrade and the peer's typing
+  // all land within a second of each other — into one JSON.stringify instead of
+  // one per frame.
+  const latestRef = useRef(messages)
+  latestRef.current = messages
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => writeCachedMessages(myId, conversationId, latestRef.current),
+      500,
+    )
+    return () => window.clearTimeout(timer)
+  }, [messages, myId, conversationId])
+
+  // Leaving the thread inside that second must not lose the tail: the debounce
+  // above cancels on cleanup, so the way out writes for itself. Keyed on the
+  // conversation, not on the messages, so it runs on unmount and not on every
+  // frame.
+  useEffect(() => {
+    return () => writeCachedMessages(myId, conversationId, latestRef.current)
+  }, [myId, conversationId])
 
   return {
     messages,

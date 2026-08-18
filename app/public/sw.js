@@ -7,15 +7,36 @@
 //   - navigations → network-first, cached app shell as offline fallback
 //   - everything else (icons, manifest) → network, no caching
 //
+// SHELL is written at build time by the precacheShell plugin (vite.config.ts):
+// the entry chunk, its static imports and the stylesheets. Install caches them
+// alongside `/`, so the first offline load has the markup *and* what it points
+// at — before, it had only the HTML and every script 404'd into a blank page.
+// The names are content-hashed, so a build that changes them leaves the old
+// entries behind in the cache; they are never requested again and the browser
+// evicts them under pressure, which is cheaper than versioning the cache and
+// re-downloading the fonts on every deploy.
+//
 // Push: displays the worker's NotificationPayload shape
 // ({ title, body, url, tag } — see worker/src/lib/push.ts). Click focuses an
 // existing window and navigates to the conversation, or opens a new one.
 
 const CACHE = 'goodchat-v1'
+// Valid JS either way: the build swaps this expression for the array literal,
+// and in dev — where public/sw.js is served untouched and the worker is still
+// registered (src/main.tsx) — it is undefined and the shell is simply empty.
+const SHELL = self.__PRECACHE__ ?? []
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.add('/')).then(() => self.skipWaiting()),
+    caches
+      .open(CACHE)
+      // addAll is all-or-nothing: one asset off the network would fail the
+      // whole install and leave no worker at all. The shell is worth having in
+      // pieces, so each file is added on its own and a miss is skipped.
+      .then((cache) =>
+        Promise.all(['/', ...SHELL].map((url) => cache.add(url).catch(() => undefined))),
+      )
+      .then(() => self.skipWaiting()),
   )
 })
 
