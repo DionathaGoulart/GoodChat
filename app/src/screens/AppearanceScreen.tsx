@@ -55,9 +55,9 @@ export function AppearanceScreen() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 p-6 sm:p-8">
-      <header className="flex items-start justify-between gap-4">
-        <div>
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 screen-pad sm:gap-6">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
           <p className="screen-kicker font-mono text-xs font-bold uppercase tracking-widest text-accent">
             <span className="sigil">{'>'}</span> aparência
           </p>
@@ -113,7 +113,10 @@ export function AppearanceScreen() {
           </p>
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        {/* One per row on a phone: three columns left ~68px of usable width and
+            "dispositivo" does not fit in that at any size worth reading. Label
+            and hint share the line there, so stacking costs almost no height. */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           {MODE_OPTIONS.map((option) => {
             const selected = option.value === prefs.mode
             return (
@@ -125,14 +128,14 @@ export function AppearanceScreen() {
                 onClick={() => {
                   if (option.value !== prefs.mode) save({ ...prefs, mode: option.value })
                 }}
-                className={`retro-border flex cursor-pointer flex-col gap-1 px-3 py-3 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 ${
+                className={`retro-border flex cursor-pointer flex-row flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3 py-3 text-left transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 sm:flex-col sm:items-start ${
                   selected ? 'bg-accent text-accent-content' : 'bg-base-100'
                 }`}
               >
                 <span className="font-mono text-xs font-black uppercase tracking-widest">
                   {option.label}
                 </span>
-                <span className="font-mono text-[10px] uppercase tracking-[0.15em] opacity-60">
+                <span className="min-w-0 font-mono text-[10px] uppercase tracking-[0.15em] opacity-60">
                   {option.hint}
                 </span>
               </button>

@@ -126,9 +126,12 @@ export function AdminScreen() {
   const largest = Math.max(1, ...(users ?? []).map((account) => account.total_bytes))
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 p-6 sm:p-8">
-      <header className="flex items-start justify-between gap-4">
-        <div>
+    <main className="mx-auto flex min-h-dvh w-full max-w-4xl flex-col gap-4 screen-pad sm:gap-6">
+      {/* `recarregar` + `← voltar` are 176px of buttons next to a title: on a
+          phone they wrapped off the right edge and gave the whole console a
+          sideways scroll. They wrap under the title now. */}
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
           <p className="screen-kicker font-mono text-xs font-bold uppercase tracking-widest text-accent">
             <span className="sigil">{'>'}</span> owner_console
           </p>
@@ -139,7 +142,7 @@ export function AdminScreen() {
             @{user.username} · owner
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 flex-wrap gap-2">
           <RetroIconButton disabled={busy} onClick={() => void refresh()}>
             recarregar
           </RetroIconButton>
@@ -279,11 +282,14 @@ function OverviewPanel({ overview }: { overview: AdminOverview | null }) {
   return (
     <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
       {tiles.map((tile) => (
-        <div key={tile.label} className="stat-tile retro-border bg-base-200 p-3 retro-shadow-sm">
+        <div
+          key={tile.label}
+          className="stat-tile min-w-0 retro-border bg-base-200 p-3 retro-shadow-sm"
+        >
           <p className="stat-label font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
             {tile.label}
           </p>
-          <p className="stat-value mt-1 break-words text-lg font-black tracking-tighter sm:text-xl">
+          <p className="stat-value mt-1 break-words text-base font-black tracking-tighter sm:text-xl">
             {tile.value}
           </p>
           {tile.hint && (
@@ -321,7 +327,7 @@ function AccountRow({
   return (
     <li className="admin-row retro-border bg-base-100 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="admin-handle font-mono text-sm font-black uppercase tracking-widest">
             @{account.username}
             {account.role === 'owner' && (
@@ -349,7 +355,7 @@ function AccountRow({
             {formatDate(account.last_activity_at)}
           </p>
         </div>
-        <div className="text-right">
+        <div className="min-w-0 sm:text-right">
           <p className="font-mono text-sm font-black">{formatBytes(account.total_bytes)}</p>
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
             banco {formatBytes(account.db_bytes)} · bucket {formatBytes(account.media_bytes)}
@@ -465,7 +471,7 @@ function ConversationsPanel({
               key={conversation.id}
               className="admin-row retro-border flex flex-wrap items-center justify-between gap-3 bg-base-100 p-3"
             >
-              <div>
+              <div className="min-w-0">
                 <p className="admin-handle font-mono text-xs font-black uppercase tracking-widest">
                   {conversation.participants.map((p) => `@${p.username}`).join(' ↔ ')}
                 </p>

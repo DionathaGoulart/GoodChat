@@ -32,6 +32,11 @@
 }
 
 @theme {
+  /* The narrow-phone step Tailwind does not ship: 360px devices are still the
+     floor this app is used on, and a couple of header chips need to drop their
+     label there and nowhere else. */
+  --breakpoint-xs: 23rem;
+
   /* Monospace-everywhere is the core of the retro feel — sans is an alias */
   --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -86,6 +91,33 @@
   }
 }
 
+/* --- Screen edges ---
+   Every screen's <main> spends this instead of `p-4 sm:p-8`: the same rhythm,
+   plus whatever the device reserves for a notch, a rounded corner or a home
+   indicator. `viewport-fit=cover` (index.html) is what hands those numbers
+   over; without the max() the insets would eat the padding rather than add
+   to it on the phones that report zero. */
+@utility screen-pad {
+  padding-top: max(1rem, env(safe-area-inset-top));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+
+  @media (width >= 40rem) {
+    padding-top: max(2rem, env(safe-area-inset-top));
+    padding-bottom: max(2rem, env(safe-area-inset-bottom));
+    padding-left: max(2rem, env(safe-area-inset-left));
+    padding-right: max(2rem, env(safe-area-inset-right));
+  }
+
+  /* A phone on its side has ~360px of height for a header, a log and a
+     composer. Vertical padding is the first thing that should give. */
+  @media (height < 30rem) {
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+}
+
 /* Button variants extend daisyUI's btn through its own tokens, so btn keeps
    providing focus/active/disabled behavior (styleguide.md §4, rule 2). The
    metrics below are the retro skin's CTA (styleguides/retro.md §6); the
@@ -94,7 +126,10 @@
   --btn-color: var(--color-accent);
   --btn-fg: var(--color-accent-content);
   --btn-border: var(--color-base-300);
-  --btn-p: 2rem;
+  /* 1rem on a phone: at 2rem the composer's send button ate the row and left
+     the textarea about four characters wide. The CTA that is `w-full`
+     (login) does not notice the difference. */
+  --btn-p: 1rem;
   --size: 3.25rem;
   --fontsize: 0.875rem;
   font-weight: 900;
@@ -102,6 +137,7 @@
   letter-spacing: 0.05em;
 
   @media (width >= 48rem) {
+    --btn-p: 2rem;
     --size: 3.75rem;
     --fontsize: 1rem;
   }
@@ -111,7 +147,7 @@
   --btn-color: transparent;
   --btn-fg: var(--color-base-content);
   --btn-border: var(--color-base-300);
-  --btn-p: 2rem;
+  --btn-p: 1rem;
   --size: 3.25rem;
   --fontsize: 0.875rem;
   font-weight: 900;
@@ -119,6 +155,7 @@
   letter-spacing: 0.05em;
 
   @media (width >= 48rem) {
+    --btn-p: 2rem;
     --size: 3.75rem;
     --fontsize: 1rem;
   }
@@ -177,6 +214,43 @@ body {
 ::selection {
   background: var(--color-accent);
   color: var(--color-accent-content);
+}
+
+/* --- Touch --- */
+
+/*
+ * A finger is not a cursor: the toolbar chips are 10px text in `py-2`, which
+ * lands around 35px tall — under the 44px every touch guideline asks for. The
+ * height is given back only where the pointer is coarse, so the desktop
+ * toolbars keep the compact proportions the skins were drawn at.
+ */
+@media (pointer: coarse) {
+  .icon-btn,
+  .tool-btn {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  /* daisyUI's field is 36px tall at this --size; the search box and the
+     display-name field are both taps, not clicks. */
+  .input {
+    min-height: 2.75rem;
+  }
+}
+
+/*
+ * Safari zooms the page whenever a focused field is under 16px, and every
+ * field here is `text-sm`. Bumping them on phone widths is the only way to
+ * keep tapping the composer from re-scaling the whole screen. Unlayered on
+ * purpose: it has to outrank daisyUI's `.input` and Tailwind's `text-sm`,
+ * both of which live in cascade layers.
+ */
+@media (width < 40rem) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 1rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

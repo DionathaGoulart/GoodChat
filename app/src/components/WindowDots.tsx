@@ -6,9 +6,9 @@
 // (styles/skins.css) — the component itself stays skin-agnostic, which is the
 // rule the whole skin layer rests on.
 
-export function WindowDots() {
+export function WindowDots({ className = '' }: { className?: string }) {
   return (
-    <div className="window-dots flex items-center gap-1.5" aria-hidden="true">
+    <div className={`window-dots flex items-center gap-1.5 ${className}`} aria-hidden="true">
       <span className="size-2.5 rounded-full bg-accent" />
       <span className="size-2.5 rounded-full bg-base-300" />
       <span className="size-2.5 rounded-full bg-base-300" />

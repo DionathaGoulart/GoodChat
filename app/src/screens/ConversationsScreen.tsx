@@ -169,9 +169,12 @@ export function ConversationsScreen() {
   }, [refresh])
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 p-6 sm:p-8">
-      <header className="flex items-start justify-between gap-4">
-        <div>
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 screen-pad sm:gap-6">
+      {/* Wraps rather than squeezes: at 360px the two toolbar chips left the
+          title about 110px, which the terminal skin's prompt and block caret
+          spill out of. Below that width the chips take a row of their own. */}
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
           <p className="screen-kicker font-mono text-xs font-bold uppercase tracking-widest text-accent">
             <span className="sigil">{'>'}</span> conversas
           </p>
@@ -184,7 +187,7 @@ export function ConversationsScreen() {
             </p>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2">
           <RetroIconButton
             onClick={flipTheme}
             aria-label={mode === 'light' ? 'ativar modo escuro' : 'ativar modo claro'}

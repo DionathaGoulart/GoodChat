@@ -23,9 +23,9 @@ export function SettingsScreen() {
   if (!user) return null
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 p-6 sm:p-8">
-      <header className="flex items-start justify-between gap-4">
-        <div>
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 screen-pad sm:gap-6">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
           <p className="screen-kicker font-mono text-xs font-bold uppercase tracking-widest text-accent">
             <span className="sigil">{'>'}</span> configurações
           </p>

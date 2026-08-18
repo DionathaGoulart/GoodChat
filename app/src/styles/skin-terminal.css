@@ -614,6 +614,24 @@
   text-shadow: 0 0 10px currentColor;
 }
 
+/* On a phone the field wraps to a row of its own (components/Composer.tsx), and
+   a prompt left behind on the button row is a prompt in front of nothing — it
+   goes up with the field it introduces. */
+@media (width < 40rem) {
+  [data-skin='terminal'] .composer::before {
+    order: -2;
+    align-self: flex-end;
+    padding-bottom: 0.6rem;
+  }
+
+  /* The field is `basis-full` there, which would push the prompt onto a line of
+     its own. Give back exactly the prompt's width; `flex-1` still spends the
+     rest of the row. */
+  [data-skin='terminal'] .composer-input {
+    flex-basis: calc(100% - 3.5rem);
+  }
+}
+
 [data-skin='terminal'] .composer-input::placeholder {
   color: var(--color-accent);
   opacity: 0.35;

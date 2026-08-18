@@ -92,7 +92,7 @@ export function ThreadScreen({ userId }: { userId: string }) {
 
   if (error) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col items-start gap-4 p-6">
+      <main className="mx-auto flex min-h-dvh w-full max-w-3xl flex-col items-start gap-4 screen-pad">
         <p className="border-2 border-error bg-error/10 p-3 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
           {error}
         </p>
@@ -103,7 +103,7 @@ export function ThreadScreen({ userId }: { userId: string }) {
 
   if (!resolved) {
     return (
-      <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col gap-4 p-4 sm:p-6">
+      <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col gap-4 screen-pad">
         <ThreadSkeleton />
       </main>
     )
@@ -213,10 +213,18 @@ function LiveThread({
         : { text: presenceText(peerState, Date.now()), className: 'opacity-60' }
 
   return (
-    <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col gap-4 p-4 sm:p-6">
-      <header className="thread-bar retro-border flex items-center gap-3 bg-base-200 p-3 retro-shadow-sm">
-        <WindowDots />
-        <RetroIconButton onClick={() => navigate({ name: 'list' })} aria-label="voltar à lista">
+    <main className="mx-auto flex h-dvh w-full max-w-3xl flex-col gap-3 screen-pad sm:gap-4">
+      {/* Six things wanted this row and a phone fits four: the window dots are
+          decoration and go, and the status moves under the handle instead of
+          claiming a column of its own — at 360px it was being pushed off the
+          right edge and taking the retention button with it. */}
+      <header className="thread-bar retro-border flex items-center gap-2 bg-base-200 p-2 retro-shadow-sm sm:gap-3 sm:p-3">
+        <WindowDots className="hidden sm:flex" />
+        <RetroIconButton
+          className="shrink-0"
+          onClick={() => navigate({ name: 'list' })}
+          aria-label="voltar à lista"
+        >
           ←
         </RetroIconButton>
         <PresenceMarker
@@ -229,8 +237,14 @@ function LiveThread({
           <p className="thread-name truncate text-sm font-black uppercase tracking-tight">
             {readonly ? 'conta expirada' : (otherUser.display_name ?? otherUser.username)}
           </p>
-          <p className="truncate font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
-            {readonly ? 'somente leitura' : `@${otherUser.username}`}
+          {/* One line, two candidates, and a 360px header only has room for
+              one: the phone keeps the status, since the handle is either the
+              name already above it or a second spelling of it. */}
+          <p className="flex min-w-0 items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] sm:tracking-[0.2em]">
+            <span className="hidden truncate opacity-60 sm:inline">
+              {readonly ? 'somente leitura' : `@${otherUser.username}`}
+            </span>
+            <span className={`truncate sm:hidden ${status.className}`}>{status.text}</span>
           </p>
         </div>
         <RetroIconButton
@@ -238,10 +252,10 @@ function LiveThread({
           onClick={() => setPickerOpen(true)}
           aria-label={`prazo das mensagens: ${retentionLabel(retentionMs)}`}
         >
-          ⏳ {retentionShort(retentionMs)}
+          ⏳<span className="hidden xs:inline"> {retentionShort(retentionMs)}</span>
         </RetroIconButton>
         <p
-          className={`shrink-0 font-mono text-[8px] uppercase tracking-[0.2em] md:text-[10px] ${status.className}`}
+          className={`hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] sm:block ${status.className}`}
         >
           {status.text}
         </p>

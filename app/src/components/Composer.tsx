@@ -160,8 +160,8 @@ export function Composer({
   return (
     <div className="flex flex-col gap-2">
       {attachment && (
-        <div className="animate-enter retro-border flex items-center gap-3 bg-base-200 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em]">
-          <span className="truncate opacity-60">{attachment.name}</span>
+        <div className="animate-enter retro-border flex flex-wrap items-center gap-x-3 gap-y-1 bg-base-200 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em]">
+          <span className="w-full truncate opacity-60 sm:w-auto sm:flex-1">{attachment.name}</span>
           <span className="shrink-0">
             {attachment.phase === 'processando' && attachment.progress === 0 ? (
               <>
@@ -172,7 +172,7 @@ export function Composer({
             )}
           </span>
           <progress
-            className="progress h-2 w-24 shrink-0"
+            className="progress h-2 w-16 shrink-0 sm:w-24"
             value={attachment.progress > 0 ? attachment.progress : undefined}
             max={1}
           />
@@ -195,8 +195,17 @@ export function Composer({
           comprimido: {savings}
         </p>
       )}
+      {/*
+        Phone layout is two rows: the field takes one of its own and the tools
+        plus the send button share the next. On a single row — which is what
+        every width from `sm` up still gets — three tool buttons and a CTA left
+        the field about four characters wide at 390px, which is not a composer.
+        `basis-full` is what wraps it; the terminal skin trims that basis by the
+        width of its `msg>` prompt (styles/skin-terminal.css) so the prompt
+        rides the same row as the field it introduces.
+      */}
       <form
-        className="composer retro-border flex items-end gap-2 bg-base-200 p-2"
+        className="composer relative retro-border flex flex-wrap items-end gap-2 bg-base-200 p-2 sm:flex-nowrap"
         onSubmit={(event) => {
           event.preventDefault()
           submit()
@@ -218,7 +227,10 @@ export function Composer({
         >
           +
         </button>
-        <div className="dropdown dropdown-top self-stretch">
+        {/* Static on a phone so the popover below anchors to the form (which is
+            `relative`) instead of to this button: a 88vw picker hung off a
+            button sitting a third of the way in ran past the right edge. */}
+        <div className="dropdown dropdown-top static self-stretch sm:relative">
           <button
             type="button"
             aria-label="abrir emojis"
@@ -229,12 +241,12 @@ export function Composer({
           </button>
           <div
             tabIndex={0}
-            className="dropdown-content z-10 mb-3 retro-border bg-base-100 retro-shadow"
+            className="dropdown-content left-0 z-10 mb-3 retro-border bg-base-100 retro-shadow sm:left-auto"
           >
             {emojiOpened && <EmojiPicker onPick={insertEmoji} />}
           </div>
         </div>
-        <div className="dropdown dropdown-top self-stretch">
+        <div className="dropdown dropdown-top static self-stretch sm:relative">
           <button
             type="button"
             aria-label="abrir stickers"
@@ -245,14 +257,14 @@ export function Composer({
           </button>
           <div
             tabIndex={0}
-            className="dropdown-content z-10 mb-3 w-64 retro-border bg-base-100 retro-shadow"
+            className="dropdown-content left-0 z-10 mb-3 w-64 retro-border bg-base-100 retro-shadow sm:left-auto"
           >
             {stickersOpened && <StickerPicker onPick={pickSticker} />}
           </div>
         </div>
         <textarea
           ref={textareaRef}
-          className="composer-input max-h-32 min-h-11 flex-1 resize-none bg-transparent p-2 font-mono text-sm outline-none [field-sizing:content] placeholder:uppercase placeholder:tracking-widest placeholder:opacity-40"
+          className="composer-input -order-1 max-h-32 min-h-11 w-full flex-1 basis-full resize-none bg-transparent p-2 font-mono text-sm outline-none [field-sizing:content] placeholder:uppercase placeholder:tracking-widest placeholder:opacity-40 sm:order-none sm:w-auto sm:basis-0"
           placeholder="mensagem_"
           rows={1}
           maxLength={MAX_BODY_LENGTH}
@@ -263,7 +275,7 @@ export function Composer({
         <button
           type="submit"
           disabled={!canSend}
-          className="btn btn-goodchat retro-shadow-sm transition-all duration-300 hover:-translate-y-1 hover:retro-shadow active:translate-y-0 disabled:opacity-40"
+          className="btn btn-goodchat ml-auto retro-shadow-sm transition-all duration-300 hover:-translate-y-1 hover:retro-shadow active:translate-y-0 disabled:opacity-40 sm:ml-0"
         >
           Enviar
         </button>

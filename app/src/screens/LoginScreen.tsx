@@ -70,7 +70,7 @@ export function LoginScreen() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-6">
+    <main className="flex min-h-dvh items-center justify-center screen-pad">
       <div className="animate-enter w-full max-w-md">
         <p className="screen-kicker mb-3 font-mono text-xs font-bold uppercase tracking-widest text-accent">
           <span className="sigil">{'>'}</span> goodchat_login

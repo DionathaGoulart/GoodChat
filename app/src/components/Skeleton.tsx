@@ -117,7 +117,7 @@ export function MessagesSkeleton() {
  */
 export function BootSkeleton() {
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 p-6 sm:p-8">
+    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 screen-pad sm:gap-6">
       <Loading label="carregando goodchat">
         <header className="flex items-start justify-between gap-4">
           <div className="flex-1">

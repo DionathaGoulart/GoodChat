@@ -154,7 +154,7 @@ export function MessageBubble({
     return (
       <div
         {...data}
-        className={`msg msg-sticker animate-enter flex max-w-[80%] flex-col ${
+        className={`msg msg-sticker animate-enter flex max-w-[85%] flex-col sm:max-w-[80%] ${
           mine ? 'items-end self-end' : 'items-start self-start'
         }`}
       >
@@ -168,7 +168,7 @@ export function MessageBubble({
   return (
     <div
       {...data}
-      className={`msg animate-enter max-w-[80%] p-3 retro-border retro-shadow-sm sm:max-w-[70%] ${
+      className={`msg animate-enter max-w-[85%] p-3 retro-border retro-shadow-sm sm:max-w-[70%] ${
         mine ? 'self-end bg-accent text-accent-content' : 'self-start bg-base-200'
       }`}
     >
