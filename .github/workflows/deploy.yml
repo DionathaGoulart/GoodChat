@@ -69,6 +69,13 @@ jobs:
       - name: Typecheck worker
         run: npm run typecheck --prefix worker
 
+      # An icon is never imported, so nothing here would ever fail on a broken
+      # one: the favicon shipped as invalid XML (a "--" inside its comment, which
+      # XML forbids) and browsers silently fell back to the PWA icon for weeks.
+      # xmllint is on the runner image already.
+      - name: Validate icons
+        run: xmllint --noout app/public/*.svg
+
       # wrangler deploy uploads ../app/dist as the assets directory, so the
       # SPA has to be built before it runs — this is what was stale in
       # production while the Worker code itself was current.

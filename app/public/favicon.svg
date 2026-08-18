@@ -2,8 +2,12 @@
      Same pixel-art family as icon.svg (cream plate, ink frame, crimson glyph,
      everything on a 28px grid) so the tab does not look like a different app.
      Literal hex, like the other icons: an SVG served as a file cannot read the
-     CSS custom properties in src/styles/palettes.css. Values are --palette-cream,
-     --palette-ink and --palette-crimson.
+     CSS custom properties in src/styles/palettes.css. The values are the ones
+     that file calls palette-cream, palette-ink and palette-crimson — written
+     here without their leading dashes on purpose: this is an XML comment, and
+     XML forbids a double hyphen inside one. Spelling the custom properties in
+     full made the whole file a parse error, so the tab fell back to the PWA
+     icon (the speech bubble) and this artwork never rendered anywhere.
      The PWA icons stay in icon.svg / icon-*.png — this one is only the tab. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" shape-rendering="crispEdges">
   <rect width="240" height="240" fill="#f2efe7"/>
