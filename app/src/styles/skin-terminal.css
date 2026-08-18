@@ -129,7 +129,8 @@
   caret-color: var(--color-accent);
 }
 
-[data-skin='terminal'] :focus-visible {
+[data-skin='terminal'] :focus-visible,
+[data-skin='terminal'] .input:has(> input:focus-visible) {
   outline-style: dashed;
   outline-offset: 1px;
 }

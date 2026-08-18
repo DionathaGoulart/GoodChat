@@ -211,6 +211,23 @@ body {
   outline-offset: 2px;
 }
 
+/*
+ * daisyUI's `.input` is also a wrapper: the search box is a <label class="input">
+ * holding a prefix and the field. The ring belongs to the frame, not to the text
+ * box inside it — left on the inner input it draws around the typing area alone
+ * and leaves the `>` and the field's own padding outside the highlight.
+ * daisyUI already suppresses the inner outline, but from a cascade layer, and
+ * the rule above is unlayered — so it has to be said again here.
+ */
+.input:has(> input:focus-visible) {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.input > input:focus-visible {
+  outline: none;
+}
+
 ::selection {
   background: var(--color-accent);
   color: var(--color-accent-content);
