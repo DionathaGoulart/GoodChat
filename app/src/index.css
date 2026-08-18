@@ -206,9 +206,19 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/*
+ * One ring, drawn once. The dash and the tighter offset the terminal skin wants
+ * arrive as tokens (styles/skins.css) rather than as a second, skin-scoped
+ * `:focus-visible` rule — a rule that only had to be *more* specific to win,
+ * which is a fight the suppression below has to keep winning too. The minifier
+ * settles that fight the wrong way: it folds sibling selectors into `:is()`,
+ * and `:is()` takes the specificity of its most specific branch, so the skin's
+ * bare `:focus-visible` inherits the weight of the `:has()` next to it and
+ * outranks the suppression in the production build only.
+ */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+  outline: 2px var(--focus-ring-style) var(--color-accent);
+  outline-offset: var(--focus-ring-offset);
 }
 
 /*
@@ -220,8 +230,8 @@ body {
  * the rule above is unlayered — so it has to be said again here.
  */
 .input:has(> input:focus-visible) {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+  outline: 2px var(--focus-ring-style) var(--color-accent);
+  outline-offset: var(--focus-ring-offset);
 }
 
 .input > input:focus-visible {

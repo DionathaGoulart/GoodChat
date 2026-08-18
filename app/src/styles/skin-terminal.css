@@ -122,17 +122,13 @@
   }
 }
 
-/* Typed input belongs to the machine: the caret is phosphor, and focus is a
-   dashed ring rather than the retro skin's solid one. */
+/* Typed input belongs to the machine: the caret is phosphor. The focus ring is
+   dashed here too, but that arrives through the `--focus-ring-*` tokens in
+   skins.css — see the note over `:focus-visible` in index.css for why this file
+   must not restate the ring as a rule of its own. */
 [data-skin='terminal'] input,
 [data-skin='terminal'] textarea {
   caret-color: var(--color-accent);
-}
-
-[data-skin='terminal'] :focus-visible,
-[data-skin='terminal'] .input:has(> input:focus-visible) {
-  outline-style: dashed;
-  outline-offset: 1px;
 }
 
 /*
