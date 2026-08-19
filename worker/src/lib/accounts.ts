@@ -31,8 +31,7 @@
 
 import { hashPassword } from './password'
 import { destroyConversation } from './purge'
-import { deleteObjects, mediaConfig } from './media'
-import { forgetKeys } from './mediaIndex'
+import { deleteMediaObjects } from './mediaGc'
 
 /** Defaults for the TEMP_* vars (wrangler.jsonc), used when they are unset. */
 const DEFAULT_TTL_HOURS = 5
@@ -209,12 +208,7 @@ async function deletePersonalUploads(env: Env, userId: string): Promise<number> 
     .bind(userId)
     .all<{ key: string }>()
   if (results.length === 0) return 0
-
-  const config = mediaConfig(env)
-  if (!config) return 0
-  const deleted = await deleteObjects(config, results.map((row) => row.key))
-  await forgetKeys(env.DB, deleted)
-  return deleted.length
+  return deleteMediaObjects(env, results.map((row) => row.key))
 }
 
 /**

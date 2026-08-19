@@ -2,7 +2,6 @@ import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import {
   AVATAR_MIMES,
-  DOWNLOAD_MAX_AGE_SECONDS,
   MAX_AVATAR_BYTES,
   MAX_BYTES,
   MEDIA_PATH_PREFIX,
@@ -11,11 +10,14 @@ import {
   avatarObjectKey,
   fetchObject,
   isAvatarKey,
+  isMessageMediaKey,
   isValidObjectKey,
+  maxAgeFor,
   mediaConfig,
   objectKey,
   presignUpload,
 } from '../lib/media'
+import { mediaCacheKey } from '../lib/mediaGc'
 import { findObject, recordUpload } from '../lib/mediaIndex'
 import { HOUR_MS, UPLOAD_QUOTA_PER_HOUR, consumeQuota } from '../lib/ratelimit'
 import { requireSession, sessionHeaders, type AuthContext } from '../lib/session'
@@ -159,10 +161,15 @@ export async function serveMedia(
   const range = request.headers.get('Range')
   const cache = caches.default
   // Ranged reads are never cached (partial bodies); the full object is.
-  const cacheKey = new Request(url.toString(), { method: 'GET' })
+  //
+  // Keyed by the object key, never by the incoming URL: `?v=2` or a
+  // percent-encoded path would otherwise mint a second entry for the same
+  // bytes that no eviction could ever find (lib/mediaGc.ts builds the same
+  // key when the object is deleted).
+  const cacheKey = mediaCacheKey(url.origin, key)
   if (!range) {
     const hit = await cache.match(cacheKey)
-    if (hit) return clientResponse(hit, setCookie?.['Set-Cookie'])
+    if (hit) return clientResponse(hit, key, setCookie?.['Set-Cookie'])
   }
 
   const upstream = await fetchObject(config, key, range)
@@ -181,12 +188,14 @@ export async function serveMedia(
 
   const response = new Response(upstream.body, { status: upstream.status, headers })
   if (!range && upstream.status === 200) {
-    // The edge copy is shared: public caching, and never a Set-Cookie.
+    // The edge copy is shared: public caching, and never a Set-Cookie. Its TTL
+    // is capped at the shortest retention window for message media, so the
+    // copy cannot outlive the message even if an eviction is ever missed.
     const cacheable = response.clone()
-    cacheable.headers.set('Cache-Control', `public, max-age=${DOWNLOAD_MAX_AGE_SECONDS}, immutable`)
+    cacheable.headers.set('Cache-Control', `public, max-age=${maxAgeFor(key)}, immutable`)
     ctx.waitUntil(cache.put(cacheKey, cacheable))
   }
-  return clientResponse(response, setCookie?.['Set-Cookie'])
+  return clientResponse(response, key, setCookie?.['Set-Cookie'])
 }
 
 /**
@@ -201,21 +210,27 @@ export async function serveMedia(
  *   conversation would blank the avatar exactly where it is needed. An avatar
  *   object nobody adopted stays private to its uploader — an upload that never
  *   became a picture must not become a shared file drop.
- * - An object with no index row predates migration 0003. `MEDIA_LEGACY_READS`
- *   decides what happens to those: "allow" (default) keeps the old rule — any
- *   session plus an unguessable uuid key — so existing threads keep rendering;
- *   "deny" closes it. Run `POST /api/admin/media/reindex` once to backfill the
- *   index from the Durable Objects, then flip it to "deny".
+ * - An object with no index row is either an upload that predates migration
+ *   0003 or — far more often now — an object that was *deleted*: every delete
+ *   path drops the index row with the bytes (lib/mediaGc.ts). So "no row" is
+ *   never enough on its own:
+ *     · `media/…` is refused outright. A message attachment always has a row
+ *       from the moment it was presigned, so a missing one means retention (or
+ *       a purge) already took it, and the legacy door would hand it back.
+ *     · `avatars/…` is refused for the same reason — the prefix is three
+ *       migrations younger than the index, so it can have no legacy objects.
+ *     · anything else falls to `MEDIA_LEGACY_READS`, which must be set to
+ *       "allow" explicitly. Run `POST /api/admin/media/reindex` once to
+ *       backfill the index from the Durable Objects before closing it.
  */
 async function canRead(env: Env, auth: AuthContext, key: string): Promise<boolean> {
   if (key.startsWith(STICKER_PREFIX)) return true
 
   const row = await findObject(env.DB, key)
-  // Avatars are three migrations younger than the index, so an `avatars/` key
-  // with no row is not legacy — it is a picture that was deleted (the row goes
-  // with the object). Letting it through the legacy door would keep serving a
-  // removed profile picture out of the edge cache.
-  if (!row) return isAvatarKey(key) ? false : env.MEDIA_LEGACY_READS !== 'deny'
+  if (!row) {
+    if (isAvatarKey(key) || isMessageMediaKey(key)) return false
+    return env.MEDIA_LEGACY_READS === 'allow'
+  }
   if (row.user_id === auth.user.id) return true
   if (isAvatarKey(key)) return row.claimed_at !== null
   if (!row.conversation_id) return false
@@ -229,25 +244,14 @@ async function canRead(env: Env, auth: AuthContext, key: string): Promise<boolea
 }
 
 /**
- * Drops the edge copy of one object. Objects are cached as immutable for a
- * year, so a key that stops meaning what it meant — a deleted avatar, an object
- * a reindex could resurrect — has to be evicted explicitly. Same key shape
- * serveMedia stores: keys are URL-safe by construction (isValidObjectKey), so
- * the path needs no encoding.
+ * Browser-facing copy: private caching (per user) plus any session refresh.
+ * Same ceiling as the edge copy — the disk cache of the recipient's browser is
+ * one more place a deleted photo could survive, and nothing evicts it from
+ * here. Keys are uuids, so a short max-age never causes a false cache miss.
  */
-export async function forgetCachedObject(origin: string, key: string): Promise<void> {
-  try {
-    await caches.default.delete(new Request(`${origin}${MEDIA_PATH_PREFIX}${key}`, { method: 'GET' }))
-  } catch (error) {
-    // Eviction is an optimisation: authorization already refuses the key.
-    console.error('media cache eviction failed', error)
-  }
-}
-
-/** Browser-facing copy: private caching (per user) plus any session refresh. */
-function clientResponse(response: Response, cookie: string | undefined): Response {
+function clientResponse(response: Response, key: string, cookie: string | undefined): Response {
   const headers = new Headers(response.headers)
-  headers.set('Cache-Control', `private, max-age=${DOWNLOAD_MAX_AGE_SECONDS}, immutable`)
+  headers.set('Cache-Control', `private, max-age=${maxAgeFor(key)}, immutable`)
   if (cookie) headers.set('Set-Cookie', cookie)
   return new Response(response.body, { status: response.status, headers })
 }

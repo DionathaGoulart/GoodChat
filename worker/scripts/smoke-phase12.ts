@@ -115,6 +115,10 @@ console.log('\n— the window')
 
 // Two windows back: old enough that no rounding can call it online.
 const stale = Date.now() - ONLINE_WINDOW_MS * 2
+// Every presence surface publishes the timestamp rounded down to the minute
+// (lib/presence.ts): the boolean is what the interface renders, and the raw
+// value would let anyone poll an activity graph of any account.
+const staleReported = Math.floor(stale / 60_000) * 60_000
 d1Execute(`UPDATE users SET last_seen_at = ${stale} WHERE username = ${sqlString(BOB.username)};`)
 
 const afterStale = await api('/api/presence', {
@@ -123,9 +127,9 @@ const afterStale = await api('/api/presence', {
   body: JSON.stringify({ ids: [bobId] }),
 })
 check(
-  'a beat older than the window reads as offline',
+  'a beat older than the window reads as offline, at minute granularity',
   afterStale.body?.users?.[0]?.online === false &&
-    afterStale.body?.users?.[0]?.last_seen_at === stale,
+    afterStale.body?.users?.[0]?.last_seen_at === staleReported,
   afterStale.body,
 )
 
@@ -133,7 +137,7 @@ const staleLookup = await api(`/api/users/lookup?q=${BOB.username}`, { cookie: a
 check(
   'search results carry presence',
   staleLookup.body?.users?.[0]?.online === false &&
-    staleLookup.body?.users?.[0]?.last_seen_at === stale,
+    staleLookup.body?.users?.[0]?.last_seen_at === staleReported,
   staleLookup.body?.users?.[0],
 )
 
@@ -144,7 +148,8 @@ const resolved = await api('/api/conversations/resolve', {
 })
 check(
   'resolve carries the peer presence',
-  resolved.body?.other_user?.online === false && resolved.body?.other_user?.last_seen_at === stale,
+  resolved.body?.other_user?.online === false &&
+    resolved.body?.other_user?.last_seen_at === staleReported,
   resolved.body?.other_user,
 )
 

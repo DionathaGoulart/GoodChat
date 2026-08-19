@@ -52,6 +52,13 @@ export interface SessionUser extends PublicUser {
   theme_dark: string | null
   /** Skin id from lib/skins.ts; null means the catalog default. */
   skin: string | null
+  /**
+   * How much of a message may show up in a device notification: 'generic'
+   * (sender only) or 'full' (a 120-character preview). null means "never
+   * chose" and reads as 'generic' — a notification outlives the message it
+   * previews, so the private option is the default.
+   */
+  push_preview: string | null
   /** Guest account: it and its data are deleted at `expires_at`. */
   is_temp: boolean
   expires_at: number | null
@@ -154,16 +161,20 @@ export function me(): Promise<{ user: SessionUser }> {
   return call('/api/auth/me')
 }
 
+export type PushPreview = 'generic' | 'full'
+
 /**
- * Account-level appearance. All four values travel together — the appearance
- * screen always knows the whole set, and a full write keeps the worker free of
- * read-modify-write. `theme_mode: null` means "follow the system".
+ * Account-level preferences. The four appearance values travel together — the
+ * appearance screen always knows the whole set, and a full write keeps the
+ * worker free of read-modify-write. `theme_mode: null` means "follow the
+ * system"; `push_preview` is left alone when omitted.
  */
 export function updateSettings(prefs: {
   mode: ThemeMode | null
   light: string
   dark: string
   skin: string
+  pushPreview?: PushPreview
 }): Promise<{ user: SessionUser }> {
   return call('/api/settings', {
     method: 'PATCH',
@@ -172,6 +183,7 @@ export function updateSettings(prefs: {
       theme_light: prefs.light,
       theme_dark: prefs.dark,
       skin: prefs.skin,
+      ...(prefs.pushPreview ? { push_preview: prefs.pushPreview } : {}),
     }),
   })
 }
@@ -398,6 +410,24 @@ export function adminCleanup(): Promise<CleanupReport> {
 
 export function adminReindexMedia(): Promise<{ ok: boolean; indexed: number }> {
   return call('/api/admin/media/reindex', { method: 'POST' })
+}
+
+/** One owner action (migration 0011). Reads leave no row — only changes do. */
+export interface AuditEntry {
+  id: string
+  actor_id: string
+  actor_name: string
+  /** 'user.password_reset', 'user.delete', 'conversation.purge', … */
+  action: string
+  target_id: string | null
+  target_name: string | null
+  /** JSON object as a string; never message content or credentials. */
+  details: string | null
+  created_at: number
+}
+
+export function adminAudit(): Promise<{ entries: AuditEntry[] }> {
+  return call('/api/admin/audit')
 }
 
 /** ws(s):// endpoint for a conversation (cookie rides the handshake). */

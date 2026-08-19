@@ -15,6 +15,12 @@
 // painted on. It is optional in the body — a client that does not send it keeps
 // whatever the account already has, and the session row this route already
 // holds supplies that value without a second read.
+//
+// `push_preview` (migration 0010) rides along for the same reason the theme
+// does: it is a property of the person, not of the browser. It decides how much
+// of a message may be printed in a device notification — the one copy of a
+// message that outlives the retention window, because the notification centre
+// has no window of its own (lib/push.ts). Optional here too, same rule.
 
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
@@ -48,6 +54,8 @@ export const DARK_THEMES = [
  */
 export const SKINS = ['retro', 'terminal'] as const
 
+export const PUSH_PREVIEWS = ['generic', 'full'] as const
+
 const SettingsSchema = z.object({
   // null is a real value here: "follow the operating system".
   theme_mode: z.enum(['light', 'dark']).nullable(),
@@ -55,6 +63,8 @@ const SettingsSchema = z.object({
   theme_dark: z.enum(DARK_THEMES),
   // Absent means "leave it alone"; null means "back to the default skin".
   skin: z.enum(SKINS).nullish(),
+  // Same rule; null means "back to the default preview", which is 'generic'.
+  push_preview: z.enum(PUSH_PREVIEWS).nullish(),
 })
 
 export async function updateSettings(request: Request, env: Env): Promise<Response> {
@@ -72,20 +82,33 @@ export async function updateSettings(request: Request, env: Env): Promise<Respon
     return apiError(
       'invalid_request',
       400,
-      `theme_mode must be null, "light" or "dark"; theme_light one of ${LIGHT_THEMES.join(', ')}; theme_dark one of ${DARK_THEMES.join(', ')}; skin one of ${SKINS.join(', ')}`,
+      `theme_mode must be null, "light" or "dark"; theme_light one of ${LIGHT_THEMES.join(', ')}; theme_dark one of ${DARK_THEMES.join(', ')}; skin one of ${SKINS.join(', ')}; push_preview one of ${PUSH_PREVIEWS.join(', ')}`,
     )
   }
 
   const { theme_mode, theme_light, theme_dark } = parsed.data
   const skin = parsed.data.skin === undefined ? auth.user.skin : parsed.data.skin
+  const pushPreview =
+    parsed.data.push_preview === undefined ? auth.user.push_preview : parsed.data.push_preview
   await env.DB.prepare(
-    'UPDATE users SET theme_mode = ?, theme_light = ?, theme_dark = ?, skin = ? WHERE id = ?',
+    `UPDATE users SET theme_mode = ?, theme_light = ?, theme_dark = ?, skin = ?,
+                      push_preview = ?
+     WHERE id = ?`,
   )
-    .bind(theme_mode, theme_light, theme_dark, skin, auth.user.id)
+    .bind(theme_mode, theme_light, theme_dark, skin, pushPreview, auth.user.id)
     .run()
 
   return json(
-    { user: { ...auth.user, theme_mode, theme_light, theme_dark, skin } },
+    {
+      user: {
+        ...auth.user,
+        theme_mode,
+        theme_light,
+        theme_dark,
+        skin,
+        push_preview: pushPreview,
+      },
+    },
     200,
     sessionHeaders(auth),
   )

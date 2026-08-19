@@ -8,13 +8,13 @@
 //   - destroy: nobody is left to read the thread. The DO wipes its own storage,
 //              the D1 row goes, and the bucket objects go with it.
 //
-// Both delete bucket objects before forgetting index rows: a failed DELETE
-// leaves the row behind so the next sweep retries it, instead of leaking an
-// object nothing remembers.
+// Both delete through lib/mediaGc.ts, which takes the bucket object, its index
+// row and the edge copy in that order: a failed DELETE leaves the row behind so
+// the next sweep retries it, instead of leaking an object nothing remembers —
+// and no cached copy of a purged photo is left servable at the same URL.
 
 import { getAgentByName } from 'agents'
-import { deleteObjects, mediaConfig } from './media'
-import { forgetKeys } from './mediaIndex'
+import { deleteMediaObjects } from './mediaGc'
 
 export interface ConversationPurgeResult {
   messages_deleted: number
@@ -61,12 +61,7 @@ async function deleteConversationMedia(
     .all<{ key: string }>()
   for (const row of results) keys.add(row.key)
 
-  const config = mediaConfig(env)
-  if (!config || keys.size === 0) return 0
-
-  const deleted = await deleteObjects(config, [...keys])
-  await forgetKeys(env.DB, deleted)
-  return deleted.length
+  return deleteMediaObjects(env, [...keys])
 }
 
 /**

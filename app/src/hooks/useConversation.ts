@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { wsUrl } from '../lib/api'
+import { dismissNotifications } from '../lib/push'
 import { readCachedMessages, writeCachedMessages } from '../lib/threadCache'
 import {
   ServerEventSchema,
@@ -269,6 +270,9 @@ export function useConversation(
           return
         case 'messages_expired':
           dispatch({ type: 'expired', ids: event.ids })
+          // The push notification for this thread previewed messages that no
+          // longer exist; the notification centre has no window of its own.
+          dismissNotifications(conversationId)
           return
         case 'error':
           console.warn('ws error frame', event.error, event.message)

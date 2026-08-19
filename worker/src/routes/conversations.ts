@@ -2,7 +2,7 @@ import { getAgentByName } from 'agents'
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import { conversationIdFor } from '../lib/conversation'
-import { isOnline } from '../lib/presence'
+import { coarseLastSeen, isOnline } from '../lib/presence'
 import {
   PUBLIC_USER_COLUMNS,
   requireSession,
@@ -75,7 +75,7 @@ export async function listConversations(request: Request, env: Env): Promise<Res
       display_name: row.other_display_name,
       avatar_key: row.other_avatar_key,
       created_at: row.other_created_at,
-      last_seen_at: row.other_last_seen_at,
+      last_seen_at: coarseLastSeen(row.other_last_seen_at),
       // A tombstone is not offline, it is gone — the tile says so instead.
       online: row.other_deleted_at === null && isOnline(row.other_last_seen_at, now),
       // The thread survives its owner: the client renders it read-only.
@@ -145,6 +145,7 @@ export async function resolveConversation(request: Request, env: Env): Promise<R
       other_user: {
         ...publicUser,
         online: !deleted && isOnline(publicUser.last_seen_at, Date.now()),
+        last_seen_at: coarseLastSeen(publicUser.last_seen_at),
         deleted,
       } satisfies PublicUser,
       readonly: deleted,

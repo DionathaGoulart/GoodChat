@@ -166,6 +166,7 @@ Non-secrets can live in `wrangler.jsonc` (committable):
 
 ```jsonc
 "vars": {
+  "PUBLIC_ORIGIN": "https://chat.example.com",
   "B2_BUCKET_NAME": "goodchat-media",
   "B2_S3_ENDPOINT": "https://s3.us-west-004.backblazeb2.com",
   "VAPID_PUBLIC_KEY": "<public key from step 3>",
@@ -176,7 +177,7 @@ Non-secrets can live in `wrangler.jsonc` (committable):
   "TEMP_ACCOUNTS_MAX": "100",
   "TEMP_ACCOUNTS_PER_IP_HOUR": "3",
   "MEDIA_RETENTION_DAYS": "0",
-  "MEDIA_LEGACY_READS": "allow",
+  "MEDIA_LEGACY_READS": "deny",
   "DO_STORAGE_LIMIT_GB": "5",
   "B2_STORAGE_LIMIT_GB": "10"
 }
@@ -184,6 +185,13 @@ Non-secrets can live in `wrangler.jsonc` (committable):
 
 The ones that change behaviour:
 
+- `PUBLIC_ORIGIN` — the origin this Worker answers on, exactly as deployed
+  (the `routes` entry above). Deleting a media object also evicts the copy the
+  Worker wrote to the Cloudflare edge cache, and the two places that delete
+  without an incoming request — the Durable Object's retention alarm and the
+  hourly cron — have no other way to build that cache key. A wrong value costs
+  only the eviction: reads of a deleted key are refused anyway, and a cached
+  message attachment expires on its own within the shortest retention window.
 - `ALLOWED_ORIGINS` — extra browser origins allowed to call the API with
   credentials, comma-separated. Empty in production: the SPA is same-origin.
   The Worker's own origin is always allowed; anything else is refused.
@@ -199,12 +207,15 @@ The ones that change behaviour:
   deleting someone's photos on a timer is a product decision. Bubbles whose
   object is gone render a "mídia indisponível" placeholder.
 - `MEDIA_LEGACY_READS` — how to treat objects with no row in `media_objects`
-  (anything uploaded before migration 0003). `"allow"` keeps the old rule
-  (any valid session plus an unguessable key) so existing threads keep
-  rendering. After deploying, run `POST /api/admin/media/reindex` from the
-  owner console once, check that `indexed_media_bytes` matches
-  `bucket_bytes` in the overview, then set this to `"deny"` and redeploy —
-  media reads then require conversation membership, with no exceptions.
+  (anything uploaded before migration 0003). Only `"allow"` opens the old rule
+  (any valid session plus an unguessable key); anything else, unset included,
+  refuses them, and that is the default. `media/` and `avatars/` keys are
+  refused either way — both are indexed at presign time, so a missing row
+  means the object was deleted, and serving it would hand back a message
+  retention already took. An instance carrying pre-0003 objects should run
+  `POST /api/admin/media/reindex` from the owner console once and check that
+  `indexed_media_bytes` matches `bucket_bytes` in the overview before
+  deploying with the flag closed.
 - `DO_STORAGE_LIMIT_GB` / `B2_STORAGE_LIMIT_GB` — the totals the owner console
   shows next to each storage number (`1.2 gb / 10 gb`, plus the share of the
   ceiling). Defaults are the free tiers, 5 and 10. Display only: no upload or
@@ -223,8 +234,10 @@ counters, tears down guest accounts past their expiry (keeping the threads
 whose other side is a permanent account), collects tombstones nothing
 references anymore, deletes uploads no message ever referenced (24h grace),
 backstops per-conversation message retention (PRD §3.9 — the Durable Objects
-do this on their own alarms; the sweep catches a lost one and any bucket
-object whose delete failed), and applies the instance-wide media cap when
+do this on their own alarms; the sweep catches a lost one by scanning
+`conversations.next_expiry_at`, so a thread that is still active does not sit
+on already-expired messages, plus any bucket object whose delete failed), and
+applies the instance-wide media cap when
 `MEDIA_RETENTION_DAYS` is set. The owner console can trigger the same work on
 demand.
 

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
-import { isOnline } from '../lib/presence'
+import { coarseLastSeen, isOnline } from '../lib/presence'
 import { PUBLIC_USER_COLUMNS, requireSession, sessionHeaders, type PublicUser } from '../lib/session'
 
 // User discovery (PRD §3.2): exact/prefix match on @username only.
@@ -44,7 +44,12 @@ export async function lookupUsers(request: Request, env: Env, url: URL): Promise
   // Search results carry presence too: knowing whether someone is around is
   // part of deciding to message them.
   const now = Date.now()
-  const users = results.map((row) => ({ ...row, online: isOnline(row.last_seen_at, now) }))
+  const users = results.map((row) => ({
+    ...row,
+    online: isOnline(row.last_seen_at, now),
+    // Reported at minute granularity, like every other presence surface.
+    last_seen_at: coarseLastSeen(row.last_seen_at),
+  }))
 
   return json({ users }, 200, sessionHeaders(auth))
 }

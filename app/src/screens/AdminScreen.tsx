@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import * as api from '../lib/api'
-import type { AdminConversation, AdminOverview, AdminUser } from '../lib/api'
+import type { AdminConversation, AdminOverview, AdminUser, AuditEntry } from '../lib/api'
 import { ApiError } from '../lib/api'
 import { useSession } from '../hooks/useSession'
 import { Modal } from '../components/Modal'
@@ -69,6 +69,7 @@ export function AdminScreen() {
   const [overview, setOverview] = useState<AdminOverview | null>(null)
   const [users, setUsers] = useState<AdminUser[] | null>(null)
   const [conversations, setConversations] = useState<AdminConversation[] | null>(null)
+  const [audit, setAudit] = useState<AuditEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -77,11 +78,17 @@ export function AdminScreen() {
 
   const refresh = useCallback(() => {
     setError(null)
-    return Promise.all([api.adminOverview(), api.adminUsers(), api.adminConversations()])
-      .then(([overviewResult, usersResult, conversationsResult]) => {
+    return Promise.all([
+      api.adminOverview(),
+      api.adminUsers(),
+      api.adminConversations(),
+      api.adminAudit(),
+    ])
+      .then(([overviewResult, usersResult, conversationsResult, auditResult]) => {
         setOverview(overviewResult)
         setUsers(usersResult.users)
         setConversations(conversationsResult.conversations)
+        setAudit(auditResult.entries)
       })
       .catch((err: unknown) => {
         // 403 means this account is not an owner. Nothing on this screen is
@@ -202,6 +209,8 @@ export function AdminScreen() {
         busy={busy}
         onAction={setPending}
       />
+
+      <AuditPanel entries={audit} />
 
       <MaintenancePanel busy={busy} overview={overview} onPerform={perform} />
 
@@ -504,6 +513,91 @@ function ConversationsPanel({
               </RetroIconButton>
             </li>
           ))}
+        </ul>
+      )}
+    </Panel>
+  )
+}
+
+/** What each audit code means, in the console's language. */
+const AUDIT_LABELS: Record<string, string> = {
+  'user.create': 'criou a conta',
+  'user.update': 'editou a conta',
+  'user.password_reset': 'redefiniu a senha de',
+  'user.delete': 'apagou a conta',
+  'user.purge_history': 'apagou o histórico de',
+  'conversation.purge': 'apagou a conversa',
+  'media.reindex': 'reindexou a mídia',
+  'maintenance.cleanup': 'rodou a limpeza',
+}
+
+function formatMoment(ms: number): string {
+  return new Date(ms).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/**
+ * The trail (migration 0011). It exists because the powers on this screen are
+ * real: resetting a password hands an account over, and until this table there
+ * was no way to tell afterwards that it happened — to the person it happened
+ * to, or to the owner whose session might have been the one stolen.
+ */
+function AuditPanel({ entries }: { entries: AuditEntry[] | null }) {
+  return (
+    <Panel title="auditoria.log">
+      <div>
+        <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+          <span className="sigil">{'>'}</span> auditoria
+        </h2>
+        <p className="mt-1 text-sm opacity-70">
+          Toda ação de owner que muda alguma coisa fica registrada aqui. Consultas não.
+        </p>
+      </div>
+
+      {entries === null ? (
+        <CardListSkeleton label="carregando auditoria" rows={3} />
+      ) : entries.length === 0 ? (
+        <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
+          nenhuma ação registrada ainda
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {entries.map((entry) => {
+            const target = entry.target_name ?? entry.target_id
+            return (
+              <li
+                key={entry.id}
+                className="retro-border bg-base-100 px-3 py-2 text-sm"
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                  <span className="min-w-0 break-words">
+                    <strong className="font-black">@{entry.actor_name}</strong>{' '}
+                    {AUDIT_LABELS[entry.action] ?? entry.action}
+                    {target && (
+                      <>
+                        {' '}
+                        <span className="font-mono text-xs opacity-80">
+                          {entry.target_name ? `@${target}` : target}
+                        </span>
+                      </>
+                    )}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
+                    {formatMoment(entry.created_at)}
+                  </span>
+                </div>
+                {entry.details && (
+                  <p className="mt-1 break-words font-mono text-[10px] leading-relaxed opacity-45">
+                    {entry.details}
+                  </p>
+                )}
+              </li>
+            )
+          })}
         </ul>
       )}
     </Panel>

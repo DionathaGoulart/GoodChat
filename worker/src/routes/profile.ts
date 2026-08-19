@@ -27,7 +27,7 @@ import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import { deleteObject, isAvatarKey, isValidObjectKey, mediaConfig } from '../lib/media'
 import { findObject, forgetKeys } from '../lib/mediaIndex'
-import { forgetCachedObject } from './media'
+import { forgetCachedObject } from '../lib/mediaGc'
 import { requireSession, sessionHeaders } from '../lib/session'
 
 export const MAX_DISPLAY_NAME_LENGTH = 64

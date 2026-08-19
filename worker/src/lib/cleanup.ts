@@ -23,15 +23,18 @@
 //      window (migration 0008) has passed. The Durable Object deletes its own
 //      objects the moment a message expires; this catches what a failed DELETE
 //      left behind, and what belongs to a conversation nobody opens anymore;
-//   8. conversation retention, message half — pokes the conversations whose
-//      newest message is already past their window so they empty themselves
-//      even if their alarm was lost. `swept_at` keeps the same idle threads
-//      from being poked again on every tick.
+//   8. conversation retention, message half — pokes the conversations that
+//      hold at least one expired message so they empty themselves even if their
+//      alarm was lost. `next_expiry_at` (migration 0009, mirrored by the DO) is
+//      what makes "at least one" answerable from D1; `swept_at` keeps the same
+//      idle threads from being poked again on every tick.
 
 import { getAgentByName } from 'agents'
 import { sweepExpiredTempAccounts, sweepOrphanTombstones } from './accounts'
-import { deleteObjects, mediaConfig } from './media'
-import { UNCLAIMED_TTL_MS, forgetKeys } from './mediaIndex'
+import { mediaConfig } from './media'
+import { deleteMediaObjects } from './mediaGc'
+import { UNCLAIMED_TTL_MS } from './mediaIndex'
+import { LOGIN_TRUST_TTL_MS, TRUSTED_KEY_PREFIX } from './ratelimit'
 
 /** Objects deleted per run, per job. Bounds both CPU time and B2 calls. */
 const MAX_DELETES_PER_RUN = 200
@@ -82,8 +85,15 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
     .run()
   report.sessions_deleted = sessions.meta.changes ?? 0
 
-  const attempts = await env.DB.prepare('DELETE FROM login_attempts WHERE window_start <= ?')
-    .bind(now - LOGIN_ATTEMPT_TTL_MS)
+  // Two clocks in one table: failure counters die in an hour, while the rows
+  // that vouch for an address the account has signed in from before (see
+  // lib/ratelimit.ts) are meant to last, and expire on their own TTL.
+  const attempts = await env.DB.prepare(
+    `DELETE FROM login_attempts
+     WHERE (key NOT LIKE ?1 AND window_start <= ?2)
+        OR (key LIKE ?1 AND window_start <= ?3)`,
+  )
+    .bind(`${TRUSTED_KEY_PREFIX}%`, now - LOGIN_ATTEMPT_TTL_MS, now - LOGIN_TRUST_TTL_MS)
     .run()
   report.login_attempts_deleted = attempts.meta.changes ?? 0
 
@@ -138,22 +148,34 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
 }
 
 /**
- * Wakes the conversations whose whole history is already past their window and
- * asks each one to run its own sweep — the DO is the only thing that can delete
- * its messages, and it is also what tells any live socket they are gone.
+ * Wakes the conversations that hold at least one expired message and asks each
+ * one to run its own sweep — the DO is the only thing that can delete its
+ * messages, and it is also what tells any live socket they are gone.
  *
- * Only fully-expired conversations are selected: a thread that is still being
- * used has an alarm armed for its oldest message, and poking it would be
- * redundant. `swept_at` is written after a successful pass so an idle thread
- * costs one round trip, not one per tick.
+ * The selection is per *message*, not per conversation: a thread whose alarm
+ * was lost (the DO logs `expiry schedule failed` and carries on) keeps taking
+ * new messages, and a rule based on `last_message_at` would hold its oldest
+ * ones alive until the newest one aged out — nearly twice the promised window
+ * on a busy thread. `next_expiry_at` is the DO's own mirror of when its oldest
+ * surviving message ages out, so `next_expiry_at <= now` means exactly "there
+ * is something here to delete".
+ *
+ * Conversations that predate migration 0009 have no mirror yet: the old
+ * whole-history rule still catches them, and the first sweep writes the column.
+ *
+ * `swept_at` is written after a successful pass so an idle thread costs one
+ * round trip, not one per tick.
  */
 async function sweepExpiredConversations(env: Env, now: number): Promise<number> {
   const { results } = await env.DB.prepare(
     `SELECT id FROM conversations
      WHERE last_message_at IS NOT NULL
-       AND last_message_at <= ?1 - retention_ms
-       AND (swept_at IS NULL OR swept_at < last_message_at)
-     ORDER BY last_message_at LIMIT ?2`,
+       AND (swept_at IS NULL OR swept_at < last_message_at OR swept_at < next_expiry_at)
+       AND (
+         (next_expiry_at IS NOT NULL AND next_expiry_at <= ?1)
+         OR (next_expiry_at IS NULL AND last_message_at <= ?1 - retention_ms)
+       )
+     ORDER BY COALESCE(next_expiry_at, last_message_at) LIMIT ?2`,
   )
     .bind(now, MAX_CONVERSATIONS_PER_RUN)
     .all<{ id: string }>()
@@ -178,19 +200,15 @@ async function sweepExpiredConversations(env: Env, now: number): Promise<number>
 
 /**
  * Deletes the objects a query selects, then forgets exactly the keys the
- * bucket confirmed. A key whose DELETE failed stays indexed so the next run
- * retries it — dropping the row first would leak the object forever.
+ * bucket confirmed — index row and edge copy alike (lib/mediaGc.ts). A key
+ * whose DELETE failed stays indexed so the next run retries it: dropping the
+ * row first would leak the object forever.
  */
 async function sweep(env: Env, query: string, bindings: unknown[]): Promise<number> {
-  const config = mediaConfig(env)
-  if (!config) return 0
-
   const { results } = await env.DB.prepare(query)
     .bind(...bindings)
     .all<{ key: string }>()
   if (results.length === 0) return 0
 
-  const deleted = await deleteObjects(config, results.map((row) => row.key))
-  await forgetKeys(env.DB, deleted)
-  return deleted.length
+  return deleteMediaObjects(env, results.map((row) => row.key))
 }

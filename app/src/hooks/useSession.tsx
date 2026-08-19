@@ -7,15 +7,24 @@
 // screens render their own skeletons for the data they still have to fetch. The
 // /api/auth/me answer then replaces it, or sends us to the login screen if the
 // cookie is gone. Without a copy, `status` starts at 'loading' as before.
+//
+// "The cookie is gone" and "there is no network" are different answers, and only
+// the first one is a reason to drop the local copies. A failed fetch (status 0,
+// `network_error`) leaves the session where it was: with a cached account the
+// app stays usable offline — which is the point of a PWA — and revalidation is
+// retried when the browser says the connection is back. Without one there is
+// nothing to show either way, so it falls through to the login screen. Only a
+// real 401/403 forgets anything.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import * as api from '../lib/api'
-import type { SessionUser } from '../lib/api'
+import type { PushPreview, SessionUser } from '../lib/api'
+import { ApiError } from '../lib/api'
 import { clearCachedAccount, readCachedAccount, writeCachedAccount } from '../lib/accountCache'
 import { clearCachedConversations } from '../lib/conversationsCache'
 import { clearDrafts } from '../lib/drafts'
-import { clearCachedThreads } from '../lib/threadCache'
+import { clearCachedThreads, pruneCachedMessages } from '../lib/threadCache'
 import { startHeartbeat } from '../lib/presence'
 import { disablePush } from '../lib/push'
 import { skinOr } from '../lib/skins'
@@ -44,6 +53,12 @@ interface SessionContextValue {
   setTheme: (prefs: ThemePrefs) => Promise<void>
   /** Persists display name and/or profile picture key on the account. */
   setProfile: (patch: { display_name?: string | null; avatar_key?: string | null }) => Promise<void>
+  /**
+   * How much of a message this account allows in a push notification. Stored on
+   * the account, not the browser: the notification lands on whichever device
+   * holds a subscription, and the choice is about the person, not the tab.
+   */
+  setPushPreview: (preview: PushPreview) => Promise<void>
 }
 
 /** The account row, as the theme module wants it. */
@@ -92,27 +107,56 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
-    api
-      .me()
-      .then(({ user }) => {
-        if (cancelled) return
-        adopt(user)
-        setStatus('authenticated')
-      })
-      .catch(() => {
-        if (cancelled) return
-        // The cookie is gone or was never there: the local copy is worthless.
-        forgetLocalState()
-        setUser(null)
-        setStatus('anonymous')
-      })
-      .finally(() => {
-        if (!cancelled) setRevalidating(false)
-      })
+    let retryOnline: (() => void) | null = null
+
+    const revalidate = () => {
+      api
+        .me()
+        .then(({ user }) => {
+          if (cancelled) return
+          adopt(user)
+          setStatus('authenticated')
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return
+          // Offline is not a verdict on the session: the request never reached
+          // the worker, so the cookie may well still be good. Keep the local
+          // copy, stay signed in, and ask again when the network is back.
+          const unreachable = error instanceof ApiError && error.status === 0
+          if (unreachable && cached) {
+            const onOnline = () => {
+              retryOnline = null
+              revalidate()
+            }
+            retryOnline = onOnline
+            addEventListener('online', onOnline, { once: true })
+            return
+          }
+          // A real 401/403 — or no local copy to fall back on: the cookie is
+          // gone or was never there, and the copies are worthless.
+          forgetLocalState()
+          setUser(null)
+          setStatus('anonymous')
+        })
+        .finally(() => {
+          if (!cancelled) setRevalidating(false)
+        })
+    }
+
+    revalidate()
     return () => {
       cancelled = true
+      if (retryOnline) removeEventListener('online', retryOnline)
     }
-  }, [adopt])
+  }, [adopt, cached])
+
+  // The retention window applies to the local copies too, and the read/write
+  // pruning in lib/threadCache.ts only ever reaches the thread being opened.
+  // One pass over every bucket per boot covers the threads nobody opens again.
+  useEffect(() => {
+    if (status !== 'authenticated' || !user) return
+    pruneCachedMessages(user.id)
+  }, [status, user])
 
   // Presence is a property of the session, not of any screen: while somebody is
   // signed in this tab beats (lib/presence.ts), which is what makes them show
@@ -176,6 +220,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     await api.updateSettings(prefs)
   }, [])
 
+  const setPushPreview = useCallback(
+    async (preview: PushPreview) => {
+      // The route writes the whole appearance set on every call, so the current
+      // values ride along unchanged — there is no read-modify-write server side.
+      const current = user
+      if (!current) return
+      const { user: next } = await api.updateSettings({
+        ...prefsOf(current),
+        pushPreview: preview,
+      })
+      adopt(next)
+    },
+    [adopt, user],
+  )
+
   const setProfile = useCallback(
     async (patch: { display_name?: string | null; avatar_key?: string | null }) => {
       // Not optimistic: the worker is the one that decides whether the avatar
@@ -199,6 +258,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       logout,
       setTheme,
       setProfile,
+      setPushPreview,
     }),
     [
       status,
@@ -211,6 +271,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       logout,
       setTheme,
       setProfile,
+      setPushPreview,
     ],
   )
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>

@@ -8,7 +8,7 @@
 
 import { getAgentByName } from 'agents'
 import { conversationIdFor } from '../lib/conversation'
-import { apiError } from '../lib/http'
+import { apiError, isAllowedOrigin } from '../lib/http'
 import { requireSession } from '../lib/session'
 
 const CONVERSATION_ID_RE = /^[0-9a-f]{32}$/
@@ -20,6 +20,18 @@ export async function connectConversation(
 ): Promise<Response> {
   if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
     return apiError('invalid_request', 426, 'websocket upgrade required')
+  }
+
+  // The one authenticated surface CORS never sees: a handshake is not a
+  // cross-origin *fetch*, so nothing above applies the allowlist to it. The
+  // cookie is SameSite=Strict, which browsers do enforce on handshakes too, so
+  // this closes no hole that is open today — it removes the trap that is armed
+  // for the day SameSite has to change. A missing Origin is not refused: only
+  // browsers are required to send one, and a non-browser client could forge it
+  // anyway (the smoke-test scripts connect with `ws`, without an Origin).
+  const origin = request.headers.get('Origin')
+  if (origin && !isAllowedOrigin(origin, url.origin, env)) {
+    return apiError('forbidden', 403, 'origin not allowed')
   }
 
   // Browsers send cookies on WS handshakes — same session middleware works.

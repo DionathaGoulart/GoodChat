@@ -38,6 +38,12 @@ export interface SessionUser {
    * the default skin, the same way it resolves a null palette.
    */
   skin: string | null
+  /**
+   * How much of a message this account allows in a device notification
+   * (migration 0010): 'generic' | 'full'. null means "never chose", which
+   * lib/push.ts resolves to the private default.
+   */
+  push_preview: string | null
   /** Guest account (migration 0004): dies at `expires_at`, taking its data. */
   is_temp: boolean
   /** When this account stops existing; null for permanent accounts. */
@@ -131,7 +137,7 @@ export async function requireSession(
       `SELECT s.created_at AS session_created_at, s.expires_at AS session_expires_at,
               u.id, u.username, u.display_name, u.avatar_key, u.created_at,
               u.role, u.theme_mode, u.theme_light, u.theme_dark, u.skin,
-              u.is_temp, u.expires_at AS account_expires_at
+              u.push_preview, u.is_temp, u.expires_at AS account_expires_at
        FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ?1
          AND u.disabled_at IS NULL
@@ -152,6 +158,7 @@ export async function requireSession(
       theme_light: string | null
       theme_dark: string | null
       skin: string | null
+      push_preview: string | null
       is_temp: number
       account_expires_at: number | null
     }>()
@@ -175,6 +182,7 @@ export async function requireSession(
       theme_light: row.theme_light,
       theme_dark: row.theme_dark,
       skin: row.skin,
+      push_preview: row.push_preview,
       is_temp: row.is_temp === 1,
       expires_at: row.account_expires_at,
     },

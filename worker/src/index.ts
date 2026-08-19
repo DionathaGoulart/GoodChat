@@ -6,6 +6,7 @@ import {
   deleteAccount,
   listAccounts,
   listAllConversations,
+  listAuditLog,
   overview,
   purgeAccountHistory,
   purgeConversation,
@@ -40,6 +41,7 @@ async function routeAdmin(
   const [resource, id, action] = adminSegments(pathname)
 
   if (resource === 'overview' && !id && method === 'GET') return overview(request, env)
+  if (resource === 'audit' && !id && method === 'GET') return listAuditLog(request, env)
   if (resource === 'cleanup' && !id && method === 'POST') return runCleanupNow(request, env)
   if (resource === 'media' && id === 'reindex' && method === 'POST') return reindexMedia(request, env)
 

@@ -10,6 +10,7 @@
 // so proxying costs Worker requests but no bandwidth.
 
 import { AwsClient } from 'aws4fetch'
+import { RETENTION_OPTIONS_MS } from '../protocol'
 
 export const MEDIA_TYPES: Record<string, { kind: 'image' | 'video'; ext: string }> = {
   'image/jpeg': { kind: 'image', ext: 'jpg' },
@@ -41,8 +42,32 @@ export const UPLOAD_URL_TTL_SECONDS = 600
 /** Objects are immutable (uuid keys, versioned sticker packs) — cache hard. */
 export const DOWNLOAD_MAX_AGE_SECONDS = 31_536_000
 
+/**
+ * ...except a message attachment, which is not immutable, it is *temporary*:
+ * retention deletes it, and a cached copy that outlives the message is the
+ * promise broken (PRD §3.9). The ceiling is the shortest window a conversation
+ * can choose, so no cached copy can survive its own message — eviction on
+ * delete (lib/mediaGc.ts) is then an optimisation rather than the only defence.
+ *
+ * Stickers and profile pictures keep the year: neither is history, and both are
+ * evicted explicitly when they change or go away.
+ */
+export const MEDIA_MAX_AGE_SECONDS = Math.floor(Math.min(...RETENTION_OPTIONS_MS) / 1000)
+
 /** Path prefix the Worker serves objects from, and the only keys it accepts. */
 export const MEDIA_PATH_PREFIX = '/api/media/'
+
+/** Message attachments — the only prefix retention deletes. */
+export const MESSAGE_MEDIA_PREFIX = 'media/'
+
+export function isMessageMediaKey(key: string): boolean {
+  return key.startsWith(MESSAGE_MEDIA_PREFIX)
+}
+
+/** How long a copy of this object may be kept, edge and browser alike. */
+export function maxAgeFor(key: string): number {
+  return isMessageMediaKey(key) ? MEDIA_MAX_AGE_SECONDS : DOWNLOAD_MAX_AGE_SECONDS
+}
 
 /**
  * Avatars live under their own prefix because every rule that applies to them

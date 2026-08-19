@@ -91,8 +91,52 @@ export async function notifyUser(
   )
 }
 
-/** PT-BR notification preview for a message, mirroring the list previews. */
-export function previewFor(msgType: MessageType, body: string): string {
+/**
+ * How much of a message may appear in a device notification (migration 0010).
+ *
+ * The push transport itself is end-to-end encrypted (RFC 8291 — the push
+ * service cannot read the payload), but the notification's final destination is
+ * the operating system's notification centre, which has no retention window: a
+ * preview shown there survives the message it previews, on a lock screen,
+ * indefinitely. So the recipient chooses, and "generic" is the default — the
+ * product's whole premise is that the text does not stick around.
+ */
+export type PushPreview = 'generic' | 'full'
+
+export const DEFAULT_PUSH_PREVIEW: PushPreview = 'generic'
+
+export function pushPreviewOr(value: unknown): PushPreview {
+  return value === 'full' ? 'full' : DEFAULT_PUSH_PREVIEW
+}
+
+/** The recipient's choice. Unknown account or unset column reads as generic. */
+export async function previewPreferenceOf(
+  db: D1Database,
+  userId: string,
+): Promise<PushPreview> {
+  try {
+    const row = await db
+      .prepare('SELECT push_preview FROM users WHERE id = ?')
+      .bind(userId)
+      .first<{ push_preview: string | null }>()
+    return pushPreviewOr(row?.push_preview)
+  } catch (error) {
+    console.warn('push preview lookup failed', error instanceof Error ? error.message : error)
+    return DEFAULT_PUSH_PREVIEW
+  }
+}
+
+/**
+ * PT-BR notification preview for a message, mirroring the list previews.
+ * `preview: 'generic'` never reveals content — the title already carries the
+ * sender's @username, which is the part that makes the notification useful.
+ */
+export function previewFor(
+  msgType: MessageType,
+  body: string,
+  preview: PushPreview = DEFAULT_PUSH_PREVIEW,
+): string {
+  if (preview === 'generic') return 'te mandou uma mensagem'
   switch (msgType) {
     case 'text':
     case 'emoji': {

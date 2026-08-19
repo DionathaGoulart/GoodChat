@@ -26,7 +26,11 @@ export function corsHeaders(
   return headers
 }
 
-function isAllowedOrigin(origin: string, selfOrigin: string, env: Env): boolean {
+/**
+ * Exported because the WebSocket handshake needs the same answer (routes/ws.ts)
+ * and there must be exactly one list.
+ */
+export function isAllowedOrigin(origin: string, selfOrigin: string, env: Env): boolean {
   if (origin === selfOrigin) return true
   const configured = env.ALLOWED_ORIGINS?.split(',')
     .map((value) => value.trim().replace(/\/$/, ''))

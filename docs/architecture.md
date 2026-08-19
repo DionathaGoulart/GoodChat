@@ -36,8 +36,8 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/auth/login`             | no   | Session cookie from username/password  |
 | POST   | `/api/auth/temp`              | no   | Guest account (expires) + session, credentials returned once |
 | POST   | `/api/auth/logout`            | no   | Revoke session (idempotent)            |
-| GET    | `/api/auth/me`                | yes  | Current user (includes `role`, the three theme fields and `skin`) |
-| PATCH  | `/api/settings`               | yes  | Appearance (`theme_mode`, `theme_light`, `theme_dark` per call; `skin` optional, absent keeps the stored one) |
+| GET    | `/api/auth/me`                | yes  | Current user (includes `role`, the three theme fields, `skin` and `push_preview`) |
+| PATCH  | `/api/settings`               | yes  | Appearance (`theme_mode`, `theme_light`, `theme_dark` per call; `skin` and `push_preview` optional, absent keeps the stored one) |
 | POST   | `/api/presence`               | yes  | Heartbeat: marks the caller online and answers with the state of the ids in the body |
 | PATCH  | `/api/profile`                | yes  | Own display name and/or picture (`display_name`, `avatar_key` — both optional, `null` clears) |
 | GET    | `/api/users/lookup?q=`        | yes  | Prefix search by username              |
@@ -64,6 +64,7 @@ Owner console — every route additionally requires `role = 'owner'`:
 | POST   | `/api/admin/conversations/:id/purge`     | Wipe one thread for both sides             |
 | POST   | `/api/admin/cleanup`                     | Run the maintenance sweep now              |
 | POST   | `/api/admin/media/reindex`               | Backfill the media index from the DOs      |
+| GET    | `/api/admin/audit`                       | The owner action trail (newest first)      |
 
 CORS is an allowlist: an Origin is echoed (with `Allow-Credentials`, which
 forbids the wildcard) only when it is the Worker's own origin or appears in
@@ -202,7 +203,7 @@ Three layers, so the promise does not depend on anyone being connected:
 | ----- | ------------ | -------------- |
 | Alarm (`expireTick`, one schedule at a time) | The moment the oldest message ages out | The normal case, including conversations nobody has open |
 | Sweep on wake (`onStart`) and on connect | Every time the object runs code | Any request being served — no answer may contain a message past the window |
-| Cron backstop (`lib/cleanup.ts`) | Every scheduled tick, bounded | Conversations whose whole history is past the window (a lost alarm), and bucket objects whose delete failed. `conversations.swept_at` keeps idle threads from being poked twice |
+| Cron backstop (`lib/cleanup.ts`) | Every scheduled tick, bounded | Conversations holding *any* expired message (a lost alarm), and bucket objects whose delete failed. It scans `conversations.next_expiry_at` — the DO's mirror of when its oldest surviving message ages out — so a busy thread does not keep its old messages until the newest one expires; `swept_at` keeps idle threads from being poked twice |
 
 Shortening is applied immediately, not only at the next deadline: the DO
 sweeps the history the moment a shorter window lands, which is the entire
@@ -212,8 +213,18 @@ an open thread drops them without a reload.
 Clients enforce it too, since a tab can be offline while a message expires:
 the thread filters what it paints against the window, and the local copies
 (`threadCache`, the conversation-list previews) drop anything past it on both
-read and write. The one place a deleted message could survive is a cache, and
-that is closed by construction.
+read and write — plus one pass over every cached thread at boot, since read
+and write only ever reach the conversation being opened.
+
+Caches are the interesting part, because a cache is a copy with a clock of its
+own. Four of them, all bounded:
+
+| Copy | Bounded by |
+| ---- | ---------- |
+| `caches.default` (edge, shared) | `max-age` capped at the shortest window (3h) for `media/` keys, plus explicit eviction on every delete path (`lib/mediaGc.ts`) |
+| Browser HTTP cache | The same ceiling on the `private` copy |
+| `localStorage` (`threadCache`) | Window filter on read, on write, and once per boot |
+| The device's notification centre | The push preview is generic by default, and the service worker closes a thread's notifications when `messages_expired` arrives |
 
 ### Media pipeline
 
@@ -240,9 +251,24 @@ that is closed by construction.
    `GET /api/media/<key>` checks the session, checks membership, signs a GET
    against B2 and streams the object back, forwarding `Range` so video
    seeking keeps working. Successful full responses are stored in the
-   Cloudflare edge cache (`caches.default`, immutable), so a repeated view
-   costs one Worker request and no B2 read. B2 → Cloudflare egress is free
-   (Bandwidth Alliance), so the proxy adds no bandwidth cost.
+   Cloudflare edge cache (`caches.default`), so a repeated view costs one
+   Worker request and no B2 read. B2 → Cloudflare egress is free (Bandwidth
+   Alliance), so the proxy adds no bandwidth cost.
+
+   The cache key is built from the *object key*, not from the request URL:
+   `?v=2` or a percent-encoded path would otherwise mint entries that no
+   eviction could find. A `media/` object is cached for the shortest
+   retention window rather than a year — it is temporary, not immutable —
+   while `stickers/` and `avatars/` keep the year.
+8. Deleting an object means deleting all three copies of it, in one place
+   (`lib/mediaGc.ts`): the bucket object, the index row, then the edge copy.
+   Every path goes through it — the DO's retention sweep, the conversation
+   purge, the account teardown and the cron. The two that have no incoming
+   request take the origin from `PUBLIC_ORIGIN`.
+9. An object with no index row is refused under `media/` and `avatars/`: both
+   prefixes are indexed at presign time, so a missing row means the object was
+   deleted, not that it predates the index. `MEDIA_LEGACY_READS=allow` opens
+   that door for older prefixes only, and is closed by default.
 
 Profile pictures ride the same pipeline with different rules at every step:
 
@@ -330,6 +356,14 @@ fetches the manifest once and renders stickers without bubble chrome.
   preview as body, the thread URL, and the conversation id as both the
   notification tag (device-side collapse) and the push topic (queue-side
   collapse while the device is offline).
+- How much of the message goes in that body is the *recipient's* choice
+  (`users.push_preview`, set from the settings screen), and the default is
+  `generic` — "@alice te mandou uma mensagem". The transport is encrypted end
+  to end and the push service reads nothing, but the notification's
+  destination is the device's notification centre, which has no retention
+  window: a preview shown there outlives the message it previews. For the
+  same reason the page tells the service worker to close a thread's
+  notifications the moment `messages_expired` arrives.
 - Gone subscriptions (404/410 from the push service) are pruned; transient
   errors are logged and the row is kept.
 - The service worker displays the notification and focuses or opens the
@@ -407,12 +441,13 @@ D1 (metadata):
 
 | Table                | Purpose                                             |
 | -------------------- | --------------------------------------------------- |
-| `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `skin`, `last_seen_at`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
+| `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `skin`, `push_preview`, `last_seen_at`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
-| `conversations`      | Deterministic id, ordered pair, last_message_at, `retention_ms` (mirror of the DO's window), `swept_at` |
-| `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads) |
+| `conversations`      | Deterministic id, ordered pair, last_message_at, `retention_ms` (mirror of the DO's window), `next_expiry_at` (mirror of its oldest message's deadline), `swept_at` |
+| `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads), plus the hashed "this address has signed in to this account" rows that exempt a known address from the account lockout |
 | `push_subscriptions` | Endpoint (PK), user, p256dh, auth                   |
 | `media_objects`      | Every presigned object: uploader, conversation, mime, size, claim timestamp |
+| `admin_audit`        | One row per mutating owner action: actor, action, target, details, timestamp |
 
 Durable Object SQLite (per conversation):
 
@@ -420,7 +455,7 @@ Durable Object SQLite (per conversation):
 | -------------- | -------------------------------------------------------- |
 | `messages`     | id, client_id, sender, type, body, media_key, status     |
 | `participants` | The pinned user pair, defense in depth for connections   |
-| `settings`     | The retention window, and the id of the expiry alarm     |
+| `settings`     | The retention window, the id of the expiry alarm, and what the D1 mirrors were last known to hold |
 
 ## Roles
 
@@ -441,6 +476,15 @@ search, and nobody can open a thread with it.
 asking for an account to disappear destroys every thread it took part in,
 the other participants' copies included. The guest expiry is the careful one
 and keeps those threads — see "Temporary (guest) accounts".
+
+Every mutating admin call writes a row to `admin_audit` (actor, action,
+target, timestamp, a small JSON detail — never content or credentials), shown
+in the console newest first; reads write nothing. The reason is the one power
+that is not otherwise visible: an owner can reset a non-owner's password and
+sign in as them, and what the account holder sees is being signed out, which
+looks like an expired session. So the reset is also pushed to that account as
+a notification, and the trail makes a stolen owner session distinguishable
+from the owner working.
 
 The console reports storage from two sides, because they are two different
 systems: message payload comes from each conversation's DO (attributed to
@@ -471,7 +515,17 @@ Setting either to `0` drops the total and shows plain usage again.
   (persisted messages 20 burst / 2 per second, typing and receipts 40 / 8).
   A client that keeps hammering past 20 consecutive refusals is
   disconnected rather than answered.
-- Media reads require conversation membership, not just a valid session.
+- Media reads require conversation membership, not just a valid session, and
+  a key whose index row is gone is refused rather than treated as legacy.
+- The WebSocket handshake checks `Origin` against the same allowlist CORS
+  uses. `SameSite=Strict` already covers it in every current browser; this
+  removes the trap armed for the day that has to change.
+- Presence timestamps are published rounded down to the minute: the endpoint
+  answers for any account id, and the raw value would let anyone poll an
+  activity graph of anyone.
+- An address that has signed in successfully to an account is exempt from
+  that account's failure lockout (its own per-IP limit still applies), so a
+  discoverable username cannot be used to keep its owner locked out.
 - Session tokens and push endpoints are treated as secrets: hashed at rest
   or excluded from logs.
 

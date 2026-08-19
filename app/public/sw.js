@@ -19,6 +19,12 @@
 // Push: displays the worker's NotificationPayload shape
 // ({ title, body, url, tag } — see worker/src/lib/push.ts). Click focuses an
 // existing window and navigates to the conversation, or opens a new one.
+//
+// A notification is also the one copy of a message that outlives the app: it
+// sits in the system's notification centre, which knows nothing about the
+// conversation's retention window. So the page asks this worker to close a
+// thread's notifications the moment the server says those messages expired
+// (app/src/lib/push.ts → 'close-notifications').
 
 const CACHE = 'goodchat-v1'
 // Valid JS either way: the build swaps this expression for the array literal,
@@ -103,6 +109,19 @@ self.addEventListener('push', (event) => {
       icon: '/icon-192.png',
       data: { url: data.url },
     }),
+  )
+})
+
+self.addEventListener('message', (event) => {
+  const data = event.data
+  if (!data || data.type !== 'close-notifications' || typeof data.tag !== 'string') return
+  event.waitUntil(
+    self.registration
+      .getNotifications({ tag: data.tag })
+      .then((notifications) => {
+        for (const notification of notifications) notification.close()
+      })
+      .catch(() => undefined),
   )
 })
 

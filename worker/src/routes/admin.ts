@@ -14,16 +14,23 @@
 //
 // Destructive endpoints delete bucket objects before forgetting index rows, so
 // a failed delete is retried by the next sweep instead of leaking.
+//
+// Every mutating call also writes one row to `admin_audit` (migration 0011) and
+// the account whose password an owner resets is told about it by push. The
+// power here is intentional; using it silently is not.
 
 import { getAgentByName } from 'agents'
 import { z } from 'zod'
 import type { ConversationStats } from '../agent'
 import { sweepOrphanTombstones } from '../lib/accounts'
+import { recentAdminActions, recordAdminAction } from '../lib/audit'
 import { runCleanup } from '../lib/cleanup'
 import { apiError, json } from '../lib/http'
-import { deleteObjects, listObjects, mediaConfig } from '../lib/media'
-import { forgetKeys, keysForUser, usageByUser } from '../lib/mediaIndex'
+import { listObjects, mediaConfig } from '../lib/media'
+import { deleteMediaObjects } from '../lib/mediaGc'
+import { keysForUser, usageByUser } from '../lib/mediaIndex'
 import { hashPassword } from '../lib/password'
+import { notifyUser } from '../lib/push'
 import { destroyConversation, purgeConversationHistory } from '../lib/purge'
 import {
   requireSession,
@@ -291,6 +298,12 @@ export async function createAccount(request: Request, env: Env): Promise<Respons
     )
     .run()
 
+  await recordAdminAction(env.DB, {
+    actor: owner.auth.user,
+    action: 'user.create',
+    target: { id, username },
+  })
+
   return json({ id, username }, 201, sessionHeaders(owner.auth))
 }
 
@@ -355,6 +368,32 @@ export async function updateAccount(
     await revokeAllSessions(env.DB, target.id)
   }
 
+  await recordAdminAction(env.DB, {
+    actor: owner.auth.user,
+    // The password reset gets its own code: it is the one edit that hands
+    // somebody else's account over, and a console filter on "who was taken
+    // over" should not have to read a details blob to find it.
+    action: parsed.password !== undefined ? 'user.password_reset' : 'user.update',
+    target,
+    details: {
+      fields: Object.keys(parsed).sort(),
+      ...(parsed.disabled !== undefined ? { disabled: parsed.disabled } : {}),
+      ...(parsed.role !== undefined ? { role: parsed.role } : {}),
+    },
+  })
+
+  // What the account owner would otherwise see is being signed out, which
+  // reads as an expired session rather than as somebody else holding their
+  // credentials. Skipped when an owner resets its own password.
+  if (parsed.password !== undefined && target.id !== owner.auth.user.id) {
+    await notifyUser(env, target.id, {
+      title: 'GoodChat',
+      body: `a senha da sua conta foi redefinida por @${owner.auth.user.username}`,
+      url: '/#/config',
+      tag: 'account-security',
+    })
+  }
+
   return json({ ok: true }, 200, sessionHeaders(owner.auth))
 }
 
@@ -400,17 +439,23 @@ export async function deleteAccount(
   // Whatever the conversations did not cover: uploads that never became a
   // message, and objects from threads purged earlier.
   const ownKeys = await keysForUser(env.DB, target.id)
-  const config = mediaConfig(env)
-  if (config && ownKeys.length > 0) {
-    const deleted = await deleteObjects(config, ownKeys)
-    await forgetKeys(env.DB, deleted)
-    totals.media_deleted += deleted.length
-  }
+  totals.media_deleted += await deleteMediaObjects(
+    env,
+    ownKeys,
+    new URL(request.url).origin,
+  )
 
   await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(target.id).run()
   // The peers of the destroyed threads may have been tombstones kept alive
   // only by them.
   const tombstonesRemoved = await sweepOrphanTombstones(env, 50)
+
+  await recordAdminAction(env.DB, {
+    actor: owner.auth.user,
+    action: 'user.delete',
+    target,
+    details: { ...totals, tombstones_removed: tombstonesRemoved },
+  })
 
   return json(
     { ok: true, ...totals, tombstones_removed: tombstonesRemoved },
@@ -432,6 +477,12 @@ export async function purgeAccountHistory(
   if (target instanceof Response) return target
 
   const result = await purgeUserHistory(env, target.id)
+  await recordAdminAction(env.DB, {
+    actor: owner.auth.user,
+    action: 'user.purge_history',
+    target,
+    details: result as unknown as Record<string, unknown>,
+  })
   return json({ ok: true, ...result }, 200, sessionHeaders(owner.auth))
 }
 
@@ -453,6 +504,12 @@ export async function purgeConversation(
   if (!exists) return apiError('not_found', 404)
 
   const result = await purgeConversationHistory(env, conversationId)
+  await recordAdminAction(env.DB, {
+    actor: owner.auth.user,
+    action: 'conversation.purge',
+    target: { id: conversationId },
+    details: result as unknown as Record<string, unknown>,
+  })
   return json({ ok: true, ...result }, 200, sessionHeaders(owner.auth))
 }
 
@@ -462,7 +519,20 @@ export async function purgeConversation(
 export async function runCleanupNow(request: Request, env: Env): Promise<Response> {
   const owner = await requireOwner(request, env)
   if (owner instanceof Response) return owner
-  return json(await runCleanup(env), 200, sessionHeaders(owner.auth))
+  const report = await runCleanup(env)
+  await recordAdminAction(env.DB, {
+    actor: owner.auth.user,
+    action: 'maintenance.cleanup',
+    details: report as unknown as Record<string, unknown>,
+  })
+  return json(report, 200, sessionHeaders(owner.auth))
+}
+
+/** GET /api/admin/audit — the trail itself (migration 0011). */
+export async function listAuditLog(request: Request, env: Env): Promise<Response> {
+  const owner = await requireOwner(request, env)
+  if (owner instanceof Response) return owner
+  return json({ entries: await recentAdminActions(env.DB) }, 200, sessionHeaders(owner.auth))
 }
 
 /**
@@ -501,6 +571,12 @@ export async function reindexMedia(request: Request, env: Env): Promise<Response
       indexed += 1
     }
   }
+
+  await recordAdminAction(env.DB, {
+    actor: owner.auth.user,
+    action: 'media.reindex',
+    details: { indexed },
+  })
 
   return json({ ok: true, indexed }, 200, sessionHeaders(owner.auth))
 }

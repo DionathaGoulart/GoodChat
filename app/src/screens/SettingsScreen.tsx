@@ -8,6 +8,8 @@
 // Push opt-in moved here from the conversation-list header: it is a setting,
 // and the header was collecting toolbar buttons.
 
+import { useState } from 'react'
+import type { PushPreview } from '../lib/api'
 import { usePush } from '../hooks/usePush'
 import { useSession } from '../hooks/useSession'
 import { Panel } from '../components/Panel'
@@ -17,10 +19,23 @@ import { TempAccountBanner } from '../components/TempAccount'
 import { navigate } from '../lib/router'
 
 export function SettingsScreen() {
-  const { user, logout, isOwner } = useSession()
+  const { user, logout, isOwner, setPushPreview } = useSession()
   const push = usePush()
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const [previewError, setPreviewError] = useState(false)
 
   if (!user) return null
+
+  const preview: PushPreview = user.push_preview === 'full' ? 'full' : 'generic'
+
+  const choosePreview = (next: PushPreview) => {
+    if (next === preview || previewBusy) return
+    setPreviewBusy(true)
+    setPreviewError(false)
+    setPushPreview(next)
+      .catch(() => setPreviewError(true))
+      .finally(() => setPreviewBusy(false))
+  }
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-4 screen-pad sm:gap-6">
@@ -94,6 +109,42 @@ export function SettingsScreen() {
               ? 'desativar'
               : 'ativar'}
         </RetroIconButton>
+
+        {/* The one copy of a message the retention window cannot reach: a
+            preview shown on the lock screen stays in the system's notification
+            centre long after the message is deleted. Hence the choice, and
+            hence "genérico" as the default. */}
+        <div className="border-t-2 border-base-content/10 pt-4">
+          <h3 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
+            <span className="sigil">{'>'}</span> prévia
+          </h3>
+          <p className="mt-1 text-sm opacity-70">
+            {preview === 'full'
+              ? 'A notificação mostra o começo da mensagem. Ela fica na central de notificações do aparelho, que não conhece a janela da conversa — o texto pode sobreviver à mensagem apagada.'
+              : 'A notificação mostra só quem mandou. Nenhum trecho da conversa sai do app.'}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <RetroIconButton
+              onClick={() => choosePreview('generic')}
+              disabled={previewBusy}
+              className={preview === 'generic' ? 'bg-accent text-accent-content' : ''}
+            >
+              genérico
+            </RetroIconButton>
+            <RetroIconButton
+              onClick={() => choosePreview('full')}
+              disabled={previewBusy}
+              className={preview === 'full' ? 'bg-accent text-accent-content' : ''}
+            >
+              mostrar trecho
+            </RetroIconButton>
+          </div>
+          {previewError && (
+            <p className="mt-2 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
+              não deu para salvar — tente de novo
+            </p>
+          )}
+        </div>
       </Panel>
 
       {isOwner && (

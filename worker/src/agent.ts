@@ -23,15 +23,18 @@
 //   - a sweep the instant the window is shortened, so choosing "3 horas" on a
 //     week-old thread deletes what is already past it right away.
 //
-// D1 only mirrors the window (migration 0008): the resolve endpoint needs it
-// before a socket exists, and lib/cleanup.ts needs it to sweep the bucket for
-// conversations that are never opened again.
+// D1 mirrors two numbers, and only those: the window (migration 0008), which
+// the resolve endpoint needs before a socket exists, and the moment the oldest
+// surviving message ages out (migration 0009), which is what lets the cron
+// backstop find a conversation holding *an* expired message rather than only
+// the ones whose entire history has aged out (lib/cleanup.ts).
 
 import { Agent, type Connection, type ConnectionContext, type WSMessage } from 'agents'
 import { ensureConversation } from './lib/conversation'
-import { deleteObjects, mediaConfig } from './lib/media'
-import { claimUpload, forgetKeys } from './lib/mediaIndex'
-import { notifyUser, previewFor } from './lib/push'
+import { isValidObjectKey } from './lib/media'
+import { deleteMediaObjects } from './lib/mediaGc'
+import { claimUpload } from './lib/mediaIndex'
+import { notifyUser, previewFor, previewPreferenceOf } from './lib/push'
 import {
   ClientEventSchema,
   STICKER_ID_RE,
@@ -317,12 +320,14 @@ export class ConversationAgent extends Agent<Env> {
     return ids
   }
 
+  /**
+   * Bucket object, index row and edge copy, in that order (lib/mediaGc.ts).
+   * The DO has no incoming `Request` to take an origin from — the eviction
+   * relies on `PUBLIC_ORIGIN`, which is why that var exists.
+   */
   private async deleteMedia(keys: string[]): Promise<void> {
-    const config = mediaConfig(this.env)
-    if (!config) return
     try {
-      const deleted = await deleteObjects(config, keys)
-      await forgetKeys(this.env.DB, deleted)
+      await deleteMediaObjects(this.env, keys)
     } catch (error) {
       console.error('retention media delete failed', this.name, error)
     }
@@ -348,13 +353,16 @@ export class ConversationAgent extends Agent<Env> {
       this.sql`DELETE FROM settings WHERE key = 'expiry_schedule_id'`
     }
 
-    const oldest = this.sql<{ at: number | null }>`SELECT MIN(created_at) AS at FROM messages`
-    const at = oldest.length > 0 ? oldest[0].at : null
-    if (at === null) return
+    const dueAt = this.nextExpiryAt()
+    // D1 mirror of the same moment (migration 0009). It is what lets the cron
+    // backstop find a conversation with *an* expired message instead of only
+    // the ones whose whole history has aged out (lib/cleanup.ts).
+    this.ctx.waitUntil(this.mirrorNextExpiry(dueAt))
+    if (dueAt === null) return
 
     // A second of floor: a due-in-the-past message (the sweep above could not
     // reach it only if the clock moved mid-run) must not schedule into the past.
-    const when = new Date(Math.max(at + this.retention(), Date.now() + 1000))
+    const when = new Date(Math.max(dueAt, Date.now() + 1000))
     try {
       const schedule = await this.schedule(when, 'expireTick')
       this.writeSetting('expiry_schedule_id', schedule.id)
@@ -384,6 +392,39 @@ export class ConversationAgent extends Agent<Env> {
     if (retentionMs < previous) await this.sweepExpired()
     await this.armExpiryAlarm()
     this.ctx.waitUntil(this.mirrorRetention(retentionMs))
+  }
+
+  /** When the oldest surviving message ages out; null when there is none. */
+  private nextExpiryAt(): number | null {
+    const oldest = this.sql<{ at: number | null }>`SELECT MIN(created_at) AS at FROM messages`
+    const at = oldest.length > 0 ? oldest[0].at : null
+    return at === null ? null : at + this.retention()
+  }
+
+  /**
+   * Copies that moment into D1 (migration 0009). Null means "nothing left to
+   * expire", which is what stops the backstop from waking an empty conversation
+   * forever.
+   *
+   * Same lazy-row problem as the retention mirror, and the same answer: the
+   * conversation row is created by the first message, and the alarm is armed in
+   * the same breath — so the first write can legitimately update nothing. The
+   * flag records what actually landed, which is what makes the retry in
+   * handleSend stop at the right time.
+   */
+  private async mirrorNextExpiry(at: number | null): Promise<void> {
+    try {
+      const result = await this.env.DB.prepare(
+        'UPDATE conversations SET next_expiry_at = ?1 WHERE id = ?2',
+      )
+        .bind(at, this.name)
+        .run()
+      if ((result.meta.changes ?? 0) > 0) {
+        this.writeSetting('next_expiry_mirrored', String(at))
+      }
+    } catch (error) {
+      console.error('next expiry mirror failed', this.name, error)
+    }
   }
 
   /**
@@ -584,6 +625,14 @@ export class ConversationAgent extends Agent<Env> {
       this.send(conn, { type: 'error', error: 'media_key_required' })
       return
     }
+    // The wire schema only bounds the length; the key shape is what the media
+    // proxy validates on every read (lib/media.ts). Checking it here too keeps
+    // sender-controlled junk out of the other side's thread — and out of the
+    // `claimUpload` write it would otherwise trigger.
+    if (event.media_key !== undefined && !isValidObjectKey(event.media_key)) {
+      this.send(conn, { type: 'error', error: 'invalid_media_key' })
+      return
+    }
     if (event.msg_type === 'sticker' && !STICKER_ID_RE.test(event.body)) {
       this.send(conn, { type: 'error', error: 'invalid_sticker' })
       return
@@ -652,6 +701,13 @@ export class ConversationAgent extends Agent<Env> {
       if (this.setting('retention_mirrored') !== String(retention)) {
         this.ctx.waitUntil(this.mirrorRetention(retention))
       }
+      // Same for the deadline the cleanup backstop scans by: the alarm was
+      // armed before this row existed. The oldest message does not move, so
+      // after it lands once this comparison is false on every later send.
+      const dueAt = this.nextExpiryAt()
+      if (this.setting('next_expiry_mirrored') !== String(dueAt)) {
+        this.ctx.waitUntil(this.mirrorNextExpiry(dueAt))
+      }
     } catch (error) {
       console.error('ensureConversation failed', error)
     }
@@ -684,9 +740,14 @@ export class ConversationAgent extends Agent<Env> {
       const sender = await this.env.DB.prepare('SELECT username FROM users WHERE id = ?')
         .bind(senderId)
         .first<{ username: string }>()
+      // The notification outlives the message: it sits in the device's
+      // notification centre, which knows nothing about the retention window.
+      // So the *recipient* decides how much of the body may go there
+      // (migration 0010) — and the default is none of it.
+      const preference = await previewPreferenceOf(this.env.DB, peerId)
       await notifyUser(this.env, peerId, {
         title: `@${sender?.username ?? 'goodchat'}`,
-        body: previewFor(event.msg_type, event.body),
+        body: previewFor(event.msg_type, event.body, preference),
         url: `/#/t/${senderId}`,
         tag: this.name,
       })

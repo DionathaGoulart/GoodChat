@@ -25,14 +25,18 @@ can choose as little as three hours.
   instead of living in one browser; the palette shelf shows the palettes of
   the mode that is on screen
 - Owner console: accounts, storage per account (message bytes and bucket
-  bytes), history purges, and on-demand maintenance
+  bytes), history purges, on-demand maintenance, and an audit trail of every
+  owner action that changed something
 - Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login
   with no timing oracle, case-insensitive usernames
-- Disappearing messages: every message deletes itself — from the database and
-  the bucket — within the window its conversation chose (3h, 5h, 12h, 1d, 3d,
-  5d or 7d; 7 days is the default and the maximum). One shared setting per
-  conversation, changed by either side from inside the thread, applied to the
-  history the moment it is shortened
+- Disappearing messages: every message deletes itself — from the database, the
+  bucket and every cache that copied it — within the window its conversation
+  chose (3h, 5h, 12h, 1d, 3d, 5d or 7d; 7 days is the default and the
+  maximum). One shared setting per conversation, changed by either side from
+  inside the thread, applied to the history the moment it is shortened
+- Notifications that do not outlive the message: the push preview is generic
+  by default ("@alice te mandou uma mensagem"), because a notification lands
+  in a place the retention window cannot reach
 - Guest accounts: a throwaway account that lives 5 hours and then deletes
   itself with its data — while keeping the conversations whose other side is
   a permanent account, and taking a guest-to-guest thread with the last of

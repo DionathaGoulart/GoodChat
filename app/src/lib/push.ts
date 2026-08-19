@@ -22,6 +22,22 @@ export type PushState =
   | 'on' // permission granted + browser subscription exists
   | 'unavailable' // worker has no VAPID config (503 push_not_configured)
 
+/**
+ * Tells the service worker to close the notifications of one conversation.
+ *
+ * A notification is the one copy of a message that lives outside the app, in
+ * the system's notification centre, where nothing here can delete it later. The
+ * moment the server says those messages expired, the notification that
+ * previewed them has no reason to exist — and if the preview preference is
+ * 'full', it is still showing the text. Best effort: no service worker, or no
+ * `getNotifications` support, simply means nothing to close.
+ */
+export function dismissNotifications(tag: string): void {
+  void navigator.serviceWorker?.ready
+    .then((registration) => registration.active?.postMessage({ type: 'close-notifications', tag }))
+    .catch(() => undefined)
+}
+
 /** Current state, from browser-side facts only (no server round-trip). */
 export async function currentPushState(): Promise<PushState> {
   if (!isPushSupported()) return 'unsupported'

@@ -27,6 +27,12 @@
 // already past the conversation's window, so a message the server deleted
 // cannot come back from localStorage — not on the next open, and not on a
 // device that was offline when it expired.
+//
+// Read and write only reach the thread being used, though, and the promise is
+// not about the thread being used: a conversation nobody opens again would keep
+// its text here forever. So `pruneCachedMessages` runs once per app boot over
+// every bucket (useSession.tsx). It is cheap — ten threads of fifty messages is
+// the whole store — and it is what makes the window true for the copies too.
 
 import type { PublicUser } from './api'
 import { DEFAULT_RETENTION_MS, retentionOr } from './protocol'
@@ -169,6 +175,48 @@ export function writeCachedMessages(
   // a thread reaches when its last message expires, and leaving the previous
   // copy in place would be the cache holding on to what the server deleted.
   writeBucket(MESSAGES_KEY, ownerId, conversationId, acked.slice(-MAX_MESSAGES), MAX_THREADS)
+}
+
+/**
+ * Boot-time sweep of every cached thread, not just the one being opened.
+ *
+ * Each thread's window comes from the cached resolve entry (they share an
+ * owner and are written together); a conversation with no entry falls back to
+ * the longest window, which is also the one the server would enforce. A bucket
+ * that empties out is written back empty rather than removed — same reasoning
+ * as `writeCachedMessages`: "nothing left" is a real state.
+ */
+export function pruneCachedMessages(ownerId: string): void {
+  const messages = readBucket<ThreadMessage[]>(MESSAGES_KEY, ownerId)
+  if (!messages) return
+
+  const windows = new Map<string, number>()
+  for (const thread of Object.values(readBucket<CachedThread>(RESOLVE_KEY, ownerId) ?? {})) {
+    if (typeof thread?.conversationId === 'string') {
+      windows.set(thread.conversationId, retentionOr(thread.retentionMs))
+    }
+  }
+
+  const now = Date.now()
+  let changed = false
+  const pruned: Record<string, ThreadMessage[]> = {}
+  for (const [conversationId, entry] of Object.entries(messages)) {
+    if (!Array.isArray(entry)) {
+      changed = true
+      continue
+    }
+    const cutoff = now - (windows.get(conversationId) ?? DEFAULT_RETENTION_MS)
+    const live = entry.filter((message) => message?.created_at > cutoff)
+    if (live.length !== entry.length) changed = true
+    pruned[conversationId] = live
+  }
+  if (!changed) return
+
+  try {
+    localStorage.setItem(MESSAGES_KEY, JSON.stringify({ owner: ownerId, entries: pruned }))
+  } catch {
+    // Private mode / quota: nothing to repair — the read path prunes too.
+  }
 }
 
 /** Logout: the next account on this device must not read any of it. */

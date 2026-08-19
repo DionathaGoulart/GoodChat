@@ -1,0 +1,16 @@
+-- Migration 0010: how much of a message may appear in a push notification.
+--
+-- Web Push is encrypted end to end (RFC 8291): the push service relays a blob
+-- it cannot read. But the notification's destination is the device's
+-- notification centre, and that has no retention window — a preview shown on a
+-- lock screen outlives the message it previews, in a place this app cannot
+-- reach to delete. A 3-hour conversation was still leaving its text on the
+-- phone forever.
+--
+-- So it becomes the recipient's choice, next to the theme (/api/settings):
+--   'generic' — "@alice · te mandou uma mensagem". No content leaves the app.
+--   'full'    — the 120-character preview, for whoever prefers the convenience.
+--
+-- NULL means "never chose" and resolves to 'generic' (lib/push.ts): given what
+-- this product is for, the private default is the defensible one.
+ALTER TABLE users ADD COLUMN push_preview TEXT;

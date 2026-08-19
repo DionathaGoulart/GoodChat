@@ -21,6 +21,25 @@ export const HEARTBEAT_MS = 25_000
 /** Cap on how many peers one heartbeat may ask about. */
 export const MAX_PRESENCE_IDS = 64
 
+/**
+ * Granularity of the timestamp handed back to a caller. The presence endpoint
+ * takes any account id, conversation or not, so a raw `last_seen_at` polled
+ * every 25s is an activity graph of anybody on the instance — far more than the
+ * boolean the interface renders. Rounded down to the minute it still answers
+ * "online" (the window is a minute wide) and stops resolving sleep schedules.
+ */
+export const LAST_SEEN_GRANULARITY_MS = 60_000
+
+/**
+ * Every surface that reports `last_seen_at` runs it through here — presence,
+ * search, the conversation list, resolve — so there is one answer to "how
+ * precisely does this instance publish when somebody was last around".
+ */
+export function coarseLastSeen(lastSeenAt: number | null | undefined): number | null {
+  if (typeof lastSeenAt !== 'number') return null
+  return Math.floor(lastSeenAt / LAST_SEEN_GRANULARITY_MS) * LAST_SEEN_GRANULARITY_MS
+}
+
 export interface PresenceState {
   id: string
   online: boolean
@@ -60,7 +79,8 @@ export async function presenceOf(
 
   return results.map((row) => ({
     id: row.id,
+    // Computed from the exact value, reported from the rounded one.
     online: isOnline(row.last_seen_at, now),
-    last_seen_at: row.last_seen_at,
+    last_seen_at: coarseLastSeen(row.last_seen_at),
   }))
 }
