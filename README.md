@@ -170,6 +170,7 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase11` | Profile: display name, avatar upload rules, adoption, read access, replacement |
 | `smoke:phase12` | Presence: heartbeat, online window, presence on the listing endpoints, skin preference |
 | `smoke:phase13` | Retention: the window on connect, either side changing it, the D1 mirror, the refusal of an unknown window, the deadline the alarm is armed for |
+| `smoke:phase14` | The copies of a message: cache ceilings per prefix, a key whose index row is gone, deletion taking bucket and index together, the deadline the cron scans by, `media_key` validation, the WebSocket Origin check, the push preview preference, the owner audit trail, the login lockout exemption |
 
 ## Documentation
 

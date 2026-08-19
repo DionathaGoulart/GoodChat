@@ -194,7 +194,12 @@ export class ConversationAgent extends Agent<Env> {
     }
 
     if (request.method === 'POST' && url.pathname.endsWith('/purge')) {
-      return Response.json(this.purge())
+      const result = this.purge()
+      // The history is gone, so the alarm and D1's `next_expiry_at` are both
+      // pointing at a message that no longer exists. Re-arming clears them —
+      // otherwise the cron would wake this object once for nothing.
+      this.ctx.waitUntil(this.armExpiryAlarm())
+      return Response.json(result)
     }
 
     if (request.method === 'POST' && url.pathname.endsWith('/destroy')) {

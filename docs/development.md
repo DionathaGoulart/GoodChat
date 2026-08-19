@@ -107,6 +107,7 @@ npm run smoke:phase8   # web push: crypto roundtrip, REST, DO trigger
 npm run smoke:phase9   # headers, CORS, login timing, settings, owner console
 npm run smoke:phase10  # guest accounts: quotas, expiry, deletion rules
 npm run smoke:phase13  # retention: the shared window, its mirror, its deadline
+npm run smoke:phase14  # the copies of a message, and the powers that reach them
 ```
 
 `smoke:phase13` also needs the owner account: the deadline it checks is read
@@ -115,7 +116,18 @@ window is three hours and nothing can move the DO's clock — so it asserts
 every input to that deletion instead: the window in force, who is told when it
 changes, the D1 mirror, and the `next_expiry_at` the alarm is armed for.
 
-`smoke:phase9` and `smoke:phase10` need the `good` owner account (see above)
+`smoke:phase14` is the regression net for the privacy review: it asserts that a
+`media/` object is cached for the shortest window rather than a year, that a key
+whose index row is gone is refused instead of treated as legacy, that a purge
+takes the bucket object and the index row together, that D1's `next_expiry_at`
+follows the oldest message, and that the Origin check, the `media_key`
+validation, the push preview preference and the owner audit trail all hold. It
+does not assert that the edge copy was evicted — `caches.default` is read after
+authorization, so a cached object is unreachable by any request the test can
+make once the row is gone. That one is confirmed against production, with a GET
+on a key that expired minutes ago.
+
+`smoke:phase9`, `smoke:phase10` and `smoke:phase14` need the `good` owner account (see above)
 and the media stub. Both create and delete their own throwaway accounts, and
 phase 9 keeps its WebSocket flood inside the owner's own thread so the other
 suites' fixtures stay clean. Phase 10 talks to D1 directly to force guest

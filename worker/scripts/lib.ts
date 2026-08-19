@@ -26,6 +26,25 @@ export function d1Execute(sql: string, { remote = false } = {}): void {
   })
 }
 
+/**
+ * Same as d1Execute, but hands the rows back instead of printing them — what a
+ * smoke test needs when the thing under test is a value in D1 rather than an
+ * API response. Stderr is dropped so wrangler's banner does not land in the
+ * JSON.
+ */
+export function d1Query<T = Record<string, unknown>>(
+  sql: string,
+  { remote = false } = {},
+): T[] {
+  const output = execFileSync(
+    'npx',
+    ['wrangler', 'd1', 'execute', 'goodchat', remote ? '--remote' : '--local', '--json', '--command', sql],
+    { cwd: WORKER_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+  const parsed = JSON.parse(output) as { results?: T[] }[]
+  return parsed[0]?.results ?? []
+}
+
 export function sqlString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`
 }
