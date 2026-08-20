@@ -121,6 +121,26 @@ export class ConversationAgent extends Agent<Env> {
     return false
   }
 
+  /**
+   * The SDK's state channel is not part of this conversation's protocol, and
+   * closing it is not optional: the base class handles an incoming
+   * `cf_agent_state` frame *before* `onMessage` ever runs, so such a frame
+   * would write client-controlled JSON into this object's SQLite without
+   * passing the token bucket in `consumeToken` — the only rate limit a socket
+   * has. The row also outlives a purge (`purge()` deletes messages, not
+   * settings) and the retention sweep, which is exactly what this product
+   * promises not to do.
+   *
+   * `validateStateChange` runs before the write and a throw aborts it, so this
+   * is where the channel closes. Nothing here calls `setState`, hence
+   * everything but "server" is refused rather than filtered.
+   */
+  override validateStateChange(_nextState: unknown, source: Connection | 'server'): void {
+    if (source !== 'server') {
+      throw new Error('state updates are not part of this protocol')
+    }
+  }
+
   override async onStart(): Promise<void> {
     // Schema exactly PRD §4.4 (column `type` on disk, `msg_type` on the wire).
     this.sql`
