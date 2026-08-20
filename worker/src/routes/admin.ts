@@ -238,7 +238,11 @@ export async function overview(request: Request, env: Env): Promise<Response> {
       do_storage_limit_bytes: limitBytes(env.DO_STORAGE_LIMIT_GB, 5),
       bucket_limit_bytes: limitBytes(env.B2_STORAGE_LIMIT_GB, 10),
       retention_days: Number(env.MEDIA_RETENTION_DAYS ?? 0) || null,
-      legacy_media_reads: env.MEDIA_LEGACY_READS === 'deny' ? 'deny' : 'allow',
+      // Mirrors routes/media.ts exactly: only the literal "allow" opens the
+      // legacy door, so anything else — including unset — is "deny". Reported
+      // the other way round, the console told an operator the door was open on
+      // an instance where it was shut, and vice versa on a fresh deploy.
+      legacy_media_reads: env.MEDIA_LEGACY_READS === 'allow' ? 'allow' : 'deny',
     },
     200,
     sessionHeaders(owner.auth),

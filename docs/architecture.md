@@ -341,9 +341,20 @@ an object belongs to, and `conversations` says whether the caller is one of
 its two participants. Keys are still `media/<yyyy-mm>/<uuid>.<ext>` —
 month-prefixed for retention, unguessable as defense in depth. Objects
 uploaded before migration 0003 have no index row; `MEDIA_LEGACY_READS`
-decides whether those keep the old "any session" rule (`allow`, the default,
-so existing threads keep rendering) or are refused (`deny`, after running
-`POST /api/admin/media/reindex` once).
+decides whether those keep the old "any session" rule. Only the literal
+`allow` opens that door — anything else, unset included, refuses them — so the
+order is `POST /api/admin/media/reindex` first, then set `allow` if any
+pre-0003 thread still needs to render. `media/` and `avatars/` keys are
+refused either way: both prefixes always have an index row, so a missing one
+means the object was deleted, not that it is old.
+
+A message attachment is `media/` and nothing else. The Durable Object refuses
+any other prefix on `send_message` (`agent.ts`), because every rule that
+matters is keyed on it: an `avatars/` object is readable by the whole instance
+once claimed, is cached for a year rather than the shortest window, and is
+skipped by both media sweeps. A client that presigned with `purpose: "avatar"`
+and sent the key as an attachment would have published a permanent,
+instance-wide copy of a disappearing message.
 
 Maintenance runs hourly (`triggers.crons` → `scheduled` → `lib/cleanup.ts`):
 expired sessions, stale rate-limit counters, expired guest accounts and
