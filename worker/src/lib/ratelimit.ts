@@ -41,6 +41,23 @@ export const TRUSTED_KEY_PREFIX = 'trusted:'
 
 /** Presign requests one account may make per hour (routes/media.ts). */
 export const UPLOAD_QUOTA_PER_HOUR = 60
+
+/**
+ * Username searches per account per hour (routes/users.ts). The search box is
+ * debounced, so a person typing all day does not approach this; a script
+ * walking the alphabet does it in seconds.
+ */
+export const LOOKUP_QUOTA_PER_HOUR = 200
+
+/**
+ * Conversation-list reads per account per hour (routes/conversations.ts). One
+ * call fans out to every conversation's Durable Object, so a loop here is the
+ * cheapest way to spend somebody else's compute. The list polls at 15s while
+ * the tab is visible and backs off to 60s, which is 240/hour per tab — the
+ * ceiling is set to leave room for several tabs and still stop a loop.
+ */
+export const CONVERSATIONS_QUOTA_PER_HOUR = 900
+
 export const HOUR_MS = 60 * 60 * 1000
 
 export interface RateLimitStatus {

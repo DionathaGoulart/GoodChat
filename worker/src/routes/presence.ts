@@ -46,7 +46,7 @@ export async function heartbeat(request: Request, env: Env): Promise<Response> {
 
   const now = Date.now()
   await touchPresence(env.DB, auth.user.id, now)
-  const users = await presenceOf(env.DB, parsed.data.ids ?? [], now)
+  const users = await presenceOf(env.DB, auth.user.id, parsed.data.ids ?? [], now)
 
   // The client mirrors the two constants rather than hardcoding them, so the
   // window can be retuned server-side without shipping an app build.

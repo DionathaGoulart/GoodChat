@@ -38,9 +38,9 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/auth/logout`            | no   | Revoke session (idempotent)            |
 | GET    | `/api/auth/me`                | yes  | Current user (includes `role`, the three theme fields, `skin` and `push_preview`) |
 | PATCH  | `/api/settings`               | yes  | Appearance (`theme_mode`, `theme_light`, `theme_dark` per call; `skin` and `push_preview` optional, absent keeps the stored one) |
-| POST   | `/api/presence`               | yes  | Heartbeat: marks the caller online and answers with the state of the ids in the body |
+| POST   | `/api/presence`               | yes  | Heartbeat: marks the caller online and answers for the ids in the body it shares a conversation with |
 | PATCH  | `/api/profile`                | yes  | Own display name and/or picture (`display_name`, `avatar_key` — both optional, `null` clears) |
-| GET    | `/api/users/lookup?q=`        | yes  | Prefix search by username              |
+| GET    | `/api/users/lookup?q=`        | yes  | Search by username — prefix, or exact for a guest account |
 | GET    | `/api/conversations`          | yes  | List with preview and unread count     |
 | POST   | `/api/conversations/resolve`  | yes  | Deterministic conversation id, no side effects |
 | GET    | `/api/ws/:conversationId?with=` | yes | WebSocket upgrade, forwarded to the DO |
@@ -98,9 +98,11 @@ is what makes the policy worth having.
   never the address: a counter only has to be countable, and this table lives
   in the database the owner console reads.
 - Other quotas share the same counter table, namespaced by key: guest
-  signups per IP per hour (`temp:<ip>`) and presign requests per account per
-  hour (`upload:<user id>`, 60). Both charge on success — those calls are
-  expensive when they work, not when they fail.
+  signups per address per hour (`temp:<digest>`), presign requests per account
+  per hour (`upload:<user id>`, 60), username searches (`lookup:<user id>`,
+  200) and conversation-list reads (`conversations:<user id>`, 900 — one call
+  wakes every conversation's Durable Object). All charge on success — those
+  calls are expensive when they work, not when they fail.
 - Permanent accounts are created by the owner (`npm run user:create` or the
   console). The only public way in is a guest account, below.
 
@@ -114,6 +116,18 @@ unauthenticated, the endpoint is fenced three ways: a per-IP hourly quota
 (`TEMP_ACCOUNTS_PER_IP_HOUR`), a ceiling on live guests
 (`TEMP_ACCOUNTS_MAX`), and an off switch (`TEMP_ACCOUNTS_ENABLED`, surfaced
 on `/api/health` so the login screen only offers what exists).
+
+A guest is also the reason discovery is not uniform. Every account on the
+instance is visible to every authenticated user (PRD §3.2), which was decided
+when the only way in was an owner-created account. A guest is minted by
+anybody, so from one, a prefix search is a free enumeration of the whole
+directory — thirty-six single-letter queries and the list is out, with
+`POST /api/presence` turning it into an activity graph on top. So a guest
+searches by *exact* username (it has to already know the handle, which is the
+case guest accounts exist for) and presence answers only for accounts the
+caller shares a conversation with. Neither costs the interface anything: the
+two screens that render presence both watch peers of existing conversations,
+and a thread with no message yet paints the flag `resolve` already returned.
 
 Access ends exactly at `expires_at`: `requireSession` and `login` both join
 on it, and the session cookie is capped at the account's lifetime, so no

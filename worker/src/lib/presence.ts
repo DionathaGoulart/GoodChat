@@ -59,22 +59,38 @@ export async function touchPresence(db: D1Database, userId: string, now: number)
  * Presence for a set of accounts. Unknown ids are simply absent from the
  * result — a deleted account is not offline, it is gone, and the caller
  * already renders that case from the tombstone flag.
+ *
+ * Scoped to the accounts `viewerId` shares a conversation with, and that scope
+ * is the point. This endpoint took any id at all, and the instance hands a
+ * stranger an account for free (POST /api/auth/temp) plus a prefix search over
+ * every username (routes/users.ts). Polled every 25s, "any id" is an activity
+ * graph of everyone here — several orders of magnitude more than the dot the
+ * interface draws. The two screens that render presence both watch peers of
+ * existing conversations (app/src/lib/presence.ts), so this costs nothing they
+ * were using: a thread with no message yet has no row, and paints the `online`
+ * flag that /api/conversations/resolve already returned until it does.
  */
 export async function presenceOf(
   db: D1Database,
+  viewerId: string,
   ids: readonly string[],
   now: number,
 ): Promise<PresenceState[]> {
   const unique = [...new Set(ids)].slice(0, MAX_PRESENCE_IDS)
   if (unique.length === 0) return []
 
-  const placeholders = unique.map(() => '?').join(', ')
+  const placeholders = unique.map((_, i) => `?${i + 2}`).join(', ')
   const { results } = await db
     .prepare(
-      `SELECT id, last_seen_at FROM users
-       WHERE id IN (${placeholders}) AND deleted_at IS NULL`,
+      `SELECT u.id, u.last_seen_at FROM users u
+       WHERE u.id IN (${placeholders}) AND u.deleted_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM conversations c
+           WHERE (c.user_a = ?1 AND c.user_b = u.id)
+              OR (c.user_b = ?1 AND c.user_a = u.id)
+         )`,
     )
-    .bind(...unique)
+    .bind(viewerId, ...unique)
     .all<{ id: string; last_seen_at: number | null }>()
 
   return results.map((row) => ({

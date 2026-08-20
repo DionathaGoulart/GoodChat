@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import { conversationIdFor } from '../lib/conversation'
 import { coarseLastSeen, isOnline } from '../lib/presence'
+import { CONVERSATIONS_QUOTA_PER_HOUR, HOUR_MS, consumeQuota } from '../lib/ratelimit'
 import {
   PUBLIC_USER_COLUMNS,
   requireSession,
@@ -34,6 +35,20 @@ interface ConversationRow {
 export async function listConversations(request: Request, env: Env): Promise<Response> {
   const auth = await requireSession(request, env.DB)
   if (auth instanceof Response) return auth
+
+  // One call wakes every conversation's Durable Object (see fetchSummary), so
+  // this is the endpoint where an authenticated loop costs the most.
+  const quota = await consumeQuota(
+    env.DB,
+    `conversations:${auth.user.id}`,
+    CONVERSATIONS_QUOTA_PER_HOUR,
+    HOUR_MS,
+  )
+  if (!quota.allowed) {
+    return apiError('rate_limited', 429, 'too many requests, try again later', {
+      'Retry-After': String(quota.retryAfterSeconds),
+    })
+  }
 
   const { results } = await env.DB.prepare(
     `SELECT c.id, c.created_at, c.last_message_at, c.retention_ms,
