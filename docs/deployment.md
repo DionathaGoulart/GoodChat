@@ -224,6 +224,13 @@ The ones that change behaviour:
   `POST /api/admin/media/reindex` from the owner console once and check that
   `indexed_media_bytes` matches `bucket_bytes` in the overview before
   deploying with the flag closed.
+- `E2EE_REQUIRED` — when `"true"`, the Durable Object refuses any message that
+  arrives without an encryption envelope. Leave it off until every client has
+  registered a device key: a browser in private mode has no IndexedDB, gets no
+  identity, and sends in the clear. Nothing needs migrating to turn it on —
+  retention deletes every plaintext message within seven days by itself, so the
+  instance becomes fully encrypted a week after the deploy whether or not the
+  flag is flipped. The flag is what stops it going back.
 - `PUSH_ENDPOINT_HOSTS` — comma-separated domain suffixes a push subscription
   may point at. A stored endpoint is a URL the Worker POSTs to on every message
   the account receives, so this is what keeps it a browser vendor's push service

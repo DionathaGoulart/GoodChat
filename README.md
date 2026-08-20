@@ -6,10 +6,17 @@ with native web push notifications, all within free tiers.
 
 It is not built to keep conversations. Every message deletes itself — from the
 database and from the bucket — within at most seven days, and a conversation
-can choose as little as three hours.
+can choose as little as three hours. Messages and their attachments are
+end-to-end encrypted: the server routes and expires what it cannot read.
 
 ## Features
 
+- End-to-end encryption, per device: a random content key per message, wrapped
+  by ECDH for the peer's browsers and your own, so the server stores ciphertext
+  and holds no key that opens it. Attachments are sealed before they reach the
+  bucket, push previews are decrypted by the service worker, and a safety number
+  in the thread is what catches a swapped key. No forward secrecy — the
+  seven-day window is what bounds a leaked device key
 - Real-time 1:1 messaging over WebSockets, with offline delivery and
   at-least-once semantics (client-side dedup by message id)
 - Delivery states (sent, delivered, read) and a typing indicator

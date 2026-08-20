@@ -42,6 +42,8 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/presence`               | yes  | Heartbeat: marks the caller online and answers for the ids in the body it shares a conversation with |
 | PATCH  | `/api/profile`                | yes  | Own display name and/or picture (`display_name`, `avatar_key` — both optional, `null` clears) |
 | GET    | `/api/users/lookup?q=`        | yes  | Search by username — prefix, or exact for a guest account |
+| POST   | `/api/devices`                | yes  | Register this browser's encryption key, or refresh it |
+| GET    | `/api/users/:id/devices`      | yes  | The device keys a message to that account is encrypted for |
 | GET    | `/api/conversations`          | yes  | List with preview and unread count     |
 | POST   | `/api/conversations/resolve`  | yes  | Deterministic conversation id, no side effects |
 | GET    | `/api/ws/:conversationId?with=` | yes | WebSocket upgrade, forwarded to the DO |
@@ -243,6 +245,14 @@ sweeps the history the moment a shorter window lands, which is the entire
 point of choosing one. Both sockets get `messages_expired` with the ids, so
 an open thread drops them without a reload.
 
+One thing the window does not reach on its own: a `DELETE` inside the Durable
+Object frees the SQLite page, it does not overwrite it, so the bytes stay in the
+database file until the space is reused. Both SQLite answers are closed to a DO
+— `VACUUM` fails because its SQL already runs inside a transaction, and
+`PRAGMA secure_delete` is refused outright by the runtime. What closes it is the
+section below: those bytes are ciphertext, and the key to them never existed on
+this side. Deleting the row is then the only copy that mattered.
+
 Clients enforce it too, since a tab can be offline while a message expires:
 the thread filters what it paints against the window, and the local copies
 (`threadCache`, the conversation-list previews) drop anything past it on both
@@ -258,6 +268,86 @@ own. Four of them, all bounded:
 | Browser HTTP cache | The same ceiling on the `private` copy |
 | `localStorage` (`threadCache`) | Window filter on read, on write, and once per boot |
 | The device's notification centre | The push preview is generic by default, and the service worker closes a thread's notifications when `messages_expired` arrives |
+
+### End-to-end encryption
+
+The server routes, expires and bills messages it cannot read. Retention, media
+membership checks, push fan-out and the owner console's byte counts all keep
+working — on ciphertext.
+
+Identity is per **device**, not per account: each browser generates an ECDH
+P-256 keypair whose private half is a non-extractable `CryptoKey` in IndexedDB
+(`app/src/lib/deviceKeys.ts`) and publishes only the public half to the
+directory (migration 0012). The device id is SHA-256 of that public key,
+truncated — so the id is a commitment to the key, and a key that was swapped is
+a *different device* rather than the same one with new bytes.
+
+There is no key escrow and no backup, and that is affordable here for one
+reason: retention caps a message at seven days, so a device that loses its key
+loses at most a week. A new device starts reading from the moment it registers.
+
+Sending one message:
+
+1. a fresh random content key encrypts the payload — a small JSON object, so one
+   shape covers every type: `{t}` text/emoji, `{s}` sticker id, `{m, t?}` media;
+2. the content key is wrapped once per device allowed to read it: the peer's,
+   plus this account's own others, or the desktop could not read what the phone
+   sent;
+3. each wrap is `AES-GCM` under `HKDF-SHA256(ECDH(mine, theirs))`, salted with
+   both device ids sorted — which binds the wrap to the pair and lets both sides
+   derive it without agreeing who is first;
+4. the envelope carries `{ v, iv, sender_device, keys, media_iv? }`.
+
+The Durable Object stores and forwards all of it and can check exactly one
+thing about it without a key: that the sender named its own device among the
+recipients. Two checks it used to run had to move, because ciphertext cannot be
+inspected — the empty-body check, and the sticker-id regex. The regex now runs
+on the recipient, in `app/src/components/MessageBubble.tsx`, at the point the id
+becomes a URL. That is a stricter place than the Worker was: it also covers a
+sender that never went through this Worker at all.
+
+Media rides the same content key. The blob is sealed in the browser before the
+presigned PUT, so the bucket, the read proxy and the edge cache hold ciphertext
+only; the real MIME travels inside the encrypted payload, which means the server
+stops learning jpeg-from-webp and keeps only the image/video distinction its
+size caps need. The cost is that a video downloads whole before it plays —
+AES-GCM authenticates the whole object, so there is nothing to stream. It is
+bounded by the existing 32MB cap; AES-CTR plus a whole-object MAC through Media
+Source Extensions is the fix, and a different change than this one.
+
+The push preview survives, which was not obvious. `push_preview: 'full'` used to
+be answerable on the server because the message was readable there. Now the
+ciphertext travels to the device instead, with the content key wrapped for that
+subscription's device (`push_subscriptions.device_id`), and the service worker
+decrypts it — which is what IndexedDB bought over `localStorage`: that context
+can use the key and no code anywhere can export it. Over the payload budget, or
+on any failure, it falls back to the generic line.
+
+`safetyNumber` is the part no code closes. The server publishes the directory,
+so it could add a device of its own to somebody's list, and the encryption would
+work perfectly to the wrong recipient. The number is derived from both device
+sets, so a tampered directory produces different numbers on the two sides, and
+comparing it out of band is the only step here a server cannot take part in.
+The thread banners a change rather than absorbing it silently.
+
+**Not** provided, stated plainly because the difference matters:
+
+- **No forward secrecy.** ECDH is static, so a device key that leaks opens the
+  messages that device could read. The retention window bounds that to seven
+  days, which is why a ratchet is not worth its complexity here — but it is a
+  weaker property than Signal's.
+- **Avatars, display names and usernames stay plaintext**, because they are
+  rendered to accounts you have never talked to.
+- **Metadata stays visible**: who talks to whom, when, how often, ciphertext
+  sizes, `msg_type`, and image-versus-video.
+- **Local storage stays plaintext.** `threadCache` keeps decrypted text in
+  `localStorage`, scoped to one account and wiped on logout. This is about the
+  server, not about device access.
+
+Rollout needs no migration: `enc` is optional, a frame without it renders as
+plaintext, and every plaintext message is gone within seven days by itself. Once
+every client has registered a device, `E2EE_REQUIRED=true` makes the Durable
+Object refuse a message that arrives without an envelope.
 
 ### Media pipeline
 
