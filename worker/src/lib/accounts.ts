@@ -54,7 +54,11 @@ export interface TempAccountConfig {
 
 export function tempAccountConfig(env: Env): TempAccountConfig {
   return {
-    enabled: env.TEMP_ACCOUNTS_ENABLED !== 'false',
+    // Read as a plain string on purpose: `wrangler types` narrows a var to the
+    // literal currently in wrangler.jsonc, and this is the switch an operator
+    // flips at deploy time — comparing against the other value is the point,
+    // not a mistake.
+    enabled: String(env.TEMP_ACCOUNTS_ENABLED) !== 'false',
     ttlMs: positive(env.TEMP_ACCOUNT_TTL_HOURS, DEFAULT_TTL_HOURS) * 60 * 60 * 1000,
     maxLive: positive(env.TEMP_ACCOUNTS_MAX, DEFAULT_MAX_LIVE),
     perIpPerHour: positive(env.TEMP_ACCOUNTS_PER_IP_HOUR, DEFAULT_PER_IP_HOUR),
