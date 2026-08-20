@@ -5,16 +5,18 @@ import {
   tempAccountConfig,
 } from '../lib/accounts'
 import { apiError, json } from '../lib/http'
-import { burnPasswordTime, verifyPassword } from '../lib/password'
+import { burnPasswordTime, hashPassword, verifyPassword } from '../lib/password'
 import {
   clearCookie,
   createSession,
   readSessionCookie,
   requireSession,
+  revokeAllSessions,
   revokeSession,
   sessionHeaders,
   type SessionUser,
 } from '../lib/session'
+import { validateCredentials } from '../lib/users'
 import {
   HOUR_MS,
   addressQuotaKey,
@@ -145,6 +147,81 @@ export async function createTempSession(request: Request, env: Env): Promise<Res
     expires_at: account.expiresAt,
   }
   return json({ user, password: account.password }, 201, { 'Set-Cookie': cookie })
+}
+
+const ChangePasswordSchema = z.object({
+  current_password: z.string().min(1).max(256),
+  new_password: z.string().min(1).max(256),
+})
+
+/**
+ * PATCH /api/auth/password — the account's own password, changed by the person
+ * who holds it.
+ *
+ * Until now the only way to change a password was for the owner to reset it,
+ * which means the one thing a person could not do about a credential they think
+ * has leaked is replace it — they had to ask the operator, who ends up knowing
+ * the new one. For a product whose premise is that the operator sees as little
+ * as possible, that is the wrong shape.
+ *
+ * The current password is required and verified, so a stolen *session* cannot
+ * be escalated into a stolen *account*. Every other session is revoked on
+ * success, which is the point of changing it: if someone else was signed in,
+ * they are not anymore. The caller gets a fresh cookie so the tab doing the
+ * change stays signed in.
+ *
+ * Rate-limited on the same counters as login (the account key, the address
+ * key), because verifying `current_password` here is the same oracle the login
+ * form is — without it, this route is a way to brute-force a password from
+ * inside a session that only had read access to a shared browser.
+ */
+export async function changePassword(request: Request, env: Env): Promise<Response> {
+  const auth = await requireSession(request, env.DB)
+  if (auth instanceof Response) return auth
+
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return apiError('invalid_request', 400, 'body must be JSON')
+  }
+  const parsed = ChangePasswordSchema.safeParse(body)
+  if (!parsed.success) {
+    return apiError('invalid_request', 400, 'current_password and new_password are required')
+  }
+
+  const invalid = validateCredentials(auth.user.username, parsed.data.new_password)
+  if (invalid) return apiError('invalid_request', 400, invalid)
+
+  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
+  const rate = await checkLoginAllowed(env.DB, ip, auth.user.username, env)
+  if (rate.blocked) {
+    return apiError('rate_limited', 429, 'too many attempts, try again later', {
+      'Retry-After': String(rate.retryAfterSeconds),
+    })
+  }
+
+  const row = await env.DB.prepare('SELECT password_hash FROM users WHERE id = ?')
+    .bind(auth.user.id)
+    .first<{ password_hash: string | null }>()
+  const valid = row?.password_hash
+    ? await verifyPassword(parsed.data.current_password, row.password_hash)
+    : false
+  if (!valid) {
+    await recordLoginFailure(env.DB, ip, auth.user.username, env)
+    return apiError('invalid_credentials', 401, 'senha atual incorreta')
+  }
+
+  await env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+    .bind(await hashPassword(parsed.data.new_password), auth.user.id)
+    .run()
+  await clearLoginFailures(env.DB, auth.user.username, env, ip)
+
+  // Every device, including this one — then a new cookie for the tab that asked,
+  // so changing the password does not read as being kicked out.
+  await revokeAllSessions(env.DB, auth.user.id)
+  const { cookie } = await createSession(env.DB, auth.user.id, auth.user.expires_at)
+  return json({ ok: true }, 200, { 'Set-Cookie': cookie })
 }
 
 export async function logout(request: Request, env: Env): Promise<Response> {

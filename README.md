@@ -28,7 +28,9 @@ can choose as little as three hours.
   bytes), history purges, on-demand maintenance, and an audit trail of every
   owner action that changed something
 - Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login
-  with no timing oracle, case-insensitive usernames
+  with no timing oracle, case-insensitive usernames, and a self-service
+  password change that signs every other device out — the counters store a
+  salted digest of the caller's address, never the address
 - Disappearing messages: every message deletes itself — from the database, the
   bucket and every cache that copied it — within the window its conversation
   chose (3h, 5h, 12h, 1d, 3d, 5d or 7d; 7 days is the default and the

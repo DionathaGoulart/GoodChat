@@ -35,6 +35,7 @@ All endpoints return JSON. Errors always use the shape
 | GET    | `/api/health`                 | no   | Liveness check                         |
 | POST   | `/api/auth/login`             | no   | Session cookie from username/password  |
 | POST   | `/api/auth/temp`              | no   | Guest account (expires) + session, credentials returned once |
+| PATCH  | `/api/auth/password`          | yes  | Change own password (needs the current one; revokes every other session) |
 | POST   | `/api/auth/logout`            | no   | Revoke session (idempotent)            |
 | GET    | `/api/auth/me`                | yes  | Current user (includes `role`, the three theme fields, `skin` and `push_preview`) |
 | PATCH  | `/api/settings`               | yes  | Appearance (`theme_mode`, `theme_light`, `theme_dark` per call; `skin` and `push_preview` optional, absent keeps the stored one) |
@@ -100,6 +101,13 @@ is what makes the policy worth having.
   stores only the SHA-256 of the token, so a leaked database cannot mint
   sessions. Sliding 7-day expiry with a 30-day hard cap; refreshes are
   persisted only when they gain at least one hour.
+- Password change (`PATCH /api/auth/password`) verifies the current password
+  first, so a borrowed session cannot be escalated into a stolen account, and
+  revokes every session on success — the caller included, who is handed a
+  fresh cookie so the tab doing the change stays signed in. It shares the login
+  counters, because verifying the current password is the same oracle the login
+  form is. Without this route the only way to replace a password was an owner
+  reset, which ends with the operator knowing it.
 - Login rate limiting: fixed 15-minute window in D1, 5 failures per
   account and 20 per IP. Blocked attempts return 429 with `Retry-After`.
   Every key derived from an address is a digest salted with `RATE_LIMIT_SALT`,

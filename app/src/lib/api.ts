@@ -157,6 +157,20 @@ export function logout(): Promise<{ ok: boolean }> {
   return call('/api/auth/logout', { method: 'POST' })
 }
 
+/**
+ * Own password. Requires the current one, and signs every *other* device out —
+ * the worker hands this tab a fresh cookie so it stays where it is.
+ */
+export function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ ok: boolean }> {
+  return call('/api/auth/password', {
+    method: 'PATCH',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
+}
+
 export function me(): Promise<{ user: SessionUser }> {
   return call('/api/auth/me')
 }

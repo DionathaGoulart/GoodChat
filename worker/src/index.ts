@@ -15,7 +15,7 @@ import {
   updateAccount,
 } from './routes/admin'
 import { tempAccountConfig } from './lib/accounts'
-import { createTempSession, login, logout, me } from './routes/auth'
+import { changePassword, createTempSession, login, logout, me } from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
 import { createUploadUrl, serveMedia } from './routes/media'
 import { heartbeat } from './routes/presence'
@@ -88,6 +88,9 @@ async function route(
   }
   if (pathname === '/api/auth/login' && method === 'POST') return login(request, env)
   if (pathname === '/api/auth/temp' && method === 'POST') return createTempSession(request, env)
+  if (pathname === '/api/auth/password' && method === 'PATCH') {
+    return changePassword(request, env)
+  }
   if (pathname === '/api/auth/logout' && method === 'POST') return logout(request, env)
   if (pathname === '/api/auth/me' && method === 'GET') return me(request, env)
   if (pathname === '/api/settings' && method === 'PATCH') return updateSettings(request, env)

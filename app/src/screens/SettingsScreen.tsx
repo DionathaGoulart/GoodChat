@@ -15,6 +15,7 @@ import { useSession } from '../hooks/useSession'
 import { Panel } from '../components/Panel'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { ProfileCard } from '../components/ProfileCard'
+import { PasswordCard } from '../components/PasswordCard'
 import { TempAccountBanner } from '../components/TempAccount'
 import { navigate } from '../lib/router'
 
@@ -58,6 +59,8 @@ export function SettingsScreen() {
       <TempAccountBanner />
 
       <ProfileCard />
+
+      <PasswordCard />
 
       <Panel title="aparencia.cfg">
         <div>
