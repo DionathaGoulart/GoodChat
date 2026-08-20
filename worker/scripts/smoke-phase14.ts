@@ -428,10 +428,11 @@ try {
   await api(`/api/admin/users/${created.body.id}`, { method: 'DELETE', cookie: ownerCookie })
 
   const trailAfter = await api('/api/admin/audit', { cookie: ownerCookie })
-  const added = trailAfter.body.entries.slice(
-    0,
-    trailAfter.body.entries.length - trailBefore.body.entries.length,
-  )
+  // By id, not by how much longer the list got: the endpoint returns the 50
+  // newest rows, so on an instance that has been running a while both reads
+  // come back the same length and a length diff is silently always zero.
+  const seenBefore = new Set(trailBefore.body.entries.map((entry: any) => entry.id))
+  const added = trailAfter.body.entries.filter((entry: any) => !seenBefore.has(entry.id))
   const actions = added.map((entry: any) => entry.action)
   check(
     'creating, taking over and deleting an account are all recorded',
@@ -450,12 +451,13 @@ try {
   await api('/api/admin/users', { cookie: ownerCookie })
   await api('/api/admin/conversations', { cookie: ownerCookie })
   const trailAfterReads = await api('/api/admin/audit', { cookie: ownerCookie })
+  // Same reason: compare the newest id rather than the length, which saturates.
   check(
     'reading the console records nothing',
-    trailAfterReads.body.entries.length === trailAfter.body.entries.length,
+    trailAfterReads.body.entries[0]?.id === trailAfter.body.entries[0]?.id,
     {
-      before: trailAfter.body.entries.length,
-      after: trailAfterReads.body.entries.length,
+      before: trailAfter.body.entries[0]?.action,
+      after: trailAfterReads.body.entries[0]?.action,
     },
   )
 
