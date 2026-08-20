@@ -160,7 +160,15 @@ cd worker
 npx wrangler secret put B2_KEY_ID
 npx wrangler secret put B2_APPLICATION_KEY
 npx wrangler secret put VAPID_PRIVATE_KEY
+npx wrangler secret put RATE_LIMIT_SALT
 ```
+
+`RATE_LIMIT_SALT` is optional but wanted: the rate-limit counters store a
+salted digest of the caller's address rather than the address itself, and the
+IPv4 space is small enough that an unsalted SHA-256 is a lookup table. Unset,
+it falls back to a constant — addresses still never land in the table in the
+clear, but the digest stops being one-way to anyone who can read `login_attempts`.
+Any long random string works; changing it only resets the live counters.
 
 Non-secrets can live in `wrangler.jsonc` (committable):
 

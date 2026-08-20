@@ -94,6 +94,9 @@ is what makes the policy worth having.
   persisted only when they gain at least one hour.
 - Login rate limiting: fixed 15-minute window in D1, 5 failures per
   account and 20 per IP. Blocked attempts return 429 with `Retry-After`.
+  Every key derived from an address is a digest salted with `RATE_LIMIT_SALT`,
+  never the address: a counter only has to be countable, and this table lives
+  in the database the owner console reads.
 - Other quotas share the same counter table, namespaced by key: guest
   signups per IP per hour (`temp:<ip>`) and presign requests per account per
   hour (`upload:<user id>`, 60). Both charge on success — those calls are

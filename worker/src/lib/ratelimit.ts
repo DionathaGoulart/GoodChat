@@ -1,7 +1,12 @@
 // Fixed-window rate limiting, counters in D1 (`login_attempts`, kept under its
 // original name so migrations stay append-only). Keys are namespaced by
-// purpose: "user:<username>" and "ip:<ip>" for login, "temp:<ip>" for guest
-// account creation, "upload:<user id>" for presign requests.
+// purpose: "user:<username>" and "ip:<digest>" for login, "temp:<digest>" for
+// guest account creation, "upload:<user id>" for presign requests.
+//
+// Every key derived from an address is a salted digest, never the address. A
+// counter only has to be countable, and this table lives in the same database
+// the owner console reads — "who tried to sign in, from where, in the last
+// hour" is not something it should be able to answer.
 //
 // Login uses two independent keys per attempt: per-account and per-IP. The
 // per-IP limit is looser so one flatmate fat-fingering a password doesn't lock
@@ -16,7 +21,8 @@
 // throttled exactly as before; the victim, signing in from the phone or laptop
 // they always use, is not collateral.
 //
-// The trust row stores SHA-256(username + IP), never the address itself.
+// The trust row is salted by the username on top, so one account's row cannot
+// be correlated with another's for the same address.
 
 const WINDOW_MS = 15 * 60 * 1000
 const MAX_PER_ACCOUNT = 5
@@ -46,16 +52,20 @@ export async function checkLoginAllowed(
   db: D1Database,
   ip: string,
   username: string,
+  env: Env,
 ): Promise<RateLimitStatus> {
   const now = Date.now()
   const windowFloor = now - WINDOW_MS
-  const trusted = await trustedKey(username, ip)
+  const [trusted, address] = await Promise.all([
+    trustedKey(username, ip, env),
+    ipKey(ip, env),
+  ])
   const rows = await db
     .prepare(
       `SELECT key, count, window_start FROM login_attempts
        WHERE key IN (?1, ?2, ?3) AND window_start > ?4`,
     )
-    .bind(userKey(username), ipKey(ip), trusted, Math.min(windowFloor, now - LOGIN_TRUST_TTL_MS))
+    .bind(userKey(username), address, trusted, Math.min(windowFloor, now - LOGIN_TRUST_TTL_MS))
     .all<{ key: string; count: number; window_start: number }>()
 
   const isTrusted = rows.results.some(
@@ -85,6 +95,7 @@ export async function recordLoginFailure(
   db: D1Database,
   ip: string,
   username: string,
+  env: Env,
 ): Promise<void> {
   const now = Date.now()
   const windowFloor = now - WINDOW_MS
@@ -96,7 +107,7 @@ export async function recordLoginFailure(
   )
   await db.batch([
     upsert.bind(userKey(username), now, windowFloor),
-    upsert.bind(ipKey(ip), now, windowFloor),
+    upsert.bind(await ipKey(ip, env), now, windowFloor),
   ])
 }
 
@@ -109,6 +120,7 @@ export async function recordLoginFailure(
 export async function clearLoginFailures(
   db: D1Database,
   username: string,
+  env: Env,
   ip?: string,
 ): Promise<void> {
   await db.prepare('DELETE FROM login_attempts WHERE key = ?').bind(userKey(username)).run()
@@ -118,7 +130,7 @@ export async function clearLoginFailures(
       `INSERT INTO login_attempts (key, count, window_start) VALUES (?1, 1, ?2)
        ON CONFLICT(key) DO UPDATE SET window_start = ?2`,
     )
-    .bind(await trustedKey(username, ip), Date.now())
+    .bind(await trustedKey(username, ip, env), Date.now())
     .run()
 }
 
@@ -166,20 +178,54 @@ function userKey(username: string): string {
   return `user:${username.toLowerCase()}`
 }
 
-function ipKey(ip: string): string {
-  return `ip:${ip}`
+/**
+ * Salt for every key derived from an address. `RATE_LIMIT_SALT` is what makes
+ * the digest actually one-way: the IPv4 space is 2^32 wide, so an unsalted
+ * SHA-256 of an address is a lookup table, not a hash. The constant fallback
+ * keeps a fresh instance working — the address still never lands in the table
+ * in the clear — but an operator who wants the counters to be unreadable to
+ * whoever can read D1 sets the secret:
+ *
+ *   wrangler secret put RATE_LIMIT_SALT
+ */
+const DEFAULT_RATE_LIMIT_SALT = 'goodchat-rate-limit'
+
+function saltOf(env: Env): string {
+  const configured = env.RATE_LIMIT_SALT?.trim()
+  return configured && configured.length > 0 ? configured : DEFAULT_RATE_LIMIT_SALT
 }
 
-/**
- * Key of the "this address has signed in to this account" row. Hashed and
- * salted by the username so the table never stores an address in the clear and
- * one row cannot be correlated with another account's.
- */
-async function trustedKey(username: string, ip: string): Promise<string> {
-  const data = new TextEncoder().encode(`${username.toLowerCase()}:${ip}`)
+async function digestKey(prefix: string, value: string, env: Env): Promise<string> {
+  const data = new TextEncoder().encode(`${saltOf(env)}:${value}`)
   const digest = await crypto.subtle.digest('SHA-256', data)
   const hex = [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('')
-  return `${TRUSTED_KEY_PREFIX}${hex}`
+  return `${prefix}${hex}`
+}
+
+/**
+ * Counter key for one address. Hashed for the same reason the trust row below
+ * is: a failure counter is a record of who tried to sign in and from where, and
+ * it sits in the same database the owner console queries. The counting works
+ * identically on a digest — nothing ever needs to read the address back.
+ */
+function ipKey(ip: string, env: Env): Promise<string> {
+  return digestKey('ip:', ip, env)
+}
+
+/**
+ * The same, for a quota keyed by address rather than by account — guest signups
+ * (`temp:`). Exported because the caller is the route that owns that quota.
+ */
+export function addressQuotaKey(prefix: string, ip: string, env: Env): Promise<string> {
+  return digestKey(prefix, ip, env)
+}
+
+/**
+ * Key of the "this address has signed in to this account" row. Salted by the
+ * username as well, so one row cannot be correlated with another account's.
+ */
+function trustedKey(username: string, ip: string, env: Env): Promise<string> {
+  return digestKey(TRUSTED_KEY_PREFIX, `${username.toLowerCase()}:${ip}`, env)
 }

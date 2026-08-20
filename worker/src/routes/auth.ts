@@ -17,6 +17,7 @@ import {
 } from '../lib/session'
 import {
   HOUR_MS,
+  addressQuotaKey,
   checkLoginAllowed,
   clearLoginFailures,
   consumeQuota,
@@ -48,7 +49,7 @@ export async function login(request: Request, env: Env): Promise<Response> {
   const username = parsed.data.username.trim().toLowerCase()
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
 
-  const rate = await checkLoginAllowed(env.DB, ip, username)
+  const rate = await checkLoginAllowed(env.DB, ip, username, env)
   if (rate.blocked) {
     return apiError('rate_limited', 429, 'too many login attempts, try again later', {
       'Retry-After': String(rate.retryAfterSeconds),
@@ -77,11 +78,11 @@ export async function login(request: Request, env: Env): Promise<Response> {
     ? await verifyPassword(parsed.data.password, user.password_hash)
     : await burnPasswordTime(parsed.data.password).then(() => false)
   if (!user || !valid) {
-    await recordLoginFailure(env.DB, ip, username)
+    await recordLoginFailure(env.DB, ip, username, env)
     return apiError('invalid_credentials', 401)
   }
 
-  await clearLoginFailures(env.DB, username, ip)
+  await clearLoginFailures(env.DB, username, env, ip)
   const { password_hash, is_temp, ...rest } = user
   const publicUser: SessionUser = { ...rest, is_temp: is_temp === 1 }
   const { cookie } = await createSession(env.DB, user.id, user.expires_at)
@@ -109,7 +110,13 @@ export async function createTempSession(request: Request, env: Env): Promise<Res
 
   const now = Date.now()
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
-  const quota = await consumeQuota(env.DB, `temp:${ip}`, config.perIpPerHour, HOUR_MS, now)
+  const quota = await consumeQuota(
+    env.DB,
+    await addressQuotaKey('temp:', ip, env),
+    config.perIpPerHour,
+    HOUR_MS,
+    now,
+  )
   if (!quota.allowed) {
     return apiError('rate_limited', 429, 'too many guest accounts from this address', {
       'Retry-After': String(quota.retryAfterSeconds),
