@@ -61,7 +61,9 @@
     "VAPID_PUBLIC_KEY": "BJGYYnihl2IiXX0tg_cyQemfkNKKEI5IxgX15d0QrH6dYcyJEXVTS3bVeiG_8ibELE0SoShEFk3XRy0dfcwUcnk",
     "VAPID_SUBJECT": "mailto:dionatha.work@gmail.com",
     // Extra browser origins allowed to call the API with credentials. Empty in
-    // production: the SPA is same-origin, so nothing else needs access.
+    // production: the SPA is same-origin, so nothing else needs access. The
+    // same list decides the WebSocket handshake (src/routes/ws.ts) and the CSRF
+    // check on POST/PATCH/PUT/DELETE (src/index.ts).
     "ALLOWED_ORIGINS": "",
     // Delete claimed media older than this many days. "0" = keep forever.
     // Turning it on makes old bubbles render the "mídia expirada" placeholder.

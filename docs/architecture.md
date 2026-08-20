@@ -72,6 +72,14 @@ forbids the wildcard) only when it is the Worker's own origin or appears in
 the list is empty and CORS is inert; local dev allow-lists the Vite server
 on 5173.
 
+The same list is checked on the *request* for every `POST`, `PATCH`, `PUT` and
+`DELETE`, and that is the CSRF answer rather than a side effect of one. The
+`SameSite=Strict` cookie and the preflight a JSON body forces both already
+close it — but both are properties of the browser, and a form post of
+`Content-Type: text/plain` is a simple request that arrives with no preflight
+and parses fine as JSON. A missing `Origin` is allowed: non-browser clients
+send none, and anything that can forge the header can forge the rest.
+
 Every response carries `X-Content-Type-Options`, `Referrer-Policy`,
 `Permissions-Policy`, `Cross-Origin-Opener-Policy` and `X-Frame-Options`;
 over https it also carries HSTS. The SPA document and its assets are fetched

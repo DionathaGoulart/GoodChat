@@ -1,4 +1,4 @@
-import { applySecurityHeaders, apiError, corsHeaders, json } from './lib/http'
+import { applySecurityHeaders, apiError, corsHeaders, isAllowedOrigin, json } from './lib/http'
 import { runCleanup } from './lib/cleanup'
 import { MEDIA_PATH_PREFIX } from './lib/media'
 import {
@@ -26,6 +26,9 @@ import { lookupUsers } from './routes/users'
 import { connectConversation } from './routes/ws'
 
 export { ConversationAgent } from './agent'
+
+/** Methods that change something, and therefore need the CSRF origin check. */
+const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE'])
 
 /** `/api/admin/users/<id>/purge` → ["users", "<id>", "purge"]. */
 function adminSegments(pathname: string): string[] {
@@ -149,6 +152,27 @@ export default {
       const headers = new Headers(corsHeaders(origin, url.origin, env))
       applySecurityHeaders(headers, { https })
       return new Response(null, { status: 204, headers })
+    }
+
+    // CSRF, checked on the request rather than inferred from the response.
+    // The session cookie is SameSite=Strict and a JSON body forces a preflight,
+    // so nothing here is reachable cross-site today — but both of those are
+    // properties of the *browser*, and neither leaves a mark in this Worker.
+    // A form post of Content-Type text/plain is a simple request that arrives
+    // with no preflight and parses fine as JSON; the only thing stopping it is
+    // the cookie policy. This is the same allowlist routes/ws.ts already
+    // applies to the handshake (lib/http.ts owns the one list), and it is what
+    // makes the refusal explicit instead of incidental. A missing Origin is
+    // allowed: non-browser clients (the smoke scripts, curl) send none, and a
+    // request that can forge the header can forge anything.
+    if (
+      MUTATING_METHODS.has(request.method) &&
+      origin &&
+      !isAllowedOrigin(origin, url.origin, env)
+    ) {
+      const headers = new Headers(corsHeaders(origin, url.origin, env))
+      applySecurityHeaders(headers, { https })
+      return apiError('forbidden', 403, 'origin not allowed', headers)
     }
 
     const response = await route(request, env, url, ctx)
