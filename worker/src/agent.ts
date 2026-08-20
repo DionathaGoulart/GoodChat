@@ -86,6 +86,8 @@ interface MessageRow {
   media_key: string | null
   created_at: number
   status: WireMessage['status']
+  /** The encryption envelope, stored verbatim as JSON. Null = plaintext. */
+  enc: string | null
 }
 
 const HISTORY_LIMIT = 50
@@ -154,9 +156,21 @@ export class ConversationAgent extends Agent<Env> {
         created_at INTEGER NOT NULL,
         status     TEXT NOT NULL DEFAULT 'sent',
         edited_at  INTEGER,
-        deleted_at INTEGER
+        deleted_at INTEGER,
+        enc        TEXT
       )
     `
+    // Objects created before end-to-end encryption already have the table, and
+    // CREATE TABLE IF NOT EXISTS will not add a column to one. There is no
+    // migration runner inside a Durable Object and PRAGMA is not available to
+    // ask, so the idiom is to try and let the duplicate-column error be the
+    // answer. Cheap: this runs once per wake, on a table of at most a few
+    // hundred rows.
+    try {
+      this.sql`ALTER TABLE messages ADD COLUMN enc TEXT`
+    } catch {
+      // Already there.
+    }
     // At-least-once dedup: one row per (sender, client_id).
     this.sql`
       CREATE UNIQUE INDEX IF NOT EXISTS messages_sender_client
@@ -174,6 +188,21 @@ export class ConversationAgent extends Agent<Env> {
     this.sql`
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)
     `
+
+    // A note on what "deleted" means at this layer, because it is not what the
+    // rest of this file promises. A plain DELETE frees the page, it does not
+    // overwrite it, so a deleted message stays legible in the database file
+    // until something reuses the space. Both SQLite answers to that are closed
+    // to a Durable Object: `VACUUM` fails ("cannot VACUUM from within a
+    // transaction", the DO runs its SQL inside one) and
+    // `PRAGMA secure_delete = ON` fails ("not authorized", the runtime blocks
+    // pragmas outright). Neither is worth retrying — they cannot succeed here.
+    //
+    // What this does mean is bounded: the file is Cloudflare-managed storage
+    // with no read path out of it, not for the operator and not through any API
+    // in this Worker, so the residue is unreachable rather than merely deleted.
+    // Making it truly unreadable is what end-to-end encryption would buy, and
+    // it is the argument for it — see docs/architecture.md.
 
     // Waking up is the one moment this object is guaranteed to run code, so it
     // is where the clock is caught up: delete whatever aged out while it slept
@@ -196,7 +225,7 @@ export class ConversationAgent extends Agent<Env> {
       const userId = request.headers.get('x-goodchat-user-id')
       if (!userId) return new Response('unauthorized', { status: 401 })
       const last = this.sql<MessageRow>`
-        SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status
+        SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, enc
         FROM messages WHERE deleted_at IS NULL ORDER BY rowid DESC LIMIT 1
       `
       const unread = this.sql<{ n: number }>`
@@ -575,7 +604,7 @@ export class ConversationAgent extends Agent<Env> {
       startRowid = undelivered[0].rowid
     }
     const rows = this.sql<MessageRow>`
-      SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status
+      SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, enc
       FROM messages WHERE rowid >= ${startRowid} ORDER BY rowid ASC
     `
     this.send(conn, { type: 'history', messages: rows.map(toWire) })
@@ -650,6 +679,26 @@ export class ConversationAgent extends Agent<Env> {
       this.send(conn, { type: 'error', error: 'media_key_required' })
       return
     }
+    // An envelope has to name the sender's own device among its recipients or
+    // the sender's other tabs could never read what it just sent — and, more
+    // usefully here, it is the one structural claim about `enc` this object can
+    // check without holding a key.
+    if (event.enc && !(event.enc.sender_device in event.enc.keys)) {
+      this.send(conn, { type: 'error', error: 'invalid_envelope' })
+      return
+    }
+    // The end of the transition: once every client encrypts, a plaintext
+    // message is a client that should not be trusted rather than an old one.
+    // Off by default — see the note in wrangler.jsonc for why turning it on is
+    // a decision about the fleet and not about the code.
+    if (!event.enc && String(this.env.E2EE_REQUIRED) === 'true') {
+      this.send(conn, {
+        type: 'error',
+        error: 'encryption_required',
+        message: 'esta instância só aceita mensagens criptografadas',
+      })
+      return
+    }
     // The wire schema only bounds the length; the key shape is what the media
     // proxy validates on every read (lib/media.ts). Checking it here too keeps
     // sender-controlled junk out of the other side's thread — and out of the
@@ -673,7 +722,12 @@ export class ConversationAgent extends Agent<Env> {
       this.send(conn, { type: 'error', error: 'invalid_media_key' })
       return
     }
-    if (event.msg_type === 'sticker' && !STICKER_ID_RE.test(event.body)) {
+    // Only checkable while the body is readable. On an encrypted message the id
+    // is inside the ciphertext, so the check moves to the side that turns it
+    // into a URL — the recipient, in app/src/components/MessageBubble.tsx —
+    // which is a stricter place for it than here ever was: it now also covers a
+    // sender that skipped this Worker entirely.
+    if (!event.enc && event.msg_type === 'sticker' && !STICKER_ID_RE.test(event.body)) {
       this.send(conn, { type: 'error', error: 'invalid_sticker' })
       return
     }
@@ -701,10 +755,11 @@ export class ConversationAgent extends Agent<Env> {
     )
     const status: WireMessage['status'] = peerOnline ? 'delivered' : 'sent'
 
+    const enc = event.enc ? JSON.stringify(event.enc) : null
     this.sql`
-      INSERT INTO messages (id, client_id, sender_id, type, body, media_key, created_at, status)
+      INSERT INTO messages (id, client_id, sender_id, type, body, media_key, created_at, status, enc)
       VALUES (${id}, ${event.client_id}, ${userId}, ${event.msg_type}, ${event.body},
-              ${event.media_key ?? null}, ${now}, ${status})
+              ${event.media_key ?? null}, ${now}, ${status}, ${enc})
     `
 
     // Everyone gets the full frame; the sender reconciles by client_id
@@ -720,6 +775,7 @@ export class ConversationAgent extends Agent<Env> {
       media_key: event.media_key ?? null,
       created_at: now,
       status,
+      enc: event.enc ?? null,
     }
     for (const c of this.getConnections<ConnState>()) this.send(c, frame)
 
@@ -910,5 +966,18 @@ function toWire(row: MessageRow): WireMessage {
     media_key: row.media_key,
     created_at: row.created_at,
     status: row.status,
+    // Stored as the JSON text the sender supplied and handed back untouched:
+    // this object has no key material and nothing to say about it. A row that
+    // fails to parse is reported as plaintext, which renders as unreadable
+    // rather than as a broken frame.
+    enc: row.enc ? (safeParseEnvelope(row.enc) ?? null) : null,
+  }
+}
+
+function safeParseEnvelope(raw: string): WireMessage['enc'] {
+  try {
+    return JSON.parse(raw) as WireMessage['enc']
+  } catch {
+    return null
   }
 }

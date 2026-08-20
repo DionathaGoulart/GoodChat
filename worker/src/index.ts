@@ -17,6 +17,7 @@ import {
 import { tempAccountConfig } from './lib/accounts'
 import { changePassword, createTempSession, login, logout, me } from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
+import { listDevices, registerDevice } from './routes/devices'
 import { createUploadUrl, serveMedia } from './routes/media'
 import { heartbeat } from './routes/presence'
 import { updateProfile } from './routes/profile'
@@ -97,6 +98,12 @@ async function route(
   if (pathname === '/api/profile' && method === 'PATCH') return updateProfile(request, env)
   if (pathname === '/api/presence' && method === 'POST') return heartbeat(request, env)
   if (pathname === '/api/users/lookup' && method === 'GET') return lookupUsers(request, env, url)
+  if (pathname === '/api/devices' && method === 'POST') return registerDevice(request, env)
+  // /api/users/<id>/devices — the key directory a sender encrypts against.
+  const devicesMatch = /^\/api\/users\/([^/]+)\/devices$/.exec(pathname)
+  if (devicesMatch && method === 'GET') {
+    return listDevices(request, env, decodeURIComponent(devicesMatch[1]))
+  }
   if (pathname === '/api/conversations' && method === 'GET') return listConversations(request, env)
   if (pathname === '/api/conversations/resolve' && method === 'POST') {
     return resolveConversation(request, env)

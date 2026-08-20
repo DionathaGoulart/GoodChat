@@ -37,6 +37,20 @@ export const MAX_BYTES: Record<'image' | 'video', number> = {
 export const AVATAR_MIMES = ['image/webp', 'image/jpeg', 'image/png'] as const
 export const MAX_AVATAR_BYTES = 512 * 1024
 
+/**
+ * The content type of an end-to-end encrypted attachment. Once the bytes are
+ * ciphertext they have no media type worth declaring, and the real one travels
+ * inside the encrypted message payload where only the two participants can read
+ * it — so this is a *reduction* in what the server learns, not a workaround:
+ * `image/jpeg` versus `image/webp` stops being visible to it.
+ *
+ * What the server still needs is the size cap, and a cap needs to know whether
+ * it is looking at a picture or a video. That one bit comes as `kind` on the
+ * presign request and nothing else does.
+ */
+export const ENCRYPTED_MIME = 'application/octet-stream'
+export const ENCRYPTED_EXT = 'bin'
+
 export const UPLOAD_URL_TTL_SECONDS = 600
 
 /** Objects are immutable (uuid keys, versioned sticker packs) — cache hard. */
@@ -109,7 +123,8 @@ export function isValidObjectKey(key: string): boolean {
 /** Month-prefixed unguessable key — the prefix keeps a future retention job trivial. */
 export function objectKey(mime: string, now = new Date()): string {
   const month = now.toISOString().slice(0, 7) // yyyy-mm
-  return `media/${month}/${crypto.randomUUID()}.${MEDIA_TYPES[mime].ext}`
+  const ext = mime === ENCRYPTED_MIME ? ENCRYPTED_EXT : MEDIA_TYPES[mime].ext
+  return `media/${month}/${crypto.randomUUID()}.${ext}`
 }
 
 /**

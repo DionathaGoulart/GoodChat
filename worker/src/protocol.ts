@@ -21,7 +21,68 @@ export type MessageType = (typeof MESSAGE_TYPES)[number]
 export const MESSAGE_STATUSES = ['sent', 'delivered', 'read'] as const
 export type MessageStatus = (typeof MESSAGE_STATUSES)[number]
 
-export const MAX_BODY_LENGTH = 4096
+/**
+ * What a person may type. The composer enforces it (app/src/components/
+ * Composer.tsx); the wire limit below is a different number for a different
+ * reason.
+ */
+export const MAX_PLAINTEXT_LENGTH = 4096
+
+/**
+ * What may travel in `body`. Once a message is encrypted, `body` is base64 of
+ * AES-GCM ciphertext, so it is no longer a character count of anything a person
+ * typed: 4096 emoji is 16KB of UTF-8, plus a tag, plus base64's third. This is
+ * a bound against abuse rather than a product rule — the real protection is the
+ * Durable Object's token bucket.
+ */
+export const MAX_BODY_LENGTH = 32768
+
+// --- end-to-end encryption (docs/architecture.md) ---
+//
+// The envelope that turns `body` from text into ciphertext. The server stores
+// and forwards it without being able to read any of it: every field here is
+// either a public key id or something already encrypted.
+//
+// One content key per message encrypts the body (and the media object, under
+// its own IV). That key is then wrapped once per device allowed to read it —
+// the peer's devices plus the sender's own, so a second tab on another machine
+// is not locked out of what this one sent. `sender_device` says whose public
+// key the recipient has to run ECDH against to unwrap.
+//
+// Optional throughout: a frame without `enc` is a plaintext message, which is
+// what carries the transition. Nothing that was already sent has to be
+// migrated, because retention deletes it within seven days on its own.
+
+/** A device id is SHA-256 of its public key, truncated (migration 0012). */
+export const DEVICE_ID_RE = /^[0-9a-f]{32}$/
+
+/**
+ * Ceiling on how many devices one message may be addressed to. A person does
+ * not have thirty-two browsers; this stops a client from making the server
+ * store an arbitrarily large key map per message.
+ */
+export const MAX_ENVELOPE_RECIPIENTS = 32
+
+export const EncEnvelopeSchema = z.object({
+  v: z.literal(1),
+  /** AES-GCM IV for `body`, base64url. */
+  iv: z.string().min(1).max(64),
+  /** Which device's public key unwraps the content key. */
+  sender_device: z.string().regex(DEVICE_ID_RE),
+  /** device id -> the content key, wrapped for that device. */
+  keys: z
+    .record(
+      z.string().regex(DEVICE_ID_RE),
+      z.object({ iv: z.string().min(1).max(64), ct: z.string().min(1).max(512) }),
+    )
+    .refine(
+      (keys) => Object.keys(keys).length >= 1 && Object.keys(keys).length <= MAX_ENVELOPE_RECIPIENTS,
+      { message: `keys must name 1 to ${MAX_ENVELOPE_RECIPIENTS} devices` },
+    ),
+  /** AES-GCM IV for the bucket object, when this message carries one. */
+  media_iv: z.string().min(1).max(64).optional(),
+})
+export type EncEnvelope = z.infer<typeof EncEnvelopeSchema>
 
 // --- retention (PRD §3.9) ---
 //
@@ -88,6 +149,8 @@ export const WireMessageSchema = z.object({
   media_key: z.string().nullable(),
   created_at: z.number(),
   status: z.enum(MESSAGE_STATUSES),
+  /** Absent on a plaintext message — see the note above. */
+  enc: EncEnvelopeSchema.nullish(),
 })
 export type WireMessage = z.infer<typeof WireMessageSchema>
 
@@ -100,6 +163,7 @@ export const ClientEventSchema = z.discriminatedUnion('type', [
     msg_type: z.enum(MESSAGE_TYPES),
     body: z.string().max(MAX_BODY_LENGTH),
     media_key: z.string().min(1).max(512).optional(),
+    enc: EncEnvelopeSchema.optional(),
   }),
   z.object({ type: z.literal('typing') }),
   // Either participant may retune the window; the change applies to both and

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import {
   AVATAR_MIMES,
+  ENCRYPTED_MIME,
   MAX_AVATAR_BYTES,
   MAX_BYTES,
   MEDIA_PATH_PREFIX,
@@ -40,6 +41,12 @@ const UploadRequestSchema = z.object({
   mime: z.string().min(1).max(128),
   size: z.number().int().positive(),
   purpose: z.enum(['message', 'avatar']).default('message'),
+  /**
+   * Only meaningful for an encrypted attachment, where `mime` says nothing:
+   * ciphertext has no media type, so this is the one bit the size cap needs.
+   * Ignored otherwise — the MIME already answers it.
+   */
+  kind: z.enum(['image', 'video']).optional(),
 })
 
 export async function createUploadUrl(request: Request, env: Env): Promise<Response> {
@@ -57,18 +64,29 @@ export async function createUploadUrl(request: Request, env: Env): Promise<Respo
     return apiError('invalid_request', 400, 'expected { mime, size }')
   }
 
-  const { mime, size, purpose } = parsed.data
+  const { mime, size, purpose, kind } = parsed.data
+  // An encrypted attachment declares no real media type — see ENCRYPTED_MIME.
+  // It is a message attachment by definition: an avatar is readable by the
+  // whole instance (routes/media.ts `canRead`), so there is nobody to encrypt
+  // one *to*, and it stays a plain image.
+  const encrypted = mime === ENCRYPTED_MIME && purpose === 'message'
+  if (encrypted && !kind) {
+    return apiError('invalid_request', 400, 'encrypted uploads must declare kind')
+  }
   const mediaType = MEDIA_TYPES[mime]
-  if (!mediaType) return apiError('unsupported_media_type', 415, `mime ${mime} not allowed`)
+  if (!encrypted && !mediaType) {
+    return apiError('unsupported_media_type', 415, `mime ${mime} not allowed`)
+  }
   if (purpose === 'avatar' && !AVATAR_MIMES.includes(mime as (typeof AVATAR_MIMES)[number])) {
     return apiError('unsupported_media_type', 415, `avatar must be one of ${AVATAR_MIMES.join(', ')}`)
   }
-  const maxBytes = purpose === 'avatar' ? MAX_AVATAR_BYTES : MAX_BYTES[mediaType.kind]
+  const sizeKind = encrypted ? kind! : mediaType!.kind
+  const maxBytes = purpose === 'avatar' ? MAX_AVATAR_BYTES : MAX_BYTES[sizeKind]
   if (size > maxBytes) {
     return apiError(
       'payload_too_large',
       413,
-      `${purpose === 'avatar' ? 'avatar' : mediaType.kind} must be <= ${maxBytes} bytes`,
+      `${purpose === 'avatar' ? 'avatar' : sizeKind} must be <= ${maxBytes} bytes`,
     )
   }
 

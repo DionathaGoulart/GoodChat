@@ -11,6 +11,9 @@
 //      ended the second the clock passed, so this run is about the data;
 //   4. orphan tombstones — a deleted account whose last conversation went away
 //      afterwards has nothing left to name;
+//   4b. stale device keys — a browser that stopped refreshing its row in the
+//      key directory (migration 0012) is a public key nobody holds the private
+//      half of, and every sender keeps wrapping a content key for it;
 //   5. orphan media — an upload that was presigned (or even completed) but
 //      whose message never landed is unreachable bytes in the bucket. Nothing
 //      else will ever find it: only the media index knows it exists;
@@ -55,12 +58,27 @@ const MAX_CONVERSATIONS_PER_RUN = 20
 
 const LOGIN_ATTEMPT_TTL_MS = 60 * 60 * 1000
 
+/**
+ * How long a device key stays in the directory without the device saying it is
+ * still there (migration 0012). A browser refreshes its row on every session
+ * load, so this only collects the ones that stopped coming back — storage
+ * cleared, profile deleted, machine gone. Generous, because the cost of
+ * collecting one early is real: its owner silently stops being able to read
+ * new messages until it registers again, while the cost of keeping a dead one
+ * is a few wasted bytes per message.
+ */
+const DEVICE_TTL_MS = 60 * 24 * 60 * 60 * 1000
+
+/** Device rows collected per run. */
+const MAX_DEVICES_PER_RUN = 200
+
 export interface CleanupReport {
   sessions_deleted: number
   login_attempts_deleted: number
   temp_accounts_deleted: number
   temp_conversations_deleted: number
   tombstones_removed: number
+  devices_deleted: number
   orphan_media_deleted: number
   expired_media_deleted: number
   retention_media_deleted: number
@@ -74,6 +92,7 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
     temp_accounts_deleted: 0,
     temp_conversations_deleted: 0,
     tombstones_removed: 0,
+    devices_deleted: 0,
     orphan_media_deleted: 0,
     expired_media_deleted: 0,
     retention_media_deleted: 0,
@@ -105,6 +124,17 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
   report.temp_conversations_deleted = temp.conversations_deleted
   report.tombstones_removed =
     temp.tombstones_removed + (await sweepOrphanTombstones(env, MAX_TOMBSTONES_PER_RUN))
+
+  // Device keys nobody has refreshed in a long time (migration 0012). Bounded
+  // like everything else here; whatever is left over goes on the next tick.
+  const devices = await env.DB.prepare(
+    `DELETE FROM devices WHERE id IN (
+       SELECT id FROM devices WHERE last_seen_at <= ?1 ORDER BY last_seen_at LIMIT ?2
+     )`,
+  )
+    .bind(now - DEVICE_TTL_MS, MAX_DEVICES_PER_RUN)
+    .run()
+  report.devices_deleted = devices.meta.changes ?? 0
 
   // Message expiry does not depend on the bucket being configured: the rows
   // are what the promise is about, and the DO deletes its own objects.
