@@ -117,11 +117,27 @@ export async function updateProfile(request: Request, env: Env): Promise<Respons
   return json({ user }, 200, sessionHeaders(auth))
 }
 
-/** True when `key` is an `avatars/` object this account presigned. */
+/**
+ * True when `key` is an `avatars/` object this account presigned and has not
+ * spent yet.
+ *
+ * "Not spent" is the part that is easy to miss: an object is claimed once, and
+ * a picture and a message attachment are two different claims on the same row.
+ * Adopting a key that some conversation already holds would point two
+ * referents at one object, and the first one to go — replacing the picture
+ * deletes the bytes right here — would take the other's copy with it. So an
+ * adoptable key is an unclaimed one, which is also what the orphan sweep
+ * considers garbage until this route rescues it.
+ */
 async function ownedAvatar(env: Env, key: string, userId: string): Promise<boolean> {
   if (!isValidObjectKey(key) || !isAvatarKey(key)) return false
   const row = await findObject(env.DB, key)
-  return row !== null && row.user_id === userId
+  return (
+    row !== null &&
+    row.user_id === userId &&
+    row.claimed_at === null &&
+    row.conversation_id === null
+  )
 }
 
 /** Drops a replaced picture from the bucket, the index and the edge cache. */
