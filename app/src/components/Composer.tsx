@@ -8,9 +8,15 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent } from 'react'
-import { MAX_BODY_LENGTH } from '../lib/protocol'
-import { IMAGE_MIMES, MediaError, VIDEO_MIMES, prepareMedia, uploadMedia } from '../lib/media'
-import type { UploadHandle } from '../lib/media'
+import { MAX_PLAINTEXT_LENGTH } from '../lib/protocol'
+import {
+  IMAGE_MIMES,
+  MediaError,
+  VIDEO_MIMES,
+  prepareMedia,
+  uploadEncryptedMedia,
+} from '../lib/media'
+import type { SealedUploadHandle } from '../lib/media'
 import { ApiError } from '../lib/api'
 import { readDraft, writeDraft } from '../lib/drafts'
 import { EmojiPicker } from './EmojiPicker'
@@ -41,7 +47,16 @@ export function Composer({
   /** Which thread the unsent text belongs to (lib/drafts.ts). */
   conversationId: string
   onSend: (body: string) => void
-  onSendMedia: (msgType: 'image' | 'video', mediaKey: string) => void
+  /**
+   * `sealing` carries what the message needs to reference the object it just
+   * uploaded: the content key the bytes were sealed with, its IV, and the real
+   * MIME — none of which the worker ever sees.
+   */
+  onSendMedia: (
+    msgType: 'image' | 'video',
+    mediaKey: string,
+    sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string },
+  ) => void
   onSendSticker: (stickerId: string) => void
   onTyping: () => void
 }) {
@@ -55,7 +70,7 @@ export function Composer({
   const [stickersOpened, setStickersOpened] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const uploadRef = useRef<UploadHandle | null>(null)
+  const uploadRef = useRef<SealedUploadHandle | null>(null)
   const canSend = body.trim().length > 0
 
   // Debounced so a fast typist is not writing to storage on every keystroke.
@@ -92,7 +107,7 @@ export function Composer({
     const start = el?.selectionStart ?? body.length
     const end = el?.selectionEnd ?? body.length
     const next = body.slice(0, start) + unicode + body.slice(end)
-    if (next.length > MAX_BODY_LENGTH) return
+    if (next.length > MAX_PLAINTEXT_LENGTH) return
     setBody(next)
     onTyping()
     requestAnimationFrame(() => {
@@ -127,12 +142,19 @@ export function Composer({
       }
 
       setAttachment({ name: file.name, phase: 'enviando', progress: 0 })
-      const handle = uploadMedia(prepared.blob, prepared.mime, (fraction) =>
+      // Sealed before it leaves the browser, under the same content key the
+      // message body is sealed with — the recipient unwraps once and both open
+      // (lib/e2ee.ts). The bucket and the read proxy hold ciphertext only.
+      const handle = uploadEncryptedMedia(prepared, (fraction) =>
         setAttachment((current) => (current ? { ...current, progress: fraction } : current)),
       )
       uploadRef.current = handle
-      const { key } = await handle.promise
-      onSendMedia(prepared.kind, key)
+      const sealed = await handle.promise
+      onSendMedia(prepared.kind, sealed.key, {
+        contentKey: sealed.contentKey,
+        mediaIv: sealed.mediaIv,
+        mime: sealed.mime,
+      })
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         // user cancelled — no error line
@@ -267,7 +289,7 @@ export function Composer({
           className="composer-input -order-1 max-h-32 min-h-11 w-full flex-1 basis-full resize-none bg-transparent p-2 font-mono text-sm outline-none [field-sizing:content] placeholder:uppercase placeholder:tracking-widest placeholder:opacity-40 sm:order-none sm:w-auto sm:basis-0"
           placeholder="mensagem_"
           rows={1}
-          maxLength={MAX_BODY_LENGTH}
+          maxLength={MAX_PLAINTEXT_LENGTH}
           value={body}
           onChange={onBodyChange}
           onKeyDown={onKeyDown}

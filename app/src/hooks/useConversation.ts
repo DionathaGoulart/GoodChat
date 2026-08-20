@@ -13,6 +13,9 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { wsUrl } from '../lib/api'
+import { base64url, readDeviceKey, type DeviceIdentity } from '../lib/deviceKeys'
+import { createContentKey, openMessage, sealMessage, type Payload } from '../lib/e2ee'
+import { findCachedDevice, getDevices, refreshDevices } from '../lib/deviceDirectory'
 import { dismissNotifications } from '../lib/push'
 import { readCachedMessages, writeCachedMessages } from '../lib/threadCache'
 import {
@@ -27,16 +30,60 @@ import {
 
 export type ConnectionState = 'connecting' | 'online' | 'offline'
 
+/**
+ * Whether what this thread sends is actually encrypted.
+ *
+ * It exists because the honest answer is not always yes, and the failure is
+ * otherwise silent. `seal` falls back to plaintext when this browser has no
+ * identity (private mode, or a browser that refuses IndexedDB) or when the peer
+ * has not opened a build that registers one — both legitimate during the
+ * rollout, and both invisible: the message sends, the thread looks normal, and
+ * nobody is told that the one property this product advertises is not in
+ * effect. So the thread reports it and ThreadScreen says so.
+ *
+ * 'unknown' is the state before the directory has answered, and is deliberately
+ * not rendered as either: claiming "not encrypted" for the half second before
+ * the keys load would teach people to ignore the warning.
+ */
+export type EncryptionState = 'unknown' | 'on' | 'off'
+
 export interface ThreadMessage {
   /** Server id — null while the message is only local ('sending'). */
   id: string | null
   client_id: string
   sender_id: string
   msg_type: WireMessage['msg_type']
+  /** Always plaintext by the time it gets here — see `toThread`. */
   body: string
   media_key: string | null
   created_at: number
   status: MessageStatus | 'sending'
+  /**
+   * This message was encrypted and this device could not open it. Expected,
+   * not exceptional: it is what every message sent before this browser
+   * registered its key looks like, and what a message from a device that has
+   * since rotated looks like. The bubble says so instead of showing nothing.
+   */
+  sealed?: boolean
+  /**
+   * The server refused this send and will not be asked again — the instance
+   * requires encryption and this device has no key, or the envelope did not
+   * hold up. Local only: nothing on the wire carries it, and it exists so the
+   * bubble can stop claiming to be on its way.
+   */
+  rejected?: boolean
+  /**
+   * The content key, kept only in memory and only for a media message — the
+   * bubble needs it to decrypt the object it fetches from /api/media.
+   */
+  contentKey?: CryptoKey
+  /** IV for the bucket object, from the envelope. */
+  enc_media_iv?: string
+  /**
+   * The attachment's real MIME, which only the encrypted payload carries — the
+   * worker saw `application/octet-stream` and nothing more.
+   */
+  media_mime?: string
 }
 
 /**
@@ -56,15 +103,64 @@ const STATUS_RANK: Record<ThreadMessage['status'], number> = {
 
 type Action =
   | { type: 'reset'; messages: ThreadMessage[] }
-  | { type: 'history'; messages: WireMessage[] }
-  | { type: 'message'; frame: WireMessage }
+  | { type: 'history'; messages: ThreadMessage[] }
+  | { type: 'message'; frame: ThreadMessage }
   | { type: 'status'; id: string; client_id: string; status: MessageStatus; myId: string }
   | { type: 'peer_read'; upToMessageId: string; myId: string }
   | { type: 'optimistic'; message: ThreadMessage }
   | { type: 'expired'; ids: string[] }
+  | { type: 'send_rejected'; myId: string }
 
-function fromWire(m: WireMessage): ThreadMessage {
-  return { ...m }
+/**
+ * Wire frame to what the thread renders, which is where decryption happens.
+ *
+ * A frame with no envelope is a plaintext message and passes straight through:
+ * that is what carries the transition, and it costs nothing to keep forever —
+ * everything written before encryption shipped is gone within seven days on its
+ * own.
+ */
+async function toThread(
+  m: WireMessage,
+  identity: DeviceIdentity | null,
+): Promise<ThreadMessage> {
+  const { enc, ...rest } = m
+  if (!enc) return { ...rest }
+  if (!identity) return { ...rest, body: '', sealed: true }
+
+  const sender = findCachedDevice(enc.sender_device)
+  const opened = sender
+    ? await openMessage(identity, sender.public_key, m.body, enc)
+    : null
+  if (!opened) return { ...rest, body: '', sealed: true }
+
+  return {
+    ...rest,
+    body: bodyOf(opened.payload, m.msg_type),
+    ...(m.media_key
+      ? {
+          contentKey: opened.contentKey,
+          enc_media_iv: enc.media_iv,
+          media_mime: opened.payload.m,
+        }
+      : {}),
+  }
+}
+
+/** The payload's one meaningful string for this message type. */
+function bodyOf(payload: Payload, msgType: WireMessage['msg_type']): string {
+  if (msgType === 'sticker') return payload.s ?? ''
+  return payload.t ?? ''
+}
+
+/** The locally-known plaintext of a message, to survive a failed re-open. */
+function pick(message: ThreadMessage): Partial<ThreadMessage> {
+  return {
+    body: message.body,
+    sealed: false,
+    contentKey: message.contentKey,
+    enc_media_iv: message.enc_media_iv,
+    media_mime: message.media_mime,
+  }
 }
 
 function upgrade(current: ThreadMessage, status: ThreadMessage['status']): ThreadMessage {
@@ -84,7 +180,7 @@ function reduce(messages: ThreadMessage[], action: Action): ThreadMessage[] {
       const pending = messages.filter(
         (m) => m.status === 'sending' && !acked.has(`${m.sender_id}:${m.client_id}`),
       )
-      return [...action.messages.map(fromWire), ...pending]
+      return [...action.messages, ...pending]
     }
     case 'message': {
       const frame = action.frame
@@ -94,11 +190,15 @@ function reduce(messages: ThreadMessage[], action: Action): ThreadMessage[] {
       if (index >= 0) {
         const next = [...messages]
         // Keep the higher status if a message_status frame raced ahead of the echo.
-        next[index] = upgrade(fromWire(frame), messages[index].status)
+        // The local copy keeps its own body: this device wrote that plaintext
+        // and its own echo is addressed to it anyway, but an envelope that
+        // failed to open must never blank a bubble the person is looking at.
+        const merged = frame.sealed && messages[index].body ? { ...frame, ...pick(messages[index]) } : frame
+        next[index] = upgrade(merged, messages[index].status)
         return next
       }
       if (messages.some((m) => m.id === frame.id)) return messages
-      return [...messages, fromWire(frame)]
+      return [...messages, frame]
     }
     case 'status':
       return messages.map((m) =>
@@ -122,6 +222,19 @@ function reduce(messages: ThreadMessage[], action: Action): ThreadMessage[] {
       const kept = messages.filter((m) => m.id === null || !gone.has(m.id))
       return kept.length === messages.length ? messages : kept
     }
+    case 'send_rejected': {
+      // Everything still in flight, not one message: the server names the
+      // reason but not the frame, and every refusal this handles is a property
+      // of the connection rather than of a single body — what stops one send
+      // stops the queue behind it.
+      let changed = false
+      const next = messages.map((m) => {
+        if (m.sender_id !== action.myId || m.status !== 'sending' || m.rejected) return m
+        changed = true
+        return { ...m, rejected: true }
+      })
+      return changed ? next : messages
+    }
   }
 }
 
@@ -136,6 +249,10 @@ export function useConversation(
   /** The server has said what this thread holds — see the state below. */
   synced: boolean
   connection: ConnectionState
+  /** Whether what this thread sends is actually encrypted — see the type. */
+  encryption: EncryptionState
+  /** Why the server refused the last send, or null when it refused nothing. */
+  sendRejected: string | null
   peerTyping: boolean
   /** How long a message in this conversation lives (PRD §3.9). */
   retentionMs: RetentionMs
@@ -188,6 +305,21 @@ export function useConversation(
   const wsRef = useRef<WebSocket | null>(null)
   const pendingRef = useRef(new Map<string, SendMessageEvent>())
   const lastReadSentRef = useRef<string | null>(null)
+  /**
+   * This device's encryption identity. Null means it has none — private mode,
+   * or a browser that refuses IndexedDB — and everything below degrades to
+   * plaintext rather than refusing to open the thread.
+   */
+  const identityRef = useRef<DeviceIdentity | null>(null)
+  const [encryption, setEncryption] = useState<EncryptionState>('unknown')
+  /**
+   * The server's reason for refusing a send, or null. Kept as the message the
+   * server wrote rather than a code the screen has to translate: the only
+   * refusal a person can act on today is "this instance requires encryption",
+   * and that sentence is already written where the rule lives (worker/src/
+   * agent.ts).
+   */
+  const [sendRejected, setSendRejected] = useState<string | null>(null)
   const [peerTyping, setPeerTyping] = useState(false)
   const typingTimerRef = useRef<number | undefined>(undefined)
   const lastTypingSentRef = useRef(0)
@@ -217,6 +349,8 @@ export function useConversation(
     lastReadSentRef.current = null
     setPeerTyping(false)
     setSynced(false)
+    setEncryption('unknown')
+    setSendRejected(null)
 
     // Peer typing is ephemeral: each frame re-arms a short expiry, and a real
     // message from the peer clears it immediately.
@@ -230,17 +364,23 @@ export function useConversation(
       setPeerTyping(false)
     }
 
-    const handleFrame = (event: ServerEvent) => {
+    const handleFrame = async (event: ServerEvent) => {
       switch (event.type) {
-        case 'history':
-          dispatch({ type: 'history', messages: event.messages })
+        case 'history': {
+          const identity = identityRef.current
+          dispatch({
+            type: 'history',
+            messages: await Promise.all(event.messages.map((m) => toThread(m, identity))),
+          })
           setSynced(true)
           return
-        case 'message':
+        }
+        case 'message': {
           if (event.sender_id === myId) pendingRef.current.delete(event.client_id)
           else clearPeerTyping()
-          dispatch({ type: 'message', frame: event })
+          dispatch({ type: 'message', frame: await toThread(event, identityRef.current) })
           return
+        }
         case 'message_status':
           pendingRef.current.delete(event.client_id)
           dispatch({
@@ -280,7 +420,18 @@ export function useConversation(
           // is still pending has to be offered again, after the bucket has had
           // time to refill — otherwise a long offline queue would sit at
           // 'sending' forever.
-          if (event.error === 'rate_limited') scheduleFlush(2000)
+          if (event.error === 'rate_limited') {
+            scheduleFlush(2000)
+            return
+          }
+          // Anything else is a refusal, not a delay: retrying would be refused
+          // the same way. Stop offering the queue, say why, and let the bubbles
+          // stop pretending they are on their way — a message that reads
+          // "enviando_" forever is the failure mode this whole banner exists to
+          // prevent.
+          pendingRef.current.clear()
+          setSendRejected(event.message ?? event.error)
+          dispatch({ type: 'send_rejected', myId })
           return
       }
     }
@@ -320,6 +471,37 @@ export function useConversation(
       flushTimer = window.setTimeout(flushPending, delayMs)
     }
 
+    let frameQueue: Promise<void> = Promise.resolve()
+
+    // The identity and both device directories, refreshed on every connect —
+    // which is exactly when a peer's new browser would need to start receiving
+    // messages, and when one of ours would.
+    const loadKeys = async () => {
+      const identity = await readDeviceKey(myId)
+      identityRef.current = identity
+      const [peers] = await Promise.all([refreshDevices(otherUserId), refreshDevices(myId)])
+      if (disposed) return
+      // Exactly the two conditions `seal` checks, so the indicator cannot claim
+      // something the send path does not do.
+      setEncryption(identity && peers.length > 0 ? 'on' : 'off')
+    }
+
+    /**
+     * The keys go through the same queue as the frames rather than beside them.
+     * `history` lands within a millisecond of the socket opening, and a frame
+     * opened before the identity and both directories are in hand decrypts to
+     * nothing: the bubble renders as "[mensagem de antes deste dispositivo]"
+     * and stays that way until something forces another history, because the
+     * reducer has no reason to revisit a message it already placed. Failing to
+     * load them must not wedge the queue either — an unencrypted thread still
+     * has frames to deliver.
+     */
+    const queueKeys = () => {
+      frameQueue = frameQueue.then(loadKeys).catch((error: unknown) => {
+        console.warn('key load failed', error)
+      })
+    }
+
     const connect = () => {
       if (disposed) return
       setConnection('connecting')
@@ -328,6 +510,7 @@ export function useConversation(
 
       ws.onopen = () => {
         attempt = 0
+        queueKeys()
         // A receipt sent on a dying socket may be lost — resend after reconnect.
         lastReadSentRef.current = null
         setConnection('online')
@@ -345,7 +528,15 @@ export function useConversation(
           return
         }
         const frame = ServerEventSchema.safeParse(parsed)
-        if (frame.success) handleFrame(frame.data)
+        // Chained rather than fired off: decryption made frame handling async,
+        // and two messages that decrypt at different speeds must still be
+        // dispatched in the order they arrived — otherwise a `message` that
+        // overtook its own `history` would be dropped by the reset that follows.
+        if (frame.success) {
+          frameQueue = frameQueue.then(() => handleFrame(frame.data)).catch((error: unknown) => {
+            console.warn('frame handling failed', error)
+          })
+        }
       }
       ws.onclose = () => {
         if (disposed) return
@@ -357,6 +548,7 @@ export function useConversation(
       ws.onerror = () => ws.close()
     }
 
+    queueKeys()
     connect()
     return () => {
       disposed = true
@@ -368,42 +560,124 @@ export function useConversation(
     }
   }, [conversationId, otherUserId, myId, setConnection])
 
+  /**
+   * One send.
+   *
+   * The optimistic bubble is dispatched first and in plaintext, because that is
+   * what this device already knows and what the person expects to see the
+   * instant they hit enter — encryption is a round of ECDH per recipient device
+   * and has no business sitting between a keypress and the screen. The wire
+   * frame is built after, and it is the encrypted one that goes into
+   * `pendingRef`: a resend after reconnect must not re-encrypt against a
+   * directory that has moved on, and the DO dedups on (sender, client_id)
+   * either way.
+   *
+   * Encrypting to nobody is the transition case, and it is deliberate rather
+   * than a failure: a peer who has not opened this build yet has no device in
+   * the directory, so the message goes plaintext and their client renders it
+   * exactly as it always did. Phase 6 is where that stops being allowed.
+   */
+  /**
+   * Turns a plaintext frame into an encrypted one, or returns null when this
+   * message has to go in the clear — no identity on this device, or a peer with
+   * nothing in the directory yet.
+   */
+  const seal = useCallback(
+    async (
+      event: SendMessageEvent,
+      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string },
+    ): Promise<SendMessageEvent | null> => {
+      const identity = identityRef.current ?? (await readDeviceKey(myId))
+      if (!identity) return null
+      identityRef.current = identity
+
+      const [peers, mine] = await Promise.all([getDevices(otherUserId), getDevices(myId)])
+      // Only this device registered: nobody on the other side can read it yet.
+      if (peers.length === 0) return null
+
+      const payload: Payload =
+        event.msg_type === 'sticker'
+          ? { s: event.body }
+          : sealing
+            ? { m: sealing.mime, ...(event.body ? { t: event.body } : {}) }
+            : { t: event.body }
+
+      const contentKey = sealing?.contentKey ?? (await createContentKey())
+      const { body, enc } = await sealMessage(
+        identity,
+        [...peers, ...mine],
+        payload,
+        contentKey,
+        sealing?.mediaIv,
+      )
+      return { ...event, body, enc }
+    },
+    [myId, otherUserId],
+  )
+
   const sendEvent = useCallback(
-    (msgType: WireMessage['msg_type'], body: string, mediaKey: string | null) => {
-      const event: SendMessageEvent = {
-        type: 'send_message',
-        client_id: crypto.randomUUID(),
-        msg_type: msgType,
-        body,
-        ...(mediaKey ? { media_key: mediaKey } : {}),
-      }
-      pendingRef.current.set(event.client_id, event)
+    (
+      msgType: WireMessage['msg_type'],
+      body: string,
+      mediaKey: string | null,
+      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string },
+    ) => {
+      const clientId = crypto.randomUUID()
       dispatch({
         type: 'optimistic',
         message: {
           id: null,
-          client_id: event.client_id,
+          client_id: clientId,
           sender_id: myId,
           msg_type: msgType,
           body,
           media_key: mediaKey,
           created_at: Date.now(),
           status: 'sending',
+          // The sender's own bubble decrypts through the same path as everyone
+          // else's, so it needs the same three values rather than a shortcut
+          // that would only ever be exercised here.
+          ...(sealing
+            ? {
+                contentKey: sealing.contentKey,
+                enc_media_iv: base64url(sealing.mediaIv),
+                media_mime: sealing.mime,
+              }
+            : {}),
         },
       })
-      const ws = wsRef.current
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event))
-      // Not open: the queued event is flushed by the next onopen.
+
+      void (async () => {
+        const plain: SendMessageEvent = {
+          type: 'send_message',
+          client_id: clientId,
+          msg_type: msgType,
+          body,
+          ...(mediaKey ? { media_key: mediaKey } : {}),
+        }
+        const event = (await seal(plain, sealing)) ?? plain
+        pendingRef.current.set(clientId, event)
+        const ws = wsRef.current
+        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event))
+        // Not open: the queued event is flushed by the next onopen.
+      })()
     },
-    [myId],
+    [myId, seal],
   )
 
   const send = useCallback((body: string) => sendEvent('text', body, null), [sendEvent])
 
-  // Media is already sitting in B2 when this fires — the message only
-  // references the object key, so the optimistic bubble renders the real file.
+  /**
+   * Media is already sitting in B2 when this fires — encrypted there, under the
+   * content key this call now has to reuse so the message and its object open
+   * with the same key.
+   */
   const sendMedia = useCallback(
-    (msgType: 'image' | 'video', mediaKey: string) => sendEvent(msgType, '', mediaKey),
+    (
+      msgType: 'image' | 'video',
+      mediaKey: string,
+      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string },
+    ) => sendEvent(msgType, '', mediaKey, sealing),
     [sendEvent],
   )
 
@@ -489,6 +763,8 @@ export function useConversation(
     messages: live,
     synced,
     connection: connectionRef.current,
+    encryption,
+    sendRejected,
     peerTyping,
     retentionMs,
     retentionChange,

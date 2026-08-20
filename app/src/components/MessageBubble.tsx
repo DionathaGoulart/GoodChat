@@ -13,9 +13,12 @@
 // chrome entirely — the asset carries its own baked plate. Own messages show
 // the delivery state (sent/delivered/read) in the mono meta line.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ThreadMessage } from '../hooks/useConversation'
+import { decryptBytes } from '../lib/e2ee'
+import { fromBase64url } from '../lib/deviceKeys'
 import { mediaUrl } from '../lib/media'
+import { STICKER_ID_RE } from '../lib/protocol'
 import { stickerAssetUrl, useStickerPack } from '../lib/stickers'
 
 function formatTime(ms: number): string {
@@ -36,7 +39,11 @@ function MetaLine({ message, mine, className = '' }: {
 }) {
   return (
     <p className={`msg-meta mt-1 font-mono text-[10px] uppercase tracking-[0.2em] ${className}`}>
-      {message.status === 'sending' ? (
+      {message.status === 'sending' && message.rejected ? (
+        // Refused by the server and not queued for another try, so the meta
+        // line has to stop saying it is on its way (hooks/useConversation.ts).
+        <span className="text-warning">não enviada</span>
+      ) : message.status === 'sending' ? (
         <>
           enviando<span className="terminal-cursor">_</span>
         </>
@@ -57,22 +64,84 @@ function MetaLine({ message, mine, className = '' }: {
   )
 }
 
+/**
+ * The bytes for one attachment.
+ *
+ * A plaintext object is just a URL and the browser streams it — including
+ * ranged requests, so a video seeks. An encrypted one cannot be: AES-GCM
+ * authenticates the whole object, so it has to arrive whole before any of it
+ * can be trusted. That is the one real cost of encrypting media, it is bounded
+ * by the 32MB video cap, and the honest fix is AES-CTR plus a whole-object MAC
+ * fed through Media Source Extensions — a different change than this one.
+ *
+ * The object URL is revoked on unmount, or a thread with a few videos in it
+ * would hold every one of them in memory for as long as the tab lives.
+ */
+function useMediaSource(message: ThreadMessage): { src: string | null; failed: boolean } {
+  const plainSrc = message.media_key ? mediaUrl(message.media_key) : null
+  const [decrypted, setDecrypted] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  const key = message.media_key
+  const contentKey = message.contentKey
+  const mediaIv = message.enc_media_iv
+
+  useEffect(() => {
+    if (!key || !contentKey || !mediaIv) return
+    let url: string | null = null
+    let cancelled = false
+    void (async () => {
+      try {
+        const response = await fetch(mediaUrl(key), { credentials: 'include' })
+        if (!response.ok) throw new Error(String(response.status))
+        const plain = await decryptBytes(
+          contentKey,
+          fromBase64url(mediaIv),
+          await response.arrayBuffer(),
+        )
+        if (cancelled) return
+        url = URL.createObjectURL(new Blob([plain as BlobPart], { type: message.media_mime }))
+        setDecrypted(url)
+      } catch {
+        if (!cancelled) setFailed(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [key, contentKey, mediaIv, message.media_mime])
+
+  // Encrypted and not yet decrypted is not the same as absent: returning the
+  // raw URL here would hand ciphertext to an <img> and render a broken frame.
+  //
+  // The key can also be legitimately missing while the IV is there — a bubble
+  // restored from the local copy, which does not serialize CryptoKeys
+  // (lib/threadCache.ts). That is "waiting for history", not "gone", so it
+  // holds the skeleton instead of reporting a failure.
+  if (mediaIv) return { src: contentKey ? decrypted : null, failed: contentKey ? failed : false }
+  return { src: plainSrc, failed }
+}
+
 function MediaContent({ message }: { message: ThreadMessage }) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   // The object can be gone for good: media retention deleted it, or the owner
   // purged the thread. The message row survives either way, so the bubble has
   // to say so instead of showing a broken frame.
   const [gone, setGone] = useState(false)
+  const { src, failed } = useMediaSource(message)
   if (!message.media_key) return null
-  const src = mediaUrl(message.media_key)
 
-  if (gone) {
+  if (gone || failed) {
     return (
       <span className="retro-border bg-base-200 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
         [mídia indisponível]
       </span>
     )
   }
+
+  // Still fetching and decrypting. A skeleton the size of a bubble rather than
+  // nothing, so the thread does not jump when the image lands.
+  if (!src) return <div className="skeleton h-40 w-56" />
 
   if (message.msg_type === 'video') {
     return (
@@ -114,7 +183,12 @@ function MediaContent({ message }: { message: ThreadMessage }) {
 
 function StickerContent({ stickerId }: { stickerId: string }) {
   const { pack, error } = useStickerPack()
-  const sticker = pack?.byId.get(stickerId)
+  // Validated here rather than upstream, and this is now the only place it
+  // happens: an encrypted sticker id is inside the ciphertext, so the worker
+  // cannot see it (worker/src/agent.ts says so at the check it used to run).
+  // This is the point where the id becomes a URL, which makes it the right
+  // place — it also covers a sender that never went through our client.
+  const sticker = STICKER_ID_RE.test(stickerId) ? pack?.byId.get(stickerId) : undefined
 
   if (!pack && !error) return <div className="skeleton h-32 w-32" />
   if (!sticker) {
@@ -148,6 +222,26 @@ export function MessageBubble({
     'data-sender': sender,
     'data-time': formatTime(message.created_at),
     'data-status': message.status,
+  }
+
+  // Encrypted, and not for this browser. Expected rather than broken: every
+  // message sent before this device registered its key looks like this, and so
+  // does one from a device that has since rotated. Saying so is better than an
+  // empty bubble, which reads as a bug.
+  if (message.sealed) {
+    return (
+      <div
+        {...data}
+        className={`msg animate-enter max-w-[85%] p-3 retro-border retro-shadow-sm sm:max-w-[70%] ${
+          mine ? 'self-end bg-accent/40' : 'self-start bg-base-200'
+        }`}
+      >
+        <p className="msg-body font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
+          [mensagem de antes deste dispositivo]
+        </p>
+        <MetaLine message={message} mine={mine} className="opacity-40" />
+      </div>
+    )
   }
 
   if (message.msg_type === 'sticker') {

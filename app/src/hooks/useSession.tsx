@@ -22,6 +22,7 @@ import * as api from '../lib/api'
 import type { PushPreview, SessionUser } from '../lib/api'
 import { ApiError } from '../lib/api'
 import { clearCachedAccount, readCachedAccount, writeCachedAccount } from '../lib/accountCache'
+import { ensureDeviceKey, wipeDeviceKeys } from '../lib/deviceKeys'
 import { clearCachedConversations } from '../lib/conversationsCache'
 import { clearDrafts } from '../lib/drafts'
 import { clearCachedThreads, pruneCachedMessages } from '../lib/threadCache'
@@ -83,6 +84,11 @@ function forgetLocalState(): void {
   clearCachedConversations()
   clearCachedThreads()
   clearDrafts()
+  // The encryption identity goes with them, and for the same reason: the next
+  // account on this device must not hold the previous one's key. Nothing is
+  // lost that could have been kept — history is at most seven days old and a
+  // fresh identity is generated on the next sign-in (lib/deviceKeys.ts).
+  void wipeDeviceKeys()
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null)
@@ -156,6 +162,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (status !== 'authenticated' || !user) return
     pruneCachedMessages(user.id)
+  }, [status, user])
+
+  // This device's encryption identity, created on first sign-in and re-announced
+  // on every load. Announcing again is what keeps it out of the directory sweep
+  // (worker/src/lib/cleanup.ts) — a browser that stops coming back is a public
+  // key whose private half nobody holds, and senders should stop paying for it.
+  //
+  // Best effort by design: a browser with no IndexedDB (private mode, or one
+  // that refuses it) gets no identity, and the app keeps working unencrypted for
+  // the length of the transition rather than refusing to open.
+  useEffect(() => {
+    if (status !== 'authenticated' || !user) return
+    let cancelled = false
+    void (async () => {
+      const identity = await ensureDeviceKey(user.id)
+      if (!identity || cancelled) return
+      try {
+        await api.registerDevice(identity.id, identity.publicKey)
+      } catch {
+        // Offline, or the worker refused. The next load tries again; until it
+        // lands, peers simply do not encrypt to this device.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [status, user])
 
   // Presence is a property of the session, not of any screen: while somebody is

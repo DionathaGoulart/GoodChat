@@ -15,6 +15,9 @@ import { listConversations } from '../lib/api'
 import type { ConversationListItem } from '../lib/api'
 import { readCachedConversations, writeCachedConversations } from '../lib/conversationsCache'
 import { usePresence } from '../hooks/usePresence'
+import { readDeviceKey } from '../lib/deviceKeys'
+import { openMessage } from '../lib/e2ee'
+import { cacheDevices, findCachedDevice, getDevices } from '../lib/deviceDirectory'
 import { useSession } from '../hooks/useSession'
 import { useTheme } from '../hooks/useTheme'
 import { Panel } from '../components/Panel'
@@ -47,6 +50,48 @@ const MAX_POLL_MS = 60_000
  */
 function signatureOf(conversations: readonly ConversationListItem[]): string {
   return conversations.map((c) => `${c.id}:${c.last_message_at}:${c.unread_count}`).join('|')
+}
+
+/**
+ * Replaces each encrypted preview with its plaintext, and seeds the device
+ * directory from the keys the same payload carried — which is also what makes
+ * opening a thread from this list need no round trip before it can send.
+ *
+ * A preview this device cannot open keeps its `enc` and loses its body, which
+ * is what `ConversationTile` renders as "[mensagem cifrada]". Expected for
+ * anything sent before this browser registered a key.
+ */
+async function openPreviews(
+  myId: string,
+  conversations: readonly ConversationListItem[],
+): Promise<ConversationListItem[]> {
+  for (const item of conversations) {
+    if (item.peer_devices) cacheDevices(item.other_user.id, item.peer_devices)
+  }
+  const identity = await readDeviceKey(myId)
+  if (!identity) return [...conversations]
+  // My own devices too: the last message in a thread is often one I sent, and
+  // opening it means running ECDH against my own other device's key.
+  await getDevices(myId)
+
+  return Promise.all(
+    conversations.map(async (item) => {
+      const last = item.last_message
+      if (!last?.enc) return item
+      const sender = findCachedDevice(last.enc.sender_device)
+      const opened = sender
+        ? await openMessage(identity, sender.public_key, last.body, last.enc)
+        : null
+      return {
+        ...item,
+        last_message: {
+          ...last,
+          body: opened ? (opened.payload.t ?? opened.payload.s ?? '') : '',
+          enc: opened ? null : last.enc,
+        },
+      }
+    }),
+  )
 }
 
 export function ConversationsScreen() {
@@ -94,7 +139,13 @@ export function ConversationsScreen() {
     if (inFlightRef.current) return Promise.resolve(false)
     inFlightRef.current = true
     return listConversations()
-      .then(({ conversations }) => {
+      .then(async ({ conversations }) => {
+        // Previews arrive encrypted like every other message, so they are
+        // opened here — once, on the way in — rather than in the tile, which
+        // renders synchronously and would have to hold a decrypted copy of its
+        // own. The peer keys ride along in the same payload (worker
+        // routes/conversations.ts), so this costs no extra round trip.
+        conversations = ownerId ? await openPreviews(ownerId, conversations) : conversations
         setConversations(conversations)
         if (ownerId) writeCachedConversations(ownerId, conversations)
         setSettled(true)

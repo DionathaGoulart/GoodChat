@@ -21,6 +21,7 @@
 //     they pass through unchanged, which keeps small reaction GIFs as GIFs.
 
 import { requestUploadUrl } from './api'
+import { createContentKey, encryptBytes, randomIv } from './e2ee'
 
 export const MEDIA_URL: string =
   import.meta.env.VITE_MEDIA_URL ?? 'http://localhost:8000/api/media'
@@ -48,6 +49,14 @@ const QUALITY_STEPS = [0.85, 0.72, 0.58, 0.45]
 const AVATAR_DIMENSION = 512
 const AVATAR_TARGET_BYTES = 160 * 1024
 export const MAX_AVATAR_BYTES = 512 * 1024
+
+/**
+ * What an encrypted attachment declares to the worker. Ciphertext has no media
+ * type: the real one goes inside the encrypted message payload, so the server
+ * stops learning jpeg-from-webp and only ever sees the image/video distinction
+ * its size caps need (worker/src/lib/media.ts ENCRYPTED_MIME).
+ */
+export const ENCRYPTED_MIME = 'application/octet-stream'
 
 /** Video transcode target: 720p at ~1.5 Mbps + 96 kbps audio. */
 const VIDEO_MAX_DIMENSION = 1280
@@ -489,12 +498,13 @@ export function uploadMedia(
   mime: string,
   onProgress: (fraction: number) => void,
   purpose: 'message' | 'avatar' = 'message',
+  kind?: MediaKind,
 ): UploadHandle {
   const xhr = new XMLHttpRequest()
   let aborted = false
 
   const promise = (async () => {
-    const target = await requestUploadUrl(mime, blob.size, purpose)
+    const target = await requestUploadUrl(mime, blob.size, purpose, kind)
     if (aborted) throw new DOMException('upload cancelado', 'AbortError')
     await new Promise<void>((resolve, reject) => {
       xhr.open('PUT', target.upload_url)
@@ -518,6 +528,66 @@ export function uploadMedia(
     abort: () => {
       aborted = true
       xhr.abort()
+    },
+  }
+}
+
+/**
+ * The encrypted half of the pipeline: the bytes are sealed here, before they
+ * ever reach the network, so the bucket and the read proxy both hold nothing
+ * but ciphertext.
+ *
+ * The content key is returned rather than generated inside, because it is the
+ * *same* key the message body is sealed with — the recipient unwraps it once
+ * and uses it for both. `mediaIv` travels in the envelope next to it.
+ *
+ * A profile picture deliberately does not come through here: it is readable by
+ * the whole instance (it is rendered in search results, tiles and thread
+ * headers), so there is no pair to encrypt it to.
+ */
+export interface SealedUpload {
+  /** Bucket object key — what the message references. */
+  key: string
+  /** The key the body is sealed with too, so one unwrap serves both. */
+  contentKey: CryptoKey
+  mediaIv: Uint8Array
+  /** The real MIME, which only the encrypted payload carries. */
+  mime: string
+}
+
+export interface SealedUploadHandle {
+  promise: Promise<SealedUpload>
+  abort: () => void
+}
+
+export function uploadEncryptedMedia(
+  prepared: PreparedMedia,
+  onProgress: (fraction: number) => void,
+): SealedUploadHandle {
+  const mediaIv = randomIv()
+  let inner: UploadHandle | null = null
+  let aborted = false
+
+  const promise = (async (): Promise<SealedUpload> => {
+    const contentKey = await createContentKey()
+    const sealed = await encryptBytes(contentKey, mediaIv, await prepared.blob.arrayBuffer())
+    if (aborted) throw new DOMException('upload cancelado', 'AbortError')
+    inner = uploadMedia(
+      new Blob([sealed as BlobPart], { type: ENCRYPTED_MIME }),
+      ENCRYPTED_MIME,
+      onProgress,
+      'message',
+      prepared.kind,
+    )
+    const { key } = await inner.promise
+    return { key, contentKey, mediaIv, mime: prepared.mime }
+  })()
+
+  return {
+    promise,
+    abort: () => {
+      aborted = true
+      inner?.abort()
     },
   }
 }

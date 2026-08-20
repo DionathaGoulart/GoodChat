@@ -23,6 +23,9 @@ import { Composer } from '../components/Composer'
 import { MessageBubble } from '../components/MessageBubble'
 import { PresenceMarker } from '../components/Presence'
 import { RetentionDialog } from '../components/RetentionDialog'
+import { SafetyNumberDialog } from '../components/SafetyNumber'
+import { devicesFingerprint } from '../lib/e2ee'
+import { getDevices } from '../lib/deviceDirectory'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { MessagesSkeleton, ThreadSkeleton } from '../components/Skeleton'
 import { WindowDots } from '../components/WindowDots'
@@ -149,6 +152,8 @@ function LiveThread({
     peerTyping,
     retentionMs,
     retentionChange,
+    encryption,
+    sendRejected,
     send,
     sendMedia,
     sendSticker,
@@ -157,10 +162,41 @@ function LiveThread({
     setRetention,
   } = useConversation(conversationId, otherUser.id, myId, initialRetentionMs)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [safetyOpen, setSafetyOpen] = useState(false)
+  /**
+   * The peer's device set changed since this device last opened the thread.
+   * Legitimate whenever they signed in somewhere new — and indistinguishable,
+   * from here, from a directory that was tampered with, which is the reason to
+   * say it out loud instead of absorbing it silently (components/
+   * SafetyNumber.tsx).
+   */
+  const [keysChanged, setKeysChanged] = useState(false)
   const [retentionNotice, setRetentionNotice] = useState<string | null>(null)
   const presence = usePresence(useMemo(() => [otherUser.id], [otherUser.id]))
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
+
+  // Compared on open, and only on open: a change is worth one banner, not a
+  // re-render every time the directory cache refreshes.
+  useEffect(() => {
+    if (!myId || readonly) return
+    let cancelled = false
+    void (async () => {
+      const devices = await getDevices(otherUser.id)
+      if (cancelled || devices.length === 0) return
+      const fingerprint = await devicesFingerprint(devices)
+      if (cancelled) return
+      const seen = readCachedThread(myId, otherUser.id)
+      // No stored fingerprint is a first look, not a change: warning there
+      // would fire for every thread the first time this build runs, which is
+      // the fastest way to teach somebody to ignore the banner.
+      if (seen?.peerFingerprint && seen.peerFingerprint !== fingerprint) setKeysChanged(true)
+      if (seen) writeCachedThread(myId, otherUser.id, { ...seen, peerFingerprint: fingerprint })
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [myId, otherUser.id, readonly])
 
   const lastPeerMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -249,6 +285,17 @@ function LiveThread({
         </div>
         <RetroIconButton
           className="shrink-0"
+          onClick={() => setSafetyOpen(true)}
+          aria-label={
+            encryption === 'off'
+              ? 'esta conversa não está criptografada'
+              : 'número de segurança desta conversa'
+          }
+        >
+          {encryption === 'off' ? '🔓' : '🔒'}
+        </RetroIconButton>
+        <RetroIconButton
+          className="shrink-0"
           onClick={() => setPickerOpen(true)}
           aria-label={`prazo das mensagens: ${retentionLabel(retentionMs)}`}
         >
@@ -265,6 +312,45 @@ function LiveThread({
         <p className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-accent">
           {retentionNotice}
         </p>
+      )}
+
+      {/* Not a warning about something that went wrong — a statement of what is
+          true right now. During the rollout the peer may simply not have opened
+          the app since it started registering keys, and that is a fact worth
+          seeing before typing something, not after. */}
+      {encryption === 'off' && !readonly && (
+        <p className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-warning">
+          esta conversa não está criptografada
+        </p>
+      )}
+
+      {/* The server refused the send. Worth its own line rather than only the
+          bubble's "não enviada": the reason lives on the connection, not on the
+          message, so it is the same answer for everything typed next — and
+          silence here is what makes somebody believe a message went out
+          (hooks/useConversation.ts). */}
+      {sendRejected && (
+        <p className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
+          {sendRejected}
+        </p>
+      )}
+
+      {keysChanged && (
+        <div className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center">
+          <p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-warning">
+            os aparelhos de @{otherUser.username} mudaram
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setKeysChanged(false)
+              setSafetyOpen(true)
+            }}
+            className="mt-1 cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] underline opacity-70 hover:opacity-100"
+          >
+            conferir o número de segurança
+          </button>
+        </div>
       )}
 
       <div
@@ -314,6 +400,14 @@ function LiveThread({
           onSendMedia={sendMedia}
           onSendSticker={sendSticker}
           onTyping={sendTyping}
+        />
+      )}
+
+      {safetyOpen && (
+        <SafetyNumberDialog
+          myId={myId}
+          otherUser={otherUser}
+          onClose={() => setSafetyOpen(false)}
         />
       )}
 

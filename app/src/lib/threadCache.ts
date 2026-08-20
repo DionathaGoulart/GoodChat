@@ -65,6 +65,16 @@ export interface CachedThread {
    * actually full costs the messages.
    */
   exists: boolean
+  /**
+   * The peer's device set, as this device last saw it — a digest of their
+   * public keys, not the keys themselves. It exists to answer one question on
+   * open: has the other side's device list changed since last time? A change is
+   * legitimate whenever they sign in somewhere new, and it is also exactly what
+   * a server swapping a key would look like, so the thread says so and offers
+   * the safety number rather than deciding which it was (components/
+   * SafetyNumber.tsx).
+   */
+  peerFingerprint?: string
 }
 
 interface Stored<T> {
@@ -168,9 +178,15 @@ export function writeCachedMessages(
   // ...and only what is still inside the window: writing an expired message
   // back would be this cache re-creating what the retention sweep just deleted.
   const cutoff = Date.now() - retentionOr(retentionMs)
-  const acked = messages.filter(
-    (message) => message.status !== 'sending' && message.created_at > cutoff,
-  )
+  const acked = messages
+    .filter((message) => message.status !== 'sending' && message.created_at > cutoff)
+    // `contentKey` is a CryptoKey, which JSON.stringify flattens to `{}` — a
+    // shape that looks usable and is not. It is runtime-only by nature: the key
+    // came out of the message envelope, which is not cached either, so a media
+    // bubble restored from here waits for `history` to hand it a real one
+    // (hooks/useConversation.ts). Dropped rather than serialized, so nothing
+    // downstream has to distinguish a key from the ghost of one.
+    .map(({ contentKey: _contentKey, ...rest }) => rest)
   // An empty list is written, not skipped: "nothing left" is exactly the state
   // a thread reaches when its last message expires, and leaving the previous
   // copy in place would be the cache holding on to what the server deleted.

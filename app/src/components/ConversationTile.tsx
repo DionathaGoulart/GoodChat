@@ -23,7 +23,11 @@ const MEDIA_PREVIEW: Record<string, string> = {
 function preview(item: ConversationListItem): string {
   const last = item.last_message
   if (!last) return '— sem mensagens —'
-  return MEDIA_PREVIEW[last.msg_type] ?? last.body
+  // A media preview never depended on the body, so it survives encryption
+  // untouched. A textual one that still carries an envelope is one this device
+  // could not open — see `openPreviews` in the screen above.
+  if (MEDIA_PREVIEW[last.msg_type]) return MEDIA_PREVIEW[last.msg_type]
+  return last.enc ? '[mensagem cifrada]' : last.body
 }
 
 function formatWhen(ms: number | null): string {

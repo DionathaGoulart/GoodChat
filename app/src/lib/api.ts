@@ -73,6 +73,12 @@ export interface ConversationListItem {
   other_user: PublicUser
   /** The conversation's message window (PRD §3.9). */
   retention_ms: number
+  /**
+   * The peer's device keys, inline so the tile preview can be decrypted without
+   * one /api/users/:id/devices call per thread (migration 0012). Optional: a
+   * payload from a worker that predates encryption has none.
+   */
+  peer_devices?: PublicDevice[]
 }
 
 export interface ResolveResult {
@@ -175,6 +181,31 @@ export function me(): Promise<{ user: SessionUser }> {
   return call('/api/auth/me')
 }
 
+/** A device's published half of its key (migration 0012). */
+export interface PublicDevice {
+  id: string
+  public_key: string
+  created_at: number
+  last_seen_at: number
+}
+
+/** Registers this browser's public key, or says it is still here. */
+export function registerDevice(id: string, publicKey: string): Promise<{ ok: boolean }> {
+  return call('/api/devices', {
+    method: 'POST',
+    body: JSON.stringify({ id, public_key: publicKey }),
+  })
+}
+
+/**
+ * The devices a message to this account has to be encrypted for. Sorted by the
+ * worker, and the order matters: both sides hash this list into the safety
+ * number, so they have to see it identically.
+ */
+export function userDevices(userId: string): Promise<{ devices: PublicDevice[] }> {
+  return call(`/api/users/${encodeURIComponent(userId)}/devices`)
+}
+
 export type PushPreview = 'generic' | 'full'
 
 /**
@@ -269,10 +300,12 @@ export function requestUploadUrl(
   mime: string,
   size: number,
   purpose: 'message' | 'avatar' = 'message',
+  /** Required for an encrypted attachment, where `mime` says nothing. */
+  kind?: 'image' | 'video',
 ): Promise<UploadUrlResult> {
   return call('/api/media/upload-url', {
     method: 'POST',
-    body: JSON.stringify({ mime, size, purpose }),
+    body: JSON.stringify({ mime, size, purpose, ...(kind ? { kind } : {}) }),
   })
 }
 
