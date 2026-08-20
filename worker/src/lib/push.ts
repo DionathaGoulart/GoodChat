@@ -22,6 +22,50 @@ export function pushConfig(env: Env): PushConfig | null {
   return { publicKey: VAPID_PUBLIC_KEY, privateKey: VAPID_PRIVATE_KEY, subject: VAPID_SUBJECT }
 }
 
+/**
+ * The push services a subscription may point at.
+ *
+ * A stored endpoint is an outbound fetch target the Worker will POST to,
+ * chosen by whoever called /api/push/subscribe. "https, and at most 2048
+ * characters" made that any host on the internet: an authenticated account
+ * could park a URL of its choosing in D1 and have the Worker call it on every
+ * message it receives. The list is what turns the endpoint back into what it
+ * is supposed to be — a browser vendor's push service.
+ *
+ * Suffix match, because every one of these hands out per-device subdomains.
+ * PUSH_ENDPOINT_HOSTS (comma-separated) *adds* to this list rather than
+ * replacing it — a browser the defaults miss has to be allowed without
+ * silently un-allowing the four that already work, and "I widened the list"
+ * quietly narrowing it is the wrong way for this setting to fail. Local dev
+ * uses it for the fake push endpoints the smoke tests subscribe to.
+ */
+const DEFAULT_PUSH_HOSTS = [
+  'push.services.mozilla.com', // Firefox
+  'fcm.googleapis.com', // Chrome, Chromium, Brave
+  'android.googleapis.com', // Chrome, legacy GCM endpoints
+  'push.apple.com', // Safari, installed iOS PWAs
+  'notify.windows.com', // Edge (WNS)
+  'push.services.microsoft.com', // Edge (newer)
+]
+
+export function isAllowedPushEndpoint(endpoint: string, env: Env): boolean {
+  let host: string
+  try {
+    const url = new URL(endpoint)
+    if (url.protocol !== 'https:') return false
+    host = url.hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  const extra =
+    env.PUSH_ENDPOINT_HOSTS?.split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => value.length > 0) ?? []
+  return [...DEFAULT_PUSH_HOSTS, ...extra].some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+  )
+}
+
 /** Payload shape the service worker reads back with event.data.json(). */
 export interface NotificationPayload {
   title: string
@@ -56,10 +100,14 @@ export async function notifyUser(
   )
     .bind(userId)
     .all<SubscriptionRow>()
-  if (results.length === 0) return
+  // Checked on the way out as well as on the way in: rows written before the
+  // allowlist existed are still in this table, and this is the side that turns
+  // one into an outbound request.
+  const targets = results.filter((sub) => isAllowedPushEndpoint(sub.endpoint, env))
+  if (targets.length === 0) return
 
   await Promise.all(
-    results.map(async (sub) => {
+    targets.map(async (sub) => {
       try {
         const delivered = await sendPushNotification(
           { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },

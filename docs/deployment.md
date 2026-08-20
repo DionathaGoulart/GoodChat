@@ -224,6 +224,13 @@ The ones that change behaviour:
   `POST /api/admin/media/reindex` from the owner console once and check that
   `indexed_media_bytes` matches `bucket_bytes` in the overview before
   deploying with the flag closed.
+- `PUSH_ENDPOINT_HOSTS` — comma-separated domain suffixes a push subscription
+  may point at. A stored endpoint is a URL the Worker POSTs to on every message
+  the account receives, so this is what keeps it a browser vendor's push service
+  rather than any host on the internet. Empty keeps the built-in list (Firefox,
+  Chrome/Chromium, Safari, Edge); widen it only for a browser that list misses,
+  and note that a subscription already stored under a host you then remove
+  stops receiving notifications.
 - `DO_STORAGE_LIMIT_GB` / `B2_STORAGE_LIMIT_GB` — the totals the owner console
   shows next to each storage number (`1.2 gb / 10 gb`, plus the share of the
   ceiling). Defaults are the free tiers, 5 and 10. Display only: no upload or

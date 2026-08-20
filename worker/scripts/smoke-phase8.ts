@@ -255,6 +255,58 @@ const httpEndpoint = await api('/api/push/subscribe', {
 })
 check('subscribe with http:// endpoint → 400 (SSRF guard)', httpEndpoint.status === 400)
 
+// A stored endpoint is a URL the Worker POSTs to on every message the account
+// receives, so https alone is not enough: the host has to be a push service.
+// localhost is the textbook target this closes.
+const internalEndpoint = await api('/api/push/subscribe', {
+  method: 'POST',
+  cookie: alice,
+  body: JSON.stringify({
+    endpoint: 'https://localhost:9099/hook',
+    keys: { p256dh: 'a', auth: 'b' },
+  }),
+})
+check(
+  'subscribe with a non-push host → 400 (endpoint allowlist)',
+  internalEndpoint.status === 400,
+  internalEndpoint.status,
+)
+
+// The same endpoint cannot be moved to another account by someone who only
+// knows the URL — the browser's p256dh is what proves it is the same
+// subscription, and it is not part of the endpoint.
+const contested = `https://push.example.com/smoke8/${randomUUID()}`
+await api('/api/push/subscribe', {
+  method: 'POST',
+  cookie: alice,
+  body: JSON.stringify({ endpoint: contested, keys: subscription.keys }),
+})
+const stolen = await api('/api/push/subscribe', {
+  method: 'POST',
+  cookie: bob,
+  body: JSON.stringify({ endpoint: contested, keys: { p256dh: 'other-key', auth: 'other' } }),
+})
+check(
+  "another account cannot take over an endpoint with the wrong p256dh → 403",
+  stolen.status === 403,
+  stolen.status,
+)
+const sameBrowser = await api('/api/push/subscribe', {
+  method: 'POST',
+  cookie: bob,
+  body: JSON.stringify({ endpoint: contested, keys: subscription.keys }),
+})
+check(
+  'the same browser subscription does move to the new account → 200',
+  sameBrowser.status === 200,
+  sameBrowser.status,
+)
+await api('/api/push/unsubscribe', {
+  method: 'POST',
+  cookie: bob,
+  body: JSON.stringify({ endpoint: contested }),
+})
+
 const endpointB = `https://push.example.com/smoke8/${randomUUID()}`
 const sub1 = await api('/api/push/subscribe', {
   method: 'POST',
@@ -317,8 +369,10 @@ const resolved = await api('/api/conversations/resolve', {
 })
 const conversationId: string = resolved.body.conversation_id
 
-// Ana subscribes on an endpoint nothing listens on (TLS/conn error ≠ gone).
-const endpointC = `https://localhost:9099/smoke8/${randomUUID()}`
+// Ana subscribes on an allowed push host that resolves to nothing (TLS/conn
+// error ≠ gone). It has to be inside the allowlist: an endpoint the Worker
+// refuses to store never gets a row to survive in the first place.
+const endpointC = `https://dead.push.example.com/smoke8/${randomUUID()}`
 await api('/api/push/subscribe', {
   method: 'POST',
   cookie: ana,

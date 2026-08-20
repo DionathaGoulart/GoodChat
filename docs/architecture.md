@@ -380,7 +380,17 @@ fetches the manifest once and renders stickers without bubble chrome.
   payload encryption, RFC 8292 VAPID, sends via `fetch`). It runs
   identically in workerd, Node scripts and the browser client.
 - Subscriptions live in D1 (`push_subscriptions`), several per user.
-  Endpoints are capability URLs and are never logged.
+  Endpoints are capability URLs and are never logged. A stored endpoint is
+  also a URL this Worker POSTs to on every message the account receives, so
+  the host is checked against a push-service allowlist (`PUSH_ENDPOINT_HOSTS`,
+  defaulting to the browser vendors) both when it is stored and when it is
+  used — the second one covers rows written before the list existed.
+- The endpoint is the primary key, so presenting one is enough to move the row
+  it names. That is right for a second account on the same browser profile —
+  the browser hands back the very same subscription, keys included — and a
+  hijack otherwise, so a row only changes owner when `p256dh` matches. That key
+  is the browser's ECDH public key for the subscription and is not part of the
+  URL, which is what a leaked endpoint alone cannot produce.
 - Trigger: when a message is persisted and the recipient has no live
   connection, the DO schedules delivery with `waitUntil`, off the
   frame-processing path. Payload: sender username as title, a localized

@@ -8,12 +8,14 @@
 
 import { z } from 'zod'
 import { apiError, json } from '../lib/http'
-import { pushConfig } from '../lib/push'
+import { isAllowedPushEndpoint, pushConfig } from '../lib/push'
 import { requireSession } from '../lib/session'
 
-// Shape of PushSubscription.toJSON() from the browser. Endpoint must be a
-// real push-service https URL — stored endpoints are outbound fetch targets,
-// so a non-https value is rejected here (defense against SSRF-style rows).
+// Shape of PushSubscription.toJSON() from the browser. Endpoint must be a real
+// push-service https URL — stored endpoints are outbound fetch targets, so the
+// shape is checked here and the *host* against the push-service allowlist in
+// lib/push.ts, which is what keeps this from being "make the Worker POST to a
+// URL of my choosing on every message".
 const SubscribeSchema = z.object({
   endpoint: z.url().max(2048).refine((u) => u.startsWith('https://'), 'https only'),
   keys: z.object({
@@ -53,6 +55,30 @@ export async function subscribePush(request: Request, env: Env): Promise<Respons
   }
 
   const { endpoint, keys } = parsed.data
+  if (!isAllowedPushEndpoint(endpoint, env)) {
+    return apiError('invalid_request', 400, 'endpoint is not a known push service')
+  }
+
+  // The endpoint is the primary key *and* a capability URL, so presenting one
+  // is enough to move the row it names. That is right when the row is this
+  // browser's own — a second account signing in on the same profile gets the
+  // very same subscription back from the browser, keys included, and has to be
+  // able to reclaim it — and it is a hijack when it is not: the person who owns
+  // that device would stop receiving their notifications and start receiving
+  // the caller's.
+  //
+  // `p256dh` is what tells the two apart. It is the browser's ECDH public key
+  // for this subscription and it is not part of the URL, so a caller holding a
+  // leaked endpoint and nothing else cannot produce it.
+  const existing = await env.DB.prepare(
+    'SELECT user_id, p256dh FROM push_subscriptions WHERE endpoint = ?',
+  )
+    .bind(endpoint)
+    .first<{ user_id: string; p256dh: string }>()
+  if (existing && existing.user_id !== auth.user.id && existing.p256dh !== keys.p256dh) {
+    return apiError('forbidden', 403, 'this endpoint belongs to another subscription')
+  }
+
   // Upsert by endpoint: re-subscribing refreshes keys and reclaims a row that
   // previously belonged to another account on the same browser profile.
   await env.DB.prepare(

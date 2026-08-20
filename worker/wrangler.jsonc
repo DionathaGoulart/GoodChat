@@ -65,6 +65,13 @@
     // same list decides the WebSocket handshake (src/routes/ws.ts) and the CSRF
     // check on POST/PATCH/PUT/DELETE (src/index.ts).
     "ALLOWED_ORIGINS": "",
+    // Extra push-service hosts, comma-separated, matched as domain suffixes and
+    // *added* to the built-in list (Firefox, Chrome, Safari, Edge —
+    // src/lib/push.ts). A stored endpoint is a URL this Worker POSTs to on every
+    // message the account receives, so the list is what keeps it a push service
+    // rather than anywhere on the internet. Empty in production; only a browser
+    // the defaults miss needs anything here.
+    "PUSH_ENDPOINT_HOSTS": "",
     // Delete claimed media older than this many days. "0" = keep forever.
     // Turning it on makes old bubbles render the "mídia expirada" placeholder.
     "MEDIA_RETENTION_DAYS": "0",
