@@ -718,23 +718,35 @@ async function purgeUserHistory(env: Env, userId: string): Promise<PurgeResult> 
   return total
 }
 
-/** Walks the whole `media/` prefix. Only the overview pays for this. */
+/**
+ * Walks the bucket. Only the overview pays for this.
+ *
+ * Every prefix, not just `media/`: the console shows this number against the
+ * plan's ceiling and next to `indexed_media_bytes`, and the gap between the two
+ * is what tells an operator a reindex is due. Counting only message attachments
+ * understated the bill by every profile picture and the whole sticker pack, and
+ * made the gap read as "the index is fine" when it was not.
+ */
+const BUCKET_PREFIXES = ['media/', 'avatars/', 'stickers/']
+
 async function bucketTotals(env: Env): Promise<{ objects: number; bytes: number } | null> {
   const config = mediaConfig(env)
   if (!config) return null
   try {
     let objects = 0
     let bytes = 0
-    let token: string | undefined
-    // Bounded: 20 pages of 1000 keys is far past what this instance can hold.
-    for (let page = 0; page < 20; page += 1) {
-      const result = await listObjects(config, 'media/', token)
-      for (const object of result.objects) {
-        objects += 1
-        bytes += object.size
+    for (const prefix of BUCKET_PREFIXES) {
+      let token: string | undefined
+      // Bounded: 20 pages of 1000 keys is far past what this instance can hold.
+      for (let page = 0; page < 20; page += 1) {
+        const result = await listObjects(config, prefix, token)
+        for (const object of result.objects) {
+          objects += 1
+          bytes += object.size
+        }
+        if (!result.nextToken) break
+        token = result.nextToken
       }
-      if (!result.nextToken) break
-      token = result.nextToken
     }
     return { objects, bytes }
   } catch (error) {
