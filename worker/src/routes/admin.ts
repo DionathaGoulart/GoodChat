@@ -449,6 +449,16 @@ export async function deleteAccount(
     new URL(request.url).origin,
   )
 
+  // `users.created_by` is a foreign key back into this table (migration 0003)
+  // and it has no ON DELETE clause, so an account that provisioned others
+  // cannot be deleted while they point at it — the DELETE below would fail
+  // *after* every conversation was already destroyed, leaving an account alive
+  // with no history and no audit row. It only bites for a demoted ex-owner
+  // (manageableTarget refuses live owners), which is exactly the case worth
+  // surviving. The provenance is worth less than the deletion completing.
+  await env.DB.prepare('UPDATE users SET created_by = NULL WHERE created_by = ?')
+    .bind(target.id)
+    .run()
   await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(target.id).run()
   // The peers of the destroyed threads may have been tombstones kept alive
   // only by them.
