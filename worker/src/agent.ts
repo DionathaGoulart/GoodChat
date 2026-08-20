@@ -31,7 +31,7 @@
 
 import { Agent, type Connection, type ConnectionContext, type WSMessage } from 'agents'
 import { ensureConversation } from './lib/conversation'
-import { isValidObjectKey } from './lib/media'
+import { isMessageMediaKey, isValidObjectKey } from './lib/media'
 import { deleteMediaObjects } from './lib/mediaGc'
 import { claimUpload } from './lib/mediaIndex'
 import { notifyUser, previewFor, previewPreferenceOf } from './lib/push'
@@ -654,7 +654,22 @@ export class ConversationAgent extends Agent<Env> {
     // proxy validates on every read (lib/media.ts). Checking it here too keeps
     // sender-controlled junk out of the other side's thread — and out of the
     // `claimUpload` write it would otherwise trigger.
-    if (event.media_key !== undefined && !isValidObjectKey(event.media_key)) {
+    //
+    // `media/` specifically, not merely a well-formed key: every other prefix
+    // carries different rules, and a message attachment that lands under one
+    // of them escapes all three. An `avatars/` object is readable by any
+    // session once claimed (routes/media.ts), is cached for a year instead of
+    // the shortest window (lib/media.ts `maxAgeFor`), and is skipped by both
+    // media sweeps (`NOT LIKE 'avatars/%'` in lib/cleanup.ts) — so a client
+    // that presigned with `purpose: "avatar"` and sent the key here would have
+    // published a permanent, instance-wide copy of a disappearing message.
+    //
+    // Both checks: the prefix says which rules apply, `isValidObjectKey` is
+    // what refuses traversal inside it (`media/../avatars/x`).
+    if (
+      event.media_key !== undefined &&
+      !(isValidObjectKey(event.media_key) && isMessageMediaKey(event.media_key))
+    ) {
       this.send(conn, { type: 'error', error: 'invalid_media_key' })
       return
     }
