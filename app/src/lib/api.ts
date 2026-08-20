@@ -318,8 +318,15 @@ export function pushVapidKey(): Promise<{ public_key: string }> {
   return call('/api/push/vapid-public-key')
 }
 
-export function pushSubscribe(subscription: PushSubscriptionBody): Promise<{ ok: boolean }> {
-  return call('/api/push/subscribe', { method: 'POST', body: JSON.stringify(subscription) })
+export function pushSubscribe(
+  subscription: PushSubscriptionBody,
+  /** This browser's device id, so an encrypted preview can be wrapped for it. */
+  deviceId?: string,
+): Promise<{ ok: boolean }> {
+  return call('/api/push/subscribe', {
+    method: 'POST',
+    body: JSON.stringify({ ...subscription, ...(deviceId ? { device_id: deviceId } : {}) }),
+  })
 }
 
 export function pushUnsubscribe(endpoint: string): Promise<{ ok: boolean; removed: boolean }> {

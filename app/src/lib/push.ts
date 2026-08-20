@@ -14,6 +14,7 @@ import {
   unsubscribe,
 } from '@mmmike/web-push/client'
 import { ApiError, pushSubscribe, pushUnsubscribe, pushVapidKey } from './api'
+import { readDeviceKey } from './deviceKeys'
 
 export type PushState =
   | 'unsupported' // browser has no Push API (or: iOS Safari outside an installed PWA)
@@ -47,7 +48,7 @@ export async function currentPushState(): Promise<PushState> {
 }
 
 /** Ask permission, subscribe the browser, register with the worker. */
-export async function enablePush(): Promise<PushState> {
+export async function enablePush(userId?: string): Promise<PushState> {
   let publicKey: string
   try {
     ;({ public_key: publicKey } = await pushVapidKey())
@@ -58,7 +59,12 @@ export async function enablePush(): Promise<PushState> {
   const result = await subscribe(publicKey)
   if (result.status === 'unsupported') return 'unsupported'
   if (result.status === 'denied') return 'denied'
-  await pushSubscribe(serializeSubscription(result.subscription))
+  // Which device this subscription belongs to: a push reaches exactly one, and
+  // the encrypted preview it may carry has to be wrapped for exactly that one
+  // (worker/src/lib/push.ts). Without it the notification still arrives, just
+  // always with the generic body.
+  const identity = userId ? await readDeviceKey(userId) : null
+  await pushSubscribe(serializeSubscription(result.subscription), identity?.id)
   return 'on'
 }
 

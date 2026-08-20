@@ -74,12 +74,57 @@ export interface NotificationPayload {
   url: string
   /** Collapses visible notifications per conversation on the device. */
   tag: string
+  /**
+   * Everything the receiving device needs to show the real text instead of
+   * `body` — and nothing this Worker can use itself.
+   *
+   * The recipient's preference (`push_preview: 'full'`) used to be answerable
+   * here, because the message was readable here. Encrypted, it is not: so the
+   * ciphertext travels to the device and the service worker decrypts it, which
+   * keeps the feature without the server ever holding the text. Web Push is
+   * itself encrypted in transit (RFC 8291), so this rides inside a payload the
+   * push service cannot read either.
+   *
+   * Present only when it fits the payload budget — see PAYLOAD_BUDGET_BYTES.
+   */
+  enc?: {
+    /** The device this content key is wrapped for: this subscription's. */
+    device: string
+    /** Raw public key of the sending device, for the ECDH the SW has to run. */
+    sender_key: string
+    /** IV of the message body. */
+    iv: string
+    /** The message body, still encrypted. */
+    ct: string
+    /** The content key, wrapped for `device`. */
+    key: { iv: string; ct: string }
+  }
+}
+
+/**
+ * Web Push caps one encrypted record at 4096 bytes, and the plaintext has to
+ * fit inside it with room for padding and the AEAD tag. A body long enough to
+ * threaten that simply travels without its ciphertext and the device shows the
+ * generic line: this Worker cannot truncate an opaque blob, and a notification
+ * that fails to send is worse than one that says less.
+ */
+const PAYLOAD_BUDGET_BYTES = 3000
+
+/** The encrypted message a push may carry, before it is scoped to one device. */
+export interface EncryptedPreview {
+  sender_device: string
+  iv: string
+  /** The body ciphertext. */
+  ct: string
+  keys: Record<string, { iv: string; ct: string }>
 }
 
 interface SubscriptionRow {
   endpoint: string
   p256dh: string
   auth: string
+  /** Which device this browser registered (migration 0012); null before it. */
+  device_id: string | null
 }
 
 /**
@@ -91,12 +136,18 @@ export async function notifyUser(
   env: Env,
   userId: string,
   payload: NotificationPayload,
+  /**
+   * The encrypted message, when there is one and the recipient asked to see
+   * previews. Scoped per subscription below: each device gets only the content
+   * key wrapped for itself, and a subscription with no device gets none.
+   */
+  preview?: EncryptedPreview,
 ): Promise<void> {
   const vapid = pushConfig(env)
   if (!vapid) return
 
   const { results } = await env.DB.prepare(
-    'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?',
+    'SELECT endpoint, p256dh, auth, device_id FROM push_subscriptions WHERE user_id = ?',
   )
     .bind(userId)
     .all<SubscriptionRow>()
@@ -106,12 +157,14 @@ export async function notifyUser(
   const targets = results.filter((sub) => isAllowedPushEndpoint(sub.endpoint, env))
   if (targets.length === 0) return
 
+  const senderKey = preview ? await devicePublicKey(env, preview.sender_device) : null
+
   await Promise.all(
     targets.map(async (sub) => {
       try {
         const delivered = await sendPushNotification(
           { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-          payload,
+          scopeToDevice(payload, preview, senderKey, sub.device_id),
           vapid,
           {
             ttl: 24 * 60 * 60,
@@ -137,6 +190,44 @@ export async function notifyUser(
       }
     }),
   )
+}
+
+/**
+ * The payload one subscription gets: the generic one, plus the ciphertext only
+ * when this device can actually open it and the whole thing still fits.
+ */
+function scopeToDevice(
+  payload: NotificationPayload,
+  preview: EncryptedPreview | undefined,
+  senderKey: string | null,
+  deviceId: string | null,
+): NotificationPayload {
+  if (!preview || !senderKey || !deviceId) return payload
+  const wrapped = preview.keys[deviceId]
+  if (!wrapped) return payload
+  const scoped: NotificationPayload = {
+    ...payload,
+    enc: {
+      device: deviceId,
+      sender_key: senderKey,
+      iv: preview.iv,
+      ct: preview.ct,
+      key: wrapped,
+    },
+  }
+  return JSON.stringify(scoped).length > PAYLOAD_BUDGET_BYTES ? payload : scoped
+}
+
+/** The public half of one device, for the ECDH the service worker will run. */
+async function devicePublicKey(env: Env, deviceId: string): Promise<string | null> {
+  try {
+    const row = await env.DB.prepare('SELECT public_key FROM devices WHERE id = ?')
+      .bind(deviceId)
+      .first<{ public_key: string }>()
+    return row?.public_key ?? null
+  } catch {
+    return null
+  }
 }
 
 /**

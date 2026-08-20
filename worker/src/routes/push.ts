@@ -22,6 +22,13 @@ const SubscribeSchema = z.object({
     p256dh: z.string().min(1).max(256),
     auth: z.string().min(1).max(256),
   }),
+  /**
+   * Which device this browser is (migration 0012). A push goes to exactly one
+   * subscription, and the encrypted preview it may carry has to be wrapped for
+   * exactly that device — without this the worker has no way to pick the right
+   * wrapped key and the notification falls back to the generic line.
+   */
+  device_id: z.string().regex(/^[0-9a-f]{32}$/).optional(),
 })
 
 const UnsubscribeSchema = z.object({
@@ -54,7 +61,7 @@ export async function subscribePush(request: Request, env: Env): Promise<Respons
     return apiError('invalid_request', 400, 'expected { endpoint, keys: { p256dh, auth } }')
   }
 
-  const { endpoint, keys } = parsed.data
+  const { endpoint, keys, device_id: deviceId } = parsed.data
   if (!isAllowedPushEndpoint(endpoint, env)) {
     return apiError('invalid_request', 400, 'endpoint is not a known push service')
   }
@@ -82,13 +89,14 @@ export async function subscribePush(request: Request, env: Env): Promise<Respons
   // Upsert by endpoint: re-subscribing refreshes keys and reclaims a row that
   // previously belonged to another account on the same browser profile.
   await env.DB.prepare(
-    `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at, device_id)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(endpoint) DO UPDATE SET
        user_id = excluded.user_id, p256dh = excluded.p256dh,
-       auth = excluded.auth, created_at = excluded.created_at`,
+       auth = excluded.auth, created_at = excluded.created_at,
+       device_id = excluded.device_id`,
   )
-    .bind(endpoint, auth.user.id, keys.p256dh, keys.auth, Date.now())
+    .bind(endpoint, auth.user.id, keys.p256dh, keys.auth, Date.now(), deviceId ?? null)
     .run()
 
   return json(

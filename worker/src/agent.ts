@@ -34,7 +34,7 @@ import { ensureConversation } from './lib/conversation'
 import { isMessageMediaKey, isValidObjectKey } from './lib/media'
 import { deleteMediaObjects } from './lib/mediaGc'
 import { claimUpload } from './lib/mediaIndex'
-import { notifyUser, previewFor, previewPreferenceOf } from './lib/push'
+import { DEFAULT_PUSH_PREVIEW, notifyUser, previewFor, previewPreferenceOf } from './lib/push'
 import {
   ClientEventSchema,
   STICKER_ID_RE,
@@ -841,12 +841,36 @@ export class ConversationAgent extends Agent<Env> {
       // So the *recipient* decides how much of the body may go there
       // (migration 0010) — and the default is none of it.
       const preference = await previewPreferenceOf(this.env.DB, peerId)
-      await notifyUser(this.env, peerId, {
-        title: `@${sender?.username ?? 'goodchat'}`,
-        body: previewFor(event.msg_type, event.body, preference),
-        url: `/#/t/${senderId}`,
-        tag: this.name,
-      })
+      // An encrypted body is base64 to this Worker, so `previewFor` can only
+      // ever produce the generic line for one. The text still reaches the
+      // device when the recipient asked for it — as ciphertext the service
+      // worker decrypts (lib/push.ts), which is how the feature survives
+      // encryption instead of being traded away for it.
+      const encrypted = event.enc
+      await notifyUser(
+        this.env,
+        peerId,
+        {
+          title: `@${sender?.username ?? 'goodchat'}`,
+          body: previewFor(
+            event.msg_type,
+            event.body,
+            encrypted ? DEFAULT_PUSH_PREVIEW : preference,
+          ),
+          url: `/#/t/${senderId}`,
+          tag: this.name,
+        },
+        // Only when this recipient actually wants a preview: a device that asked
+        // for the generic line has no reason to be handed the ciphertext at all.
+        encrypted && preference === 'full'
+          ? {
+              sender_device: encrypted.sender_device,
+              iv: encrypted.iv,
+              ct: event.body,
+              keys: encrypted.keys,
+            }
+          : undefined,
+      )
     } catch (error) {
       console.error('pushToPeer failed', error instanceof Error ? error.message : error)
     }
