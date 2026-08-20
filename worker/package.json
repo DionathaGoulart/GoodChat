@@ -24,6 +24,8 @@
     "smoke:phase12": "node scripts/smoke-phase12.ts",
     "smoke:phase13": "node scripts/smoke-phase13.ts",
     "smoke:phase14": "node scripts/smoke-phase14.ts",
+    "smoke:phase15": "node scripts/smoke-phase15.ts",
+    "smoke:phase16": "node --import ./scripts/ts-extensions.mjs scripts/smoke-phase16.ts",
     "vapid:generate": "node scripts/vapid-generate.ts",
     "media:dev": "node scripts/media-dev-server.ts",
     "stickers:publish": "node scripts/publish-stickers.ts"

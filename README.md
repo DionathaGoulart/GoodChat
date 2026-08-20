@@ -143,7 +143,7 @@ Worker (`cd worker`):
 | `npm run media:dev`     | Fake-B2 media store on port 9000               |
 | `npm run stickers:publish` | Publish sticker pack to the media store     |
 | `npm run vapid:generate`| Generate a VAPID key pair for web push         |
-| `npm run smoke:phase3..11` | Smoke test suites (see Testing)             |
+| `npm run smoke:phase3..16` | Smoke test suites (see Testing)             |
 | `npm run typecheck`     | TypeScript check                               |
 | `npm run deploy:full`   | Build the app and deploy the Worker            |
 
@@ -173,6 +173,8 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase12` | Presence: heartbeat, online window, presence on the listing endpoints, skin preference |
 | `smoke:phase13` | Retention: the window on connect, either side changing it, the D1 mirror, the refusal of an unknown window, the deadline the alarm is armed for |
 | `smoke:phase14` | The copies of a message: cache ceilings per prefix, a key whose index row is gone, deletion taking bucket and index together, the deadline the cron scans by, `media_key` validation, the WebSocket Origin check, the push preview preference, the owner audit trail, the login lockout exemption |
+| `smoke:phase15` | End-to-end encryption, against a second implementation of the wire format written from the docs rather than imported: the key directory, a message two of one account's devices open and a later one cannot, ciphertext in the Durable Object and in the bucket, the content key that opens both a message and its attachment, the push preview the service worker decrypts, the safety number, and both sides of `E2EE_REQUIRED` |
+| `smoke:phase16` | The app's own crypto, executed: `app/src/lib/e2ee.ts` and the service worker's copy of the key derivation, cross-checked against phase 15's independent implementation in both directions — the app opens what the reference sealed and the reference opens what the app sealed |
 
 ## Documentation
 
