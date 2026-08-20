@@ -275,7 +275,13 @@ own. Four of them, all bounded:
 7. Reads go through the Worker: the bucket is private, so
    `GET /api/media/<key>` checks the session, checks membership, signs a GET
    against B2 and streams the object back, forwarding `Range` so video
-   seeking keeps working. Successful full responses are stored in the
+   seeking keeps working. The response carries
+   `Content-Security-Policy: default-src 'none'; sandbox` and
+   `Cross-Origin-Resource-Policy: same-origin` of its own — the document CSP
+   never reaches this path, and the sticker pack is `image/svg+xml`, which run
+   as a top-level document would execute script on this origin next to the
+   session cookie. `<img src>`, the only way the app renders one, is
+   unaffected. Successful full responses are stored in the
    Cloudflare edge cache (`caches.default`), so a repeated view costs one
    Worker request and no B2 read. B2 → Cloudflare egress is free (Bandwidth
    Alliance), so the proxy adds no bandwidth cost.

@@ -244,6 +244,27 @@ async function canRead(env: Env, auth: AuthContext, key: string): Promise<boolea
 }
 
 /**
+ * What to do if one of these bytes is ever not the picture it claims to be.
+ * This path serves whatever Content-Type the object was stored with, and the
+ * sticker pack is `image/svg+xml` — an SVG opened as a top-level document runs
+ * its own script, on this origin, next to the session cookie. The document CSP
+ * never reaches here (lib/http.ts attaches it to the SPA only), so the response
+ * carries its own:
+ *
+ *   - `default-src 'none'; sandbox` — an SVG rendered from this URL gets no
+ *     script, no fetch and an opaque origin. `<img src>` is unaffected, which
+ *     is the only way the app ever renders one;
+ *   - `Cross-Origin-Resource-Policy: same-origin` — nothing off this origin may
+ *     embed the bytes. The session cookie is SameSite=Strict so a cross-site
+ *     load already 401s, but this is the header that says so out loud.
+ */
+const MEDIA_ISOLATION_HEADERS: Record<string, string> = {
+  'Content-Security-Policy': "default-src 'none'; sandbox",
+  'Cross-Origin-Resource-Policy': 'same-origin',
+  'Content-Disposition': 'inline',
+}
+
+/**
  * Browser-facing copy: private caching (per user) plus any session refresh.
  * Same ceiling as the edge copy — the disk cache of the recipient's browser is
  * one more place a deleted photo could survive, and nothing evicts it from
@@ -252,6 +273,7 @@ async function canRead(env: Env, auth: AuthContext, key: string): Promise<boolea
 function clientResponse(response: Response, key: string, cookie: string | undefined): Response {
   const headers = new Headers(response.headers)
   headers.set('Cache-Control', `private, max-age=${maxAgeFor(key)}, immutable`)
+  for (const [name, value] of Object.entries(MEDIA_ISOLATION_HEADERS)) headers.set(name, value)
   if (cookie) headers.set('Set-Cookie', cookie)
   return new Response(response.body, { status: response.status, headers })
 }
