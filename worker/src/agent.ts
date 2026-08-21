@@ -618,6 +618,35 @@ export class ConversationAgent extends Agent<Env> {
     })
   }
 
+  /**
+   * Registered devices of either participant that this envelope has no key for.
+   *
+   * Not cached. A cache here would be a window in which messages still go out
+   * unreadable, which is the exact thing this check exists to close, and the
+   * query is one indexed lookup (`idx_devices_user`, migration 0012) on a path
+   * that already makes a D1 round trip for the push notification.
+   *
+   * Fails open. If D1 is unreachable the message goes through as sealed: a
+   * conversation that stops working entirely is worse than one where a device
+   * registered in the last few seconds misses a message.
+   */
+  private async unaddressedDevices(enc: NonNullable<SendMessageEvent['enc']>): Promise<string[]> {
+    const participants = this.sql<{ user_id: string }>`SELECT user_id FROM participants`
+    if (participants.length === 0) return []
+    try {
+      const placeholders = participants.map(() => '?').join(', ')
+      const { results } = await this.env.DB.prepare(
+        `SELECT id FROM devices WHERE user_id IN (${placeholders})`,
+      )
+        .bind(...participants.map((p) => p.user_id))
+        .all<{ id: string }>()
+      return (results ?? []).map((row) => row.id).filter((id) => !(id in enc.keys))
+    } catch (error) {
+      console.warn('directory check failed', error instanceof Error ? error.message : error)
+      return []
+    }
+  }
+
   override async onMessage(conn: Connection<ConnState>, raw: WSMessage): Promise<void> {
     const userId = conn.state?.userId
     if (typeof raw !== 'string' || !userId) return
@@ -686,6 +715,30 @@ export class ConversationAgent extends Agent<Env> {
     if (event.enc && !(event.enc.sender_device in event.enc.keys)) {
       this.send(conn, { type: 'error', error: 'invalid_envelope' })
       return
+    }
+    // A device that registered while this sender's tab was open is not in the
+    // directory copy the browser sealed against (lib/deviceDirectory.ts caches
+    // for five minutes and force-refreshes only on connect). Accepting the
+    // message anyway would store one that device can never open — not late,
+    // never, because no key was ever wrapped for it. This object is the one
+    // place that sees both the envelope and the current directory, so it is
+    // where the mismatch is caught.
+    //
+    // Refuse rather than warn: nothing is stored, so the client seals again
+    // under the same client_id and the person sees an ordinary send. The
+    // device list is public (`GET /api/users/:id/devices`), so naming the
+    // mismatch tells the sender nothing they could not already ask for.
+    if (event.enc) {
+      const missing = await this.unaddressedDevices(event.enc)
+      if (missing.length > 0) {
+        this.send(conn, {
+          type: 'error',
+          error: 'stale_directory',
+          message: 'um aparelho novo entrou nesta conversa',
+          client_id: event.client_id,
+        })
+        return
+      }
     }
     // The end of the transition: once every client encrypts, a plaintext
     // message is a client that should not be trusted rather than an old one.

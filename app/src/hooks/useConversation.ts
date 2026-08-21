@@ -347,7 +347,43 @@ export function useConversation(
   const [, forceRender] = useReducer((n: number) => n + 1, 0)
   const wsRef = useRef<WebSocket | null>(null)
   const pendingRef = useRef(new Map<string, SendMessageEvent>())
+  /**
+   * The *unsealed* form of everything still pending, plus how it was sealed.
+   *
+   * `pendingRef` deliberately holds the encrypted event, so an ordinary resend
+   * after a reconnect does not re-encrypt against a directory that has since
+   * moved. `stale_directory` is the one case that has to do exactly that, and
+   * a ciphertext cannot be re-addressed — so the plaintext is kept beside it,
+   * for as long as the message is in flight and no longer.
+   *
+   * The media `sealing` is carried through unchanged on purpose: the object is
+   * already in the bucket under that content key, so re-sealing the body has to
+   * reuse it rather than mint a new one and orphan the upload.
+   */
+  const unsealedRef = useRef(
+    new Map<
+      string,
+      {
+        plain: SendMessageEvent
+        sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number }
+        /** Re-seals so far. One is a race; a second is a device we cannot address. */
+        attempts: number
+      }
+    >(),
+  )
   const lastReadSentRef = useRef<string | null>(null)
+  /**
+   * `seal`, reachable from inside the socket effect.
+   *
+   * The effect is declared above `seal` and must not list it: rebuilding the
+   * effect tears the WebSocket down and puts it back, and re-sealing one
+   * refused message is not a reason to reconnect a thread. The ref is written
+   * on every render, so what `resealPending` calls is always current.
+   */
+  const sealRef = useRef<(
+    event: SendMessageEvent,
+    sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number },
+  ) => Promise<SendMessageEvent | null>>(() => Promise.resolve(null))
   /**
    * This device's encryption identity. Null means it has none — private mode,
    * or a browser that refuses IndexedDB — and everything below degrades to
@@ -389,6 +425,7 @@ export function useConversation(
       messages: readCachedMessages(myId, conversationId, startRetention) ?? [],
     })
     pendingRef.current.clear()
+    unsealedRef.current.clear()
     lastReadSentRef.current = null
     setPeerTyping(false)
     setSynced(false)
@@ -421,8 +458,10 @@ export function useConversation(
           return
         }
         case 'message': {
-          if (event.sender_id === myId) pendingRef.current.delete(event.client_id)
-          else clearPeerTyping()
+          if (event.sender_id === myId) {
+            pendingRef.current.delete(event.client_id)
+            unsealedRef.current.delete(event.client_id)
+          } else clearPeerTyping()
           dispatch({
             type: 'message',
             frame: await toThread(event, identityRef.current, conversationId),
@@ -431,6 +470,7 @@ export function useConversation(
         }
         case 'message_status':
           pendingRef.current.delete(event.client_id)
+          unsealedRef.current.delete(event.client_id)
           dispatch({
             type: 'status',
             id: event.id,
@@ -472,16 +512,63 @@ export function useConversation(
             scheduleFlush(2000)
             return
           }
+          // A device registered between this tab's last directory refresh and
+          // the send. Nothing was stored, so the fix is to address the message
+          // again and offer it again — not to tell anybody, because from where
+          // the person is sitting nothing went wrong.
+          //
+          // Once. A second refusal after a forced refresh is not a race any
+          // more: it is a device whose public key `sealMessage` could not use,
+          // and refusing forever would leave the thread unable to send at all.
+          // The message then goes as it is, readable by every device that could
+          // be addressed — which is the same outcome as before this check.
+          if (event.error === 'stale_directory' && event.client_id) {
+            void resealPending(event.client_id)
+            return
+          }
           // Anything else is a refusal, not a delay: retrying would be refused
           // the same way. Stop offering the queue, say why, and let the bubbles
           // stop pretending they are on their way — a message that reads
           // "enviando_" forever is the failure mode this whole banner exists to
           // prevent.
           pendingRef.current.clear()
+          unsealedRef.current.clear()
           setSendRejected(event.message ?? event.error)
           dispatch({ type: 'send_rejected', myId })
           return
       }
+    }
+
+    /**
+     * Seals one pending message again against a freshly fetched directory and
+     * puts it back on the wire under the same client id — which the Durable
+     * Object dedups on, and which the envelope is now bound to (`messageAad`),
+     * so the re-sealed body is a different ciphertext for the same message
+     * rather than a second message.
+     */
+    const resealPending = async (clientId: string) => {
+      const held = unsealedRef.current.get(clientId)
+      if (!held) return
+      const giveUp = held.attempts >= 1
+      held.attempts += 1
+      if (!giveUp) {
+        await Promise.all([refreshDevices(otherUserId), refreshDevices(myId)])
+        if (disposed) return
+        const resealed = await sealRef.current(held.plain, held.sealing)
+        if (disposed) return
+        if (resealed) pendingRef.current.set(clientId, resealed)
+      }
+      const event = pendingRef.current.get(clientId)
+      const ws = wsRef.current
+      if (!event) return
+      if (giveUp) {
+        // Out of re-seals. Strip the envelope only if there is none — an
+        // unsealable peer is the plaintext path, which E2EE_REQUIRED may well
+        // refuse, and that refusal is the honest answer rather than a silent
+        // downgrade.
+        console.warn('directory still stale after a re-seal; sending as addressed')
+      }
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event))
     }
 
     // Pending sends are flushed a few at a time. The server rate-limits each
@@ -708,6 +795,7 @@ export function useConversation(
         }
         const event = (await seal(plain, sealing)) ?? plain
         pendingRef.current.set(clientId, event)
+        unsealedRef.current.set(clientId, { plain, sealing, attempts: 0 })
         const ws = wsRef.current
         if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event))
         // Not open: the queued event is flushed by the next onopen.
@@ -715,6 +803,8 @@ export function useConversation(
     },
     [myId, seal],
   )
+
+  sealRef.current = seal
 
   const send = useCallback((body: string) => sendEvent('text', body, null), [sendEvent])
 

@@ -243,6 +243,14 @@ export const ServerEventSchema = z.discriminatedUnion('type', [
   // Messages that just aged out. Sent to both participants the moment the
   // sweep runs, so an open thread drops them without waiting for a reload.
   z.object({ type: z.literal('messages_expired'), ids: z.array(z.string()) }),
-  z.object({ type: z.literal('error'), error: z.string(), message: z.string().optional() }),
+  // `client_id` is set when the refusal is about one specific message rather
+  // than about the connection — `stale_directory` is, because the client has to
+  // know which pending send to seal again.
+  z.object({
+    type: z.literal('error'),
+    error: z.string(),
+    message: z.string().optional(),
+    client_id: z.string().optional(),
+  }),
 ])
 export type ServerEvent = z.infer<typeof ServerEventSchema>

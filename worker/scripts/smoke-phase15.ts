@@ -19,7 +19,7 @@
 // Usage: npm run smoke:phase15   (needs `npm run dev` on :8000 and seed data)
 
 import { WebSocket } from 'ws'
-import { d1Query } from './lib.ts'
+import { d1Query, sqlString } from './lib.ts'
 
 const API = process.env.API ?? 'http://localhost:8000'
 const WS_API = API.replace(/^http/, 'ws')
@@ -252,6 +252,16 @@ const bobId: string = (await api('/api/auth/me', { cookie: bobCookie })).body.us
 
 console.log('— the directory')
 
+// A clean directory for both accounts, because the Durable Object now refuses
+// an envelope that misses a device either participant has registered — see the
+// stale-directory block below. Sixteen rows left behind by previous runs would
+// make every send in this file fail for a reason that has nothing to do with
+// the code, and encrypting to a hand-picked subset (which this test used to do)
+// is no longer a thing a real client can do.
+d1Query(
+  `DELETE FROM devices WHERE user_id IN (${sqlString(aliceId)}, ${sqlString(bobId)})`,
+)
+
 // Two browsers for alice, one for bob. Everything below hangs off this.
 const alicePhone = await makeDevice()
 const aliceDesktop = await makeDevice()
@@ -291,18 +301,14 @@ const resolved = await api('/api/conversations/resolve', {
 })
 const conversationId: string = resolved.body.conversation_id
 
-// Only the devices this run created. The dev instance accumulates rows from
-// every previous run, and a test that encrypts to whatever happens to be in the
-// directory is a test that fails for reasons that have nothing to do with the
-// code — the same lesson phases 3 and 14 taught during the audit.
-const mine = new Set([alicePhone.id, aliceDesktop.id])
-const recipients = [
-  ...aliceDirectory.body.devices
-    .filter((d: any) => mine.has(d.id))
-    .map((d: any) => ({ id: d.id, public_key: d.public_key })),
-  { id: bobPhone.id, public_key: bobPhone.publicKey },
-]
-check('the directory returned both of this run\'s devices', recipients.length === 3)
+// Every device both sides have registered, which is what a real client sends
+// to: `seal` in app/src/hooks/useConversation.ts passes the peer's directory
+// plus its own, and the Durable Object refuses anything less.
+const bobDirectory = await api(`/api/users/${bobId}/devices`, { cookie: aliceCookie })
+const recipients = [...aliceDirectory.body.devices, ...bobDirectory.body.devices].map(
+  (d: any) => ({ id: d.id, public_key: d.public_key }),
+)
+check('the directory returned all three of this run\'s devices', recipients.length === 3, recipients.length)
 const secret = `segredo-${Date.now().toString(36)}`
 const sealed = await seal(bobPhone, recipients, { t: secret })
 
@@ -576,6 +582,160 @@ check(
   preview,
 )
 
+console.log('\n— a device that registered mid-conversation is not left out')
+
+// The race this closes: a browser seals against the directory it cached, the
+// peer signs in somewhere new a moment later, and the message lands stored but
+// permanently unopenable on that new device — no key was ever wrapped for it.
+// The Durable Object is the only place that sees both the envelope and the
+// current directory, so it is what notices.
+const staleWs = await connect(bobCookie, conversationId, aliceId)
+const staleId = crypto.randomUUID()
+// `recipients` is the directory as it stood before the tablet below exists —
+// exactly the copy a browser would still be holding from its last refresh.
+const staleSealed = await seal(bobPhone, recipients, { t: 'selada antes do aparelho novo' })
+
+// Alice opens the app somewhere new, after bob already addressed the message.
+const aliceTablet = await makeDevice()
+await register(aliceCookie, aliceTablet)
+
+const staleResult = waitFor<any>(
+  staleWs,
+  (e) => (e.type === 'message' && e.client_id === staleId) || e.type === 'error',
+  'stale directory result',
+)
+staleWs.send(
+  JSON.stringify({
+    type: 'send_message',
+    client_id: staleId,
+    msg_type: 'text',
+    body: staleSealed.body,
+    enc: staleSealed.enc,
+  }),
+)
+const stale = await staleResult
+check('an envelope that misses a registered device is refused', stale.error === 'stale_directory', stale)
+check('and the refusal names the message, so the client knows what to seal again', stale.client_id === staleId, stale)
+
+// What the client does next: refresh, address it again, same client id.
+const refreshed = (await api(`/api/users/${aliceId}/devices`, { cookie: bobCookie })).body.devices
+check(
+  'the refreshed directory carries the new device',
+  refreshed.some((d: any) => d.id === aliceTablet.id),
+  refreshed.map((d: any) => d.id),
+)
+const resealed = await seal(
+  bobPhone,
+  [...refreshed, ...bobDirectory.body.devices].map((d: any) => ({
+    id: d.id,
+    public_key: d.public_key,
+  })),
+  { t: 'selada de novo' },
+)
+const resealedResult = waitFor<any>(
+  staleWs,
+  (e) => (e.type === 'message' && e.client_id === staleId) || e.type === 'error',
+  'resealed result',
+)
+staleWs.send(
+  JSON.stringify({
+    type: 'send_message',
+    client_id: staleId,
+    msg_type: 'text',
+    body: resealed.body,
+    enc: resealed.enc,
+  }),
+)
+const resent = await resealedResult
+check('the re-sealed message is accepted under the same client id', resent.type === 'message', resent)
+check(
+  'and it is addressed to the device that was missing',
+  resent.enc && aliceTablet.id in resent.enc.keys,
+  resent.enc && Object.keys(resent.enc.keys),
+)
+staleWs.close()
+
+console.log('\n— history handed to a device of your own account')
+
+// A browser signed into after the fact holds a key no envelope names, and no
+// amount of server help fixes that: the content keys exist only wrapped. So an
+// existing device of the same account re-wraps them under *its* pair and says
+// so with `via` — which is the whole reason that field exists, because it
+// cannot produce the wrap the original sender would have written.
+const aliceLaptop = await makeDevice()
+await register(aliceCookie, aliceLaptop)
+
+// It cannot read the message from earlier in this run: no key was ever wrapped
+// for it, which is the state this whole exchange exists to leave behind.
+check(
+  'the new device is not named in the envelope at all',
+  !(aliceLaptop.id in echo.enc.keys),
+  Object.keys(echo.enc.keys),
+)
+
+// Alice's phone opens it, re-wraps the content key for the laptop, and hands it
+// over. `contentKey` here is what `open` recovered — the same key the sender
+// generated, never seen by the server in the clear.
+const opened = await openWithKey(alicePhone, bobPhone.publicKey, echo.body, echo.enc)
+const handover = await rewrap(alicePhone, aliceLaptop, opened!.contentKey)
+
+const handoverWs = await connect(aliceCookie, conversationId, bobId)
+const shared = waitFor<any>(handoverWs, (e) => e.type === 'keys_shared', 'keys_shared')
+handoverWs.send(
+  JSON.stringify({
+    type: 'share_keys',
+    device_id: aliceLaptop.id,
+    keys: { [echo.id]: handover },
+  }),
+)
+const sharedFrame = await shared
+check('the durable object merges the handed-over key', sharedFrame.count === 1, sharedFrame)
+
+const refreshedHistory = await waitFor<any>(handoverWs, (e) => e.type === 'history', 'history after share')
+const updated = refreshedHistory.messages.find((m: any) => m.id === echo.id)
+check('and hands the envelope back with the new entry in it', Boolean(updated?.enc?.keys?.[aliceLaptop.id]), updated?.enc && Object.keys(updated.enc.keys))
+check(
+  'the entry names the device that wrapped it, not the sender',
+  updated?.enc?.keys?.[aliceLaptop.id]?.via === alicePhone.id,
+  updated?.enc?.keys?.[aliceLaptop.id],
+)
+
+// The point of all of it: the laptop reads a message that predates it, by
+// running ECDH against the phone rather than against bob.
+const byLaptop = await open(aliceLaptop, alicePhone.publicKey, updated.body, updated.enc)
+check('and the new device can now open the message', byLaptop?.t === secret, byLaptop)
+
+// The handover moved who can read it and nothing else: the body is still bound
+// to bob and to bob's device, so it still says it came from bob.
+check(
+  'the envelope still names bob as the sender',
+  updated.enc.sender_device === bobPhone.id,
+  updated.enc.sender_device,
+)
+
+// A device belonging to somebody else is refused: this object will not be the
+// tool that grants a stranger read access.
+const outsiderRefusal = waitFor<any>(handoverWs, (e) => e.type === 'error', 'share refusal')
+handoverWs.send(
+  JSON.stringify({ type: 'share_keys', device_id: bobPhone.id, keys: { [echo.id]: handover } }),
+)
+check(
+  "sharing to another account's device is refused",
+  (await outsiderRefusal).error === 'unknown_device',
+)
+handoverWs.close()
+
+// Both halves of the transition switch. Which one is in force is read off the
+// worker's answer rather than off this process's environment: `E2EE_REQUIRED`
+// reaches the Durable Object through .dev.vars or wrangler.jsonc, and an env var
+// exported in front of `npm run smoke:phase15` changes nothing about what is
+// running. Asking, instead of assuming, is what stops this from asserting the
+// wrong half and reporting it as a failure of the code.
+//
+//   E2EE_REQUIRED=false — plaintext still works, which is what lets a fleet
+//                         upgrade one browser at a time, and what the smoke
+//                         tests that predate encryption rely on;
+//   E2EE_REQUIRED=true  — it does not, which is the deployed default.
 const plainWs = await connect(bobCookie, conversationId, aliceId)
 const plainId = crypto.randomUUID()
 const plainResult = waitFor<any>(
