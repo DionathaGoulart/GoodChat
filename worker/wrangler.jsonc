@@ -72,13 +72,29 @@
     // rather than anywhere on the internet. Empty in production; only a browser
     // the defaults miss needs anything here.
     "PUSH_ENDPOINT_HOSTS": "",
-    // Refuse a message that arrives without an encryption envelope. Leave this
-    // off until every client has registered a device key (the owner console's
-    // account list is where that becomes visible): a browser that has not, or
-    // one in private mode where IndexedDB is unavailable, sends in the clear and
-    // would start failing silently. Nothing has to be migrated to turn it on —
-    // retention deletes every plaintext message within seven days on its own.
-    "E2EE_REQUIRED": "false",
+    // Refuse a message that arrives without an encryption envelope.
+    //
+    // On, because an instance that advertises end-to-end encryption and quietly
+    // accepts plaintext is telling two different stories: `seal` returns null
+    // whenever the peer has no key in the directory, and before this flag the
+    // message went out in the clear with nothing but a banner about it.
+    //
+    // The cost is real and worth stating: an account with no registered device
+    // cannot be written to at all. Its sends are refused with
+    // `encryption_required` until it opens the app somewhere that can keep an
+    // identity — which a private window cannot, because it has no IndexedDB.
+    // Before deploying a change to this value, check who is not ready:
+    //
+    //   wrangler d1 execute goodchat --remote --command \
+    //     "SELECT u.username FROM users u
+    //        LEFT JOIN devices d ON d.user_id = u.id
+    //       WHERE d.id IS NULL"
+    //
+    // Nothing has to be migrated either way — retention deletes every plaintext
+    // message within seven days on its own, so the instance ends up fully
+    // encrypted a week after the deploy regardless. This flag is what stops it
+    // going back.
+    "E2EE_REQUIRED": "true",
     // Delete claimed media older than this many days. "0" = keep forever.
     // Turning it on makes old bubbles render the "mídia expirada" placeholder.
     "MEDIA_RETENTION_DAYS": "0",

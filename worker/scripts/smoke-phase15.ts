@@ -795,6 +795,12 @@ plainWs.send(
 )
 const plain = await plainResult
 plainWs.close()
+const required = plain.type === 'error'
+console.log(
+  required
+    ? '\n— plaintext is refused (E2EE_REQUIRED=true)'
+    : '\n— plaintext still works during the transition (E2EE_REQUIRED=false)',
+)
 if (required) {
   check('a message with no envelope is refused', plain.error === 'encryption_required', plain)
 } else {

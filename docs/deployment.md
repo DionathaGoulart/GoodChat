@@ -224,13 +224,28 @@ The ones that change behaviour:
   `POST /api/admin/media/reindex` from the owner console once and check that
   `indexed_media_bytes` matches `bucket_bytes` in the overview before
   deploying with the flag closed.
-- `E2EE_REQUIRED` — when `"true"`, the Durable Object refuses any message that
-  arrives without an encryption envelope. Leave it off until every client has
-  registered a device key: a browser in private mode has no IndexedDB, gets no
-  identity, and sends in the clear. Nothing needs migrating to turn it on —
-  retention deletes every plaintext message within seven days by itself, so the
-  instance becomes fully encrypted a week after the deploy whether or not the
-  flag is flipped. The flag is what stops it going back.
+- `E2EE_REQUIRED` — when `"true"` (the default since the `v: 2` envelope), the
+  Durable Object refuses any message that arrives without an encryption
+  envelope. Nothing needs migrating to turn it on or off — retention deletes
+  every plaintext message within seven days by itself, so the instance becomes
+  fully encrypted a week after the deploy whether or not the flag is flipped.
+  The flag is what stops it going back.
+
+  What it costs: an account with no registered device key cannot be written to.
+  A browser in private mode has no IndexedDB, gets no identity, and its sends
+  are refused with `encryption_required` rather than going out in the clear.
+  Check who is not ready before deploying a change to this value — there is no
+  owner-console view for it, so ask D1 directly:
+
+  ```
+  wrangler d1 execute goodchat --remote --command \
+    "SELECT u.username FROM users u
+       LEFT JOIN devices d ON d.user_id = u.id
+      WHERE d.id IS NULL"
+  ```
+
+  Every name it returns is somebody who has to open the app once, in a normal
+  window, before messages to them will send.
 - `PUSH_ENDPOINT_HOSTS` — comma-separated domain suffixes a push subscription
   may point at. A stored endpoint is a URL the Worker POSTs to on every message
   the account receives, so this is what keeps it a browser vendor's push service
