@@ -75,6 +75,21 @@ export interface CachedThread {
    * SafetyNumber.tsx).
    */
   peerFingerprint?: string
+  /**
+   * The peer's device set at the moment somebody said they had compared the
+   * safety number out loud, or absent if nobody ever has.
+   *
+   * This is what turns the banner from noise into a signal. Before a
+   * comparison, a new device on the other side is *news* — most people use
+   * three browsers and sign into new ones constantly, and a red alarm every
+   * time teaches exactly one lesson, which is to stop reading it. After a
+   * comparison it is an *alarm*, because the person has a number they trusted
+   * and the thing that number described has changed underneath them.
+   *
+   * Stored per peer rather than per device set, so re-verifying after a
+   * legitimate change simply moves it forward.
+   */
+  verifiedFingerprint?: string
 }
 
 interface Stored<T> {

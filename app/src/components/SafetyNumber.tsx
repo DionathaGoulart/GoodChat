@@ -18,6 +18,17 @@
 // correct rather than noisy: a new device really is a new party that can read
 // the conversation. Which is also why the banner exists — nobody compares
 // numbers spontaneously, so the app says when there is a reason to.
+//
+// And why this dialog can be told the comparison happened. A number nobody
+// checked is decoration: the thread has nothing to compare a later change
+// against, so every change has to be reported at the same volume, and a warning
+// that fires for every new browser is one people learn to dismiss. Recording
+// the comparison is what lets the thread separate "@alice signed in somewhere
+// new" from "the keys moved after you checked them" — the first is ordinary,
+// the second is the only thing this whole mechanism was built to surface.
+//
+// It is deliberately not called "verify": nothing here verifies anything. The
+// person did, out of band, and this is a note that they said so.
 
 import { useEffect, useState } from 'react'
 import type { PublicUser } from '../lib/api'
@@ -29,10 +40,15 @@ import { RetroIconButton } from './RetroIconButton'
 export function SafetyNumberDialog({
   myId,
   otherUser,
+  verified,
+  onVerify,
   onClose,
 }: {
   myId: string
   otherUser: PublicUser
+  /** The set on screen is already the one somebody said they compared. */
+  verified: boolean
+  onVerify: () => void | Promise<void>
   onClose: () => void
 }) {
   const [number, setNumber] = useState<string | null>(null)
@@ -92,9 +108,29 @@ export function SafetyNumberDialog({
         muda quando qualquer um dos dois entra num aparelho novo
       </p>
 
-      <RetroIconButton className="self-end" onClick={onClose}>
-        fechar
-      </RetroIconButton>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {/* Only offered once there is a number to have compared. Marking a
+            failed or still-loading dialog as checked would record a claim about
+            nothing, and that claim is what every later warning is measured
+            against. */}
+        {number !== null &&
+          (verified ? (
+            <p className="mr-auto font-mono text-[10px] uppercase tracking-[0.2em] text-success">
+              conferido
+            </p>
+          ) : (
+            <RetroIconButton
+              className="mr-auto"
+              onClick={() => {
+                void onVerify()
+                onClose()
+              }}
+            >
+              já conferi este número
+            </RetroIconButton>
+          ))}
+        <RetroIconButton onClick={onClose}>fechar</RetroIconButton>
+      </div>
     </Modal>
   )
 }

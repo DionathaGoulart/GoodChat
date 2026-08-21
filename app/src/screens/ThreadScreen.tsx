@@ -7,7 +7,7 @@
 // (lib/presence.ts) — with one exception: while my own link is down I cannot
 // know theirs, so the link state is what gets shown instead of a stale "online".
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, resolveConversation } from '../lib/api'
 import { readCachedThread, writeCachedThread } from '../lib/threadCache'
 import type { PublicUser } from '../lib/api'
@@ -170,7 +170,14 @@ function LiveThread({
    * say it out loud instead of absorbing it silently (components/
    * SafetyNumber.tsx).
    */
-  const [keysChanged, setKeysChanged] = useState(false)
+  /**
+   * What the directory comparison found, or null. `new-device` is a statement,
+   * `since-verified` is a warning — see the effect below for why they are not
+   * the same banner.
+   */
+  const [keysChanged, setKeysChanged] = useState<'new-device' | 'since-verified' | null>(null)
+  /** The peer's current device set is the one somebody compared out loud. */
+  const [verified, setVerified] = useState(false)
   const [retentionNotice, setRetentionNotice] = useState<string | null>(null)
   const presence = usePresence(useMemo(() => [otherUser.id], [otherUser.id]))
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -178,6 +185,13 @@ function LiveThread({
 
   // Compared on open, and only on open: a change is worth one banner, not a
   // re-render every time the directory cache refreshes.
+  //
+  // Two different findings come out of the same comparison, and conflating them
+  // is what made this banner ignorable. A device the person has never verified
+  // against is *news* — most people sign into a new browser every few weeks and
+  // an alarm each time trains them to dismiss it. A device set that has moved
+  // since they compared the number out loud is an *alarm*, because they are
+  // holding a number that no longer describes the conversation.
   useEffect(() => {
     if (!myId || readonly) return
     let cancelled = false
@@ -187,16 +201,44 @@ function LiveThread({
       const fingerprint = await devicesFingerprint(devices)
       if (cancelled) return
       const seen = readCachedThread(myId, otherUser.id)
-      // No stored fingerprint is a first look, not a change: warning there
+      setVerified(seen?.verifiedFingerprint === fingerprint)
+      // No stored fingerprint is a first look, not a change: announcing one
       // would fire for every thread the first time this build runs, which is
       // the fastest way to teach somebody to ignore the banner.
-      if (seen?.peerFingerprint && seen.peerFingerprint !== fingerprint) setKeysChanged(true)
+      if (seen?.verifiedFingerprint && seen.verifiedFingerprint !== fingerprint) {
+        setKeysChanged('since-verified')
+      } else if (seen?.peerFingerprint && seen.peerFingerprint !== fingerprint) {
+        setKeysChanged('new-device')
+      }
       if (seen) writeCachedThread(myId, otherUser.id, { ...seen, peerFingerprint: fingerprint })
     })()
     return () => {
       cancelled = true
     }
   }, [myId, otherUser.id, readonly])
+
+  /**
+   * Records that somebody compared the number out loud. Written against the set
+   * as it is *now* rather than as it was when the dialog opened, because the
+   * dialog forces a directory refresh before it shows anything — the number on
+   * screen is the current one by construction.
+   */
+  const markVerified = useCallback(async () => {
+    if (!myId) return
+    const devices = await getDevices(otherUser.id)
+    if (devices.length === 0) return
+    const fingerprint = await devicesFingerprint(devices)
+    const seen = readCachedThread(myId, otherUser.id)
+    if (seen) {
+      writeCachedThread(myId, otherUser.id, {
+        ...seen,
+        peerFingerprint: fingerprint,
+        verifiedFingerprint: fingerprint,
+      })
+    }
+    setVerified(true)
+    setKeysChanged(null)
+  }, [myId, otherUser.id])
 
   const lastPeerMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -289,10 +331,12 @@ function LiveThread({
           aria-label={
             encryption === 'off'
               ? 'esta conversa não está criptografada'
-              : 'número de segurança desta conversa'
+              : verified
+                ? 'número de segurança desta conversa, já conferido'
+                : 'número de segurança desta conversa'
           }
         >
-          {encryption === 'off' ? '🔓' : '🔒'}
+          {encryption === 'off' ? '🔓' : verified ? '🔐' : '🔒'}
         </RetroIconButton>
         <RetroIconButton
           className="shrink-0"
@@ -337,18 +381,26 @@ function LiveThread({
 
       {keysChanged && (
         <div className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center">
-          <p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-warning">
-            os aparelhos de @{otherUser.username} mudaram
+          <p
+            className={`font-mono text-[10px] font-bold uppercase tracking-[0.2em] ${
+              keysChanged === 'since-verified' ? 'text-error' : 'opacity-60'
+            }`}
+          >
+            {keysChanged === 'since-verified'
+              ? `os aparelhos de @${otherUser.username} mudaram depois de você conferir`
+              : `@${otherUser.username} entrou num aparelho novo`}
           </p>
           <button
             type="button"
             onClick={() => {
-              setKeysChanged(false)
+              setKeysChanged(null)
               setSafetyOpen(true)
             }}
             className="mt-1 cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] underline opacity-70 hover:opacity-100"
           >
-            conferir o número de segurança
+            {keysChanged === 'since-verified'
+              ? 'conferir o número de novo'
+              : 'conferir o número de segurança'}
           </button>
         </div>
       )}
@@ -407,6 +459,8 @@ function LiveThread({
         <SafetyNumberDialog
           myId={myId}
           otherUser={otherUser}
+          verified={verified}
+          onVerify={markVerified}
           onClose={() => setSafetyOpen(false)}
         />
       )}
