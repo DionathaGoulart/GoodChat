@@ -21,7 +21,7 @@
 //     they pass through unchanged, which keeps small reaction GIFs as GIFs.
 
 import { requestUploadUrl } from './api'
-import { createContentKey, encryptBytes, randomIv } from './e2ee'
+import { MEDIA_CHUNK_BYTES, createContentKey, encryptChunked, randomChunkPrefix } from './e2ee'
 
 export const MEDIA_URL: string =
   import.meta.env.VITE_MEDIA_URL ?? 'http://localhost:8000/api/media'
@@ -553,6 +553,8 @@ export interface SealedUpload {
   mediaIv: Uint8Array
   /** The real MIME, which only the encrypted payload carries. */
   mime: string
+  /** Plaintext bytes per chunk, as this object was written. */
+  chunk: number
 }
 
 export interface SealedUploadHandle {
@@ -564,13 +566,19 @@ export function uploadEncryptedMedia(
   prepared: PreparedMedia,
   onProgress: (fraction: number) => void,
 ): SealedUploadHandle {
-  const mediaIv = randomIv()
+  // Eight bytes, not twelve: the rest of each chunk's nonce is its index and
+  // the final flag (`chunkNonce` in lib/e2ee.ts).
+  const mediaIv = randomChunkPrefix()
   let inner: UploadHandle | null = null
   let aborted = false
 
   const promise = (async (): Promise<SealedUpload> => {
     const contentKey = await createContentKey()
-    const sealed = await encryptBytes(contentKey, mediaIv, await prepared.blob.arrayBuffer())
+    const sealed = await encryptChunked(
+      contentKey,
+      mediaIv,
+      new Uint8Array(await prepared.blob.arrayBuffer()),
+    )
     if (aborted) throw new DOMException('upload cancelado', 'AbortError')
     inner = uploadMedia(
       new Blob([sealed as BlobPart], { type: ENCRYPTED_MIME }),
@@ -580,7 +588,7 @@ export function uploadEncryptedMedia(
       prepared.kind,
     )
     const { key } = await inner.promise
-    return { key, contentKey, mediaIv, mime: prepared.mime }
+    return { key, contentKey, mediaIv, mime: prepared.mime, chunk: MEDIA_CHUNK_BYTES }
   })()
 
   return {

@@ -80,7 +80,13 @@ async function openPreviews(
       if (!last?.enc) return item
       const sender = findCachedDevice(last.enc.sender_device)
       const opened = sender
-        ? await openMessage(identity, sender.public_key, last.body, last.enc)
+        ? await openMessage(
+            identity,
+            { conversationId: item.id, senderId: last.sender_id, clientId: last.client_id },
+            sender.public_key,
+            last.body,
+            last.enc,
+          )
         : null
       return {
         ...item,

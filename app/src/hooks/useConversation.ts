@@ -14,7 +14,13 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { wsUrl } from '../lib/api'
 import { base64url, readDeviceKey, type DeviceIdentity } from '../lib/deviceKeys'
-import { createContentKey, openMessage, sealMessage, type Payload } from '../lib/e2ee'
+import {
+  createContentKey,
+  isAddressedTo,
+  openMessage,
+  sealMessage,
+  type Payload,
+} from '../lib/e2ee'
 import { findCachedDevice, getDevices, refreshDevices } from '../lib/deviceDirectory'
 import { dismissNotifications } from '../lib/push'
 import { readCachedMessages, writeCachedMessages } from '../lib/threadCache'
@@ -66,6 +72,22 @@ export interface ThreadMessage {
    */
   sealed?: boolean
   /**
+   * Why, so the bubble can say something the person can act on. One placeholder
+   * for four situations meant the only honest reading of it was "something is
+   * wrong somewhere", which is the least useful thing a message can say:
+   *
+   * - `no-key` — this browser holds no identity. A private window, or storage
+   *   that was cleared. The only one of the four the person can fix, and the
+   *   only one where every message in the thread looks like this.
+   * - `not-addressed` — sent before this browser registered. Ordinary, and
+   *   permanent: no key for it was ever wrapped.
+   * - `unknown-sender` — the sending device is gone from the directory, so
+   *   there is no public key left to run ECDH against.
+   * - `undecryptable` — it was addressed here and still did not open. Corrupt,
+   *   or an envelope that was moved (see `messageAad` in lib/e2ee.ts).
+   */
+  sealedReason?: 'no-key' | 'not-addressed' | 'unknown-sender' | 'undecryptable'
+  /**
    * The server refused this send and will not be asked again — the instance
    * requires encryption and this device has no key, or the envelope did not
    * hold up. Local only: nothing on the wire carries it, and it exists so the
@@ -79,6 +101,8 @@ export interface ThreadMessage {
   contentKey?: CryptoKey
   /** IV for the bucket object, from the envelope. */
   enc_media_iv?: string
+  /** Plaintext bytes per chunk, when the object was written in chunks. */
+  enc_media_chunk?: number
   /**
    * The attachment's real MIME, which only the encrypted payload carries — the
    * worker saw `application/octet-stream` and nothing more.
@@ -122,16 +146,33 @@ type Action =
 async function toThread(
   m: WireMessage,
   identity: DeviceIdentity | null,
+  conversationId: string,
 ): Promise<ThreadMessage> {
   const { enc, ...rest } = m
   if (!enc) return { ...rest }
-  if (!identity) return { ...rest, body: '', sealed: true }
+  const sealed = (sealedReason: ThreadMessage['sealedReason']): ThreadMessage => ({
+    ...rest,
+    body: '',
+    sealed: true,
+    sealedReason,
+  })
+  if (!identity) return sealed('no-key')
+  if (!isAddressedTo(enc, identity.id)) return sealed('not-addressed')
 
   const sender = findCachedDevice(enc.sender_device)
-  const opened = sender
-    ? await openMessage(identity, sender.public_key, m.body, enc)
-    : null
-  if (!opened) return { ...rest, body: '', sealed: true }
+  if (!sender) return sealed('unknown-sender')
+  // Both halves of the binding come from outside the envelope — the thread this
+  // frame arrived on, and the sender the frame claims. A server that changed
+  // either one to make a message say something it did not lands on
+  // `undecryptable` here rather than on a convincing bubble.
+  const opened = await openMessage(
+    identity,
+    { conversationId, senderId: m.sender_id, clientId: m.client_id },
+    sender.public_key,
+    m.body,
+    enc,
+  )
+  if (!opened) return sealed('undecryptable')
 
   return {
     ...rest,
@@ -140,6 +181,7 @@ async function toThread(
       ? {
           contentKey: opened.contentKey,
           enc_media_iv: enc.media_iv,
+          enc_media_chunk: enc.media_chunk,
           media_mime: opened.payload.m,
         }
       : {}),
@@ -159,6 +201,7 @@ function pick(message: ThreadMessage): Partial<ThreadMessage> {
     sealed: false,
     contentKey: message.contentKey,
     enc_media_iv: message.enc_media_iv,
+    enc_media_chunk: message.enc_media_chunk,
     media_mime: message.media_mime,
   }
 }
@@ -370,7 +413,9 @@ export function useConversation(
           const identity = identityRef.current
           dispatch({
             type: 'history',
-            messages: await Promise.all(event.messages.map((m) => toThread(m, identity))),
+            messages: await Promise.all(
+              event.messages.map((m) => toThread(m, identity, conversationId)),
+            ),
           })
           setSynced(true)
           return
@@ -378,7 +423,10 @@ export function useConversation(
         case 'message': {
           if (event.sender_id === myId) pendingRef.current.delete(event.client_id)
           else clearPeerTyping()
-          dispatch({ type: 'message', frame: await toThread(event, identityRef.current) })
+          dispatch({
+            type: 'message',
+            frame: await toThread(event, identityRef.current, conversationId),
+          })
           return
         }
         case 'message_status':
@@ -585,7 +633,7 @@ export function useConversation(
   const seal = useCallback(
     async (
       event: SendMessageEvent,
-      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string },
+      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number },
     ): Promise<SendMessageEvent | null> => {
       const identity = identityRef.current ?? (await readDeviceKey(myId))
       if (!identity) return null
@@ -605,14 +653,16 @@ export function useConversation(
       const contentKey = sealing?.contentKey ?? (await createContentKey())
       const { body, enc } = await sealMessage(
         identity,
+        { conversationId, senderId: myId, clientId: event.client_id },
         [...peers, ...mine],
         payload,
         contentKey,
         sealing?.mediaIv,
+        sealing?.chunk,
       )
       return { ...event, body, enc }
     },
-    [myId, otherUserId],
+    [conversationId, myId, otherUserId],
   )
 
   const sendEvent = useCallback(
@@ -620,7 +670,7 @@ export function useConversation(
       msgType: WireMessage['msg_type'],
       body: string,
       mediaKey: string | null,
-      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string },
+      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number },
     ) => {
       const clientId = crypto.randomUUID()
       dispatch({
@@ -641,6 +691,7 @@ export function useConversation(
             ? {
                 contentKey: sealing.contentKey,
                 enc_media_iv: base64url(sealing.mediaIv),
+                enc_media_chunk: sealing.chunk,
                 media_mime: sealing.mime,
               }
             : {}),
@@ -676,7 +727,7 @@ export function useConversation(
     (
       msgType: 'image' | 'video',
       mediaKey: string,
-      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string },
+      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number },
     ) => sendEvent(msgType, '', mediaKey, sealing),
     [sendEvent],
   )

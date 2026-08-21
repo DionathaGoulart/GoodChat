@@ -15,9 +15,10 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ThreadMessage } from '../hooks/useConversation'
-import { decryptBytes } from '../lib/e2ee'
+import { decryptBytes, decryptChunks, sealedChunkCount } from '../lib/e2ee'
 import { fromBase64url } from '../lib/deviceKeys'
 import { mediaUrl } from '../lib/media'
+import { handStreamToWorker, releaseStream } from '../lib/mediaStream'
 import { STICKER_ID_RE } from '../lib/protocol'
 import { stickerAssetUrl, useStickerPack } from '../lib/stickers'
 
@@ -85,19 +86,58 @@ function useMediaSource(message: ThreadMessage): { src: string | null; failed: b
   const contentKey = message.contentKey
   const mediaIv = message.enc_media_iv
 
+  const mediaChunk = message.enc_media_chunk
+  const isVideo = message.msg_type === 'video'
+
   useEffect(() => {
     if (!key || !contentKey || !mediaIv) return
     let url: string | null = null
     let cancelled = false
+    let handed: string | null = null
     void (async () => {
       try {
+        // Video, sealed in chunks: handed to the service worker instead of
+        // downloaded here. The element then plays and seeks against a URL the
+        // worker answers a range at a time, which is the whole point of the
+        // chunked format — a blob URL would mean waiting for all 32MB first.
+        //
+        // Images take the simple path whatever their shape. They are capped at
+        // 8MB, they are useless until complete anyway, and an <img> has no
+        // range requests to make.
+        if (isVideo && mediaChunk) {
+          handed = await handStreamToWorker({
+            mediaKey: key,
+            contentKey,
+            prefix: mediaIv,
+            chunk: mediaChunk,
+            mime: message.media_mime,
+            url: mediaUrl(key),
+          })
+          if (cancelled) return
+          if (handed) {
+            setDecrypted(handed)
+            return
+          }
+          // No worker to hand it to — a browser that refuses one, or a tab that
+          // is not controlled yet. Falls through to downloading it whole, which
+          // is what every video did before this path existed.
+        }
+
         const response = await fetch(mediaUrl(key), { credentials: 'include' })
         if (!response.ok) throw new Error(String(response.status))
-        const plain = await decryptBytes(
-          contentKey,
-          fromBase64url(mediaIv),
-          await response.arrayBuffer(),
-        )
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        const plain = mediaChunk
+          ? await decryptChunks(
+              contentKey,
+              fromBase64url(mediaIv),
+              bytes,
+              0,
+              sealedChunkCount(bytes.length, mediaChunk),
+              mediaChunk,
+            )
+          : // Written before chunking, and readable for as long as retention
+            // keeps it: one whole ciphertext under a twelve-byte IV.
+            await decryptBytes(contentKey, fromBase64url(mediaIv), bytes as BufferSource)
         if (cancelled) return
         url = URL.createObjectURL(new Blob([plain as BlobPart], { type: message.media_mime }))
         setDecrypted(url)
@@ -108,8 +148,9 @@ function useMediaSource(message: ThreadMessage): { src: string | null; failed: b
     return () => {
       cancelled = true
       if (url) URL.revokeObjectURL(url)
+      if (handed) void releaseStream(handed)
     }
-  }, [key, contentKey, mediaIv, message.media_mime])
+  }, [key, contentKey, mediaIv, mediaChunk, isVideo, message.media_mime])
 
   // Encrypted and not yet decrypted is not the same as absent: returning the
   // raw URL here would hand ciphertext to an <img> and render a broken frame.
@@ -207,6 +248,31 @@ function StickerContent({ stickerId }: { stickerId: string }) {
   )
 }
 
+/**
+ * What an unopened message says. Four sentences rather than one, because the
+ * four causes call for four different reactions — and the person can only act
+ * on the first of them (`useConversation.ts` documents each).
+ *
+ * `undecryptable` is the only one phrased as a problem, because it is the only
+ * one that is: the other three are what correct behaviour looks like when a key
+ * is younger than a message.
+ */
+const SEALED_TEXT: Record<NonNullable<ThreadMessage['sealedReason']>, string> = {
+  'no-key': '[sem chave neste navegador]',
+  'not-addressed': '[mensagem de antes deste dispositivo]',
+  'unknown-sender': '[aparelho de origem não existe mais]',
+  undecryptable: '[não foi possível abrir esta mensagem]',
+}
+
+/**
+ * The line under it, for the one case somebody can do something about. A
+ * private window keeps no key, so every message in every thread reads as
+ * `no-key` — saying why once per bubble beats letting it look like data loss.
+ */
+const SEALED_HINT: Partial<Record<NonNullable<ThreadMessage['sealedReason']>, string>> = {
+  'no-key': 'janela anônima ou dados apagados',
+}
+
 export function MessageBubble({
   message,
   mine,
@@ -224,11 +290,13 @@ export function MessageBubble({
     'data-status': message.status,
   }
 
-  // Encrypted, and not for this browser. Expected rather than broken: every
-  // message sent before this device registered its key looks like this, and so
-  // does one from a device that has since rotated. Saying so is better than an
-  // empty bubble, which reads as a bug.
+  // Encrypted and unopened. Expected rather than broken in three of the four
+  // cases: a key is simply younger than the message, or the device that sealed
+  // it is gone. Saying which is better than one sentence for all of them, and
+  // far better than an empty bubble, which reads as a bug.
   if (message.sealed) {
+    const reason = message.sealedReason ?? 'not-addressed'
+    const hint = SEALED_HINT[reason]
     return (
       <div
         {...data}
@@ -236,9 +304,16 @@ export function MessageBubble({
           mine ? 'self-end bg-accent/40' : 'self-start bg-base-200'
         }`}
       >
-        <p className="msg-body font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">
-          [mensagem de antes deste dispositivo]
+        <p
+          className={`msg-body font-mono text-[10px] uppercase tracking-[0.2em] ${
+            reason === 'undecryptable' ? 'text-warning opacity-80' : 'opacity-60'
+          }`}
+        >
+          {SEALED_TEXT[reason]}
         </p>
+        {hint && (
+          <p className="font-mono text-[9px] uppercase tracking-[0.15em] opacity-40">{hint}</p>
+        )}
         <MetaLine message={message} mine={mine} className="opacity-40" />
       </div>
     )

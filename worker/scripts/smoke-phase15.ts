@@ -529,72 +529,51 @@ const refusal = await refused
 badWs.close()
 check('an envelope that omits its own sender is refused', refusal.error === 'invalid_envelope', refusal)
 
-console.log('\n— the push preview decrypts on the device')
+console.log('\n— the push preview is read back, not carried')
 
-// What the worker builds for one subscription (lib/push.ts `scopeToDevice`),
-// and what the service worker has to be able to open (app/public/sw.js). The
-// two derive the wrapping key from different starting points — the app knows
-// `sender_device`, the service worker only has the sender's public key and has
-// to recompute the id from it — so this asserts they agree. A mismatch here
-// would show up as "notifications silently always generic", which is exactly
-// the kind of failure nobody notices.
-const pushPayload = {
-  device: alicePhone.id,
-  sender_key: bobPhone.publicKey,
-  iv: echo.enc.iv,
-  ct: echo.body,
-  key: echo.enc.keys[alicePhone.id],
-}
+// The notification names a message; the service worker fetches it and decrypts
+// it there (lib/push.ts `EncryptedPreview`, app/public/sw.js). So what this
+// asserts is that the endpoint the worker will call actually hands back
+// everything decryption needs — the envelope, the body, and the sender's public
+// key — because a field missing there shows up as "notifications are silently
+// always generic", which is exactly the kind of failure nobody reports.
+const list = await api('/api/conversations', { cookie: aliceCookie })
+const listed = list.body.conversations.find((c: any) => c.id === conversationId)
+check('the conversation list carries the last message', Boolean(listed?.last_message), listed?.id)
+check('with its envelope intact', Boolean(listed?.last_message?.enc?.keys), listed?.last_message?.enc)
+check(
+  "and the peer's device keys, which is what the ECDH needs",
+  (listed?.peer_devices ?? []).some((d: any) => d.id === bobPhone.id),
+  (listed?.peer_devices ?? []).map((d: any) => d.id),
+)
 
+// The device id is recomputed from the public key in that payload, which is the
+// only form the service worker has it in.
 const recomputedSenderId = await (async () => {
-  const digest = await crypto.subtle.digest('SHA-256', unb64u(pushPayload.sender_key))
+  const source = listed.peer_devices.find((d: any) => d.id === listed.last_message.enc.sender_device)
+  const digest = await crypto.subtle.digest('SHA-256', unb64u(source.public_key))
   return Buffer.from(new Uint8Array(digest).slice(0, 16)).toString('hex')
 })()
 check(
   'the sender device id can be recomputed from its public key alone',
-  recomputedSenderId === bobPhone.id,
-  { recomputedSenderId, expected: bobPhone.id },
+  recomputedSenderId === listed.last_message.enc.sender_device,
+  { recomputedSenderId },
 )
 
-const previewText = await (async () => {
-  const wrapKey = await wrappingKey(
-    alicePhone.keys.privateKey,
-    await importPublic(pushPayload.sender_key),
-    pushPayload.device,
-    recomputedSenderId,
-  )
-  const raw = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: unb64u(pushPayload.key.iv) },
-    wrapKey,
-    unb64u(pushPayload.key.ct),
-  )
-  const contentKey = await crypto.subtle.importKey(
-    'raw',
-    raw,
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['decrypt'],
-  )
-  const plain = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: unb64u(pushPayload.iv) },
-    contentKey,
-    unb64u(pushPayload.ct),
-  )
-  return (JSON.parse(dec.decode(plain)) as { t?: string }).t
-})()
-check('and the notification body decrypts to the message', previewText === secret, previewText)
-
-// Both halves of the transition switch, decided by the worker's own config so
-// the assertion always matches what is actually running:
-//   E2EE_REQUIRED=false — plaintext still works, which is what lets a fleet
-//                         upgrade one browser at a time;
-//   E2EE_REQUIRED=true  — it does not, which is where the instance ends up.
-const required = d1Query<{ n: number }>('SELECT 1 AS n').length >= 0 &&
-  process.env.E2EE_REQUIRED === 'true'
-console.log(
-  required
-    ? '\n— plaintext is refused (E2EE_REQUIRED=true)'
-    : '\n— plaintext still works during the transition',
+// Whatever the newest message happens to be by now — this file has sent several
+// — the point is that the payload the worker will hand the service worker is
+// openable with nothing but what is in it.
+const preview = await open(
+  alicePhone,
+  bobPhone.publicKey,
+  listed.last_message.body,
+  listed.last_message.enc,
+)
+check('and the listed message opens with only what that payload carries', preview !== null, preview)
+check(
+  'into a payload a notification can render',
+  Boolean(preview && (preview.t || preview.s || preview.m)),
+  preview,
 )
 
 const plainWs = await connect(bobCookie, conversationId, aliceId)

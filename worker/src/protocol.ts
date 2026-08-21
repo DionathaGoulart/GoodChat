@@ -52,6 +52,14 @@ export const MAX_BODY_LENGTH = 32768
 // Optional throughout: a frame without `enc` is a plaintext message, which is
 // what carries the transition. Nothing that was already sent has to be
 // migrated, because retention deletes it within seven days on its own.
+//
+// `v: 2` adds no field. What it changes is what the AEAD tag covers: the body
+// is authenticated under the conversation id, the sender's account and the
+// sending device (app/src/lib/e2ee.ts, `messageAad`), so this object can still
+// store and forward an envelope it cannot read but can no longer move one into
+// a conversation it was not sealed for. `v: 1` is accepted for exactly as long
+// as retention keeps a message written before the change — seven days — and the
+// literal can be dropped after that.
 
 /** A device id is SHA-256 of its public key, truncated (migration 0012). */
 export const DEVICE_ID_RE = /^[0-9a-f]{32}$/
@@ -64,23 +72,51 @@ export const DEVICE_ID_RE = /^[0-9a-f]{32}$/
 export const MAX_ENVELOPE_RECIPIENTS = 32
 
 export const EncEnvelopeSchema = z.object({
-  v: z.literal(1),
+  v: z.union([z.literal(1), z.literal(2)]),
   /** AES-GCM IV for `body`, base64url. */
   iv: z.string().min(1).max(64),
   /** Which device's public key unwraps the content key. */
   sender_device: z.string().regex(DEVICE_ID_RE),
-  /** device id -> the content key, wrapped for that device. */
+  /**
+   * device id -> the content key, wrapped for that device.
+   *
+   * `via` names whose public key the recipient runs ECDH against to unwrap.
+   * Absent means `sender_device`, which is every entry the sender itself wrote.
+   * It is present only on entries added afterwards, by another device of the
+   * recipient's own account handing over history the recipient was not around
+   * for (`share_keys` below): that device cannot produce a wrap the sender
+   * would have produced, because it does not hold the sender's private key, so
+   * it wraps under its own pair and says so.
+   */
   keys: z
     .record(
       z.string().regex(DEVICE_ID_RE),
-      z.object({ iv: z.string().min(1).max(64), ct: z.string().min(1).max(512) }),
+      z.object({
+        iv: z.string().min(1).max(64),
+        ct: z.string().min(1).max(512),
+        via: z.string().regex(DEVICE_ID_RE).optional(),
+      }),
     )
     .refine(
       (keys) => Object.keys(keys).length >= 1 && Object.keys(keys).length <= MAX_ENVELOPE_RECIPIENTS,
       { message: `keys must name 1 to ${MAX_ENVELOPE_RECIPIENTS} devices` },
     ),
-  /** AES-GCM IV for the bucket object, when this message carries one. */
+  /**
+   * Nonce material for the bucket object, when this message carries one.
+   *
+   * Eight bytes of random prefix for a chunked object, twelve bytes of whole-
+   * object IV for one written before chunking — which is what `media_chunk`
+   * distinguishes. Both stay readable for as long as retention keeps them.
+   */
   media_iv: z.string().min(1).max(64).optional(),
+  /**
+   * Plaintext bytes per chunk. Present means the object is a sequence of
+   * independently sealed chunks (`encryptChunked` in app/src/lib/e2ee.ts), which
+   * is what lets a video play before it has finished downloading and lets a
+   * seek fetch only the part it lands on. Absent means one whole AES-GCM
+   * ciphertext, the shape everything uploaded before this used.
+   */
+  media_chunk: z.number().int().positive().max(4 * 1024 * 1024).optional(),
 })
 export type EncEnvelope = z.infer<typeof EncEnvelopeSchema>
 

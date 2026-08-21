@@ -823,7 +823,7 @@ export class ConversationAgent extends Agent<Env> {
     // frame-processing path — the push service round-trip must not block the
     // sender's next frame. notifyUser never throws.
     if (!peerOnline) {
-      this.ctx.waitUntil(this.pushToPeer(userId, peerId, event))
+      this.ctx.waitUntil(this.pushToPeer(userId, peerId, event, id))
     }
   }
 
@@ -831,6 +831,7 @@ export class ConversationAgent extends Agent<Env> {
     senderId: string,
     peerId: string,
     event: SendMessageEvent,
+    messageId: string,
   ): Promise<void> {
     try {
       const sender = await this.env.DB.prepare('SELECT username FROM users WHERE id = ?')
@@ -862,13 +863,13 @@ export class ConversationAgent extends Agent<Env> {
         },
         // Only when this recipient actually wants a preview: a device that asked
         // for the generic line has no reason to be handed the ciphertext at all.
+        // Which message, not the message. The device reads it back through the
+        // API and decrypts it there — see EncryptedPreview in lib/push.ts for
+        // why the ciphertext stopped travelling in the notification. `this.name`
+        // is the conversation id: it is the name routes/ws.ts resolves this
+        // agent by.
         encrypted && preference === 'full'
-          ? {
-              sender_device: encrypted.sender_device,
-              iv: encrypted.iv,
-              ct: event.body,
-              keys: encrypted.keys,
-            }
+          ? { conversation_id: this.name, message_id: messageId }
           : undefined,
       )
     } catch (error) {
