@@ -296,7 +296,31 @@ Sending one message:
 3. each wrap is `AES-GCM` under `HKDF-SHA256(ECDH(mine, theirs))`, salted with
    both device ids sorted — which binds the wrap to the pair and lets both sides
    derive it without agreeing who is first;
-4. the envelope carries `{ v, iv, sender_device, keys, media_iv? }`.
+4. the body is authenticated under additional data naming where it was sealed —
+   `goodchat-v2 | conversation id | sender account | sender device | client id` —
+   so the ciphertext is bound to its context and not only to its content;
+5. the envelope carries `{ v, iv, sender_device, keys, media_iv?, media_chunk? }`.
+
+Step 4 is what `v: 2` means, and it closes something the crypto alone did not.
+AES-GCM authenticates what it encrypts and nothing else, so a v1 envelope was a
+sealed box with no address: the server could take a message Alice sent Bob and
+hand it back to Bob in a different conversation, or under a different name. Bob
+would unwrap it — the content key genuinely is wrapped for his device — and
+render it under whatever the frame claimed. No plaintext leaked, but forged
+context is its own kind of lie. The four fields are things the server already
+knows, so putting them in the additional data reveals nothing; what it removes
+is the server's ability to change any of them, because the tag stops verifying
+and `openMessage` returns null. The client id is the one that stops a replay:
+without it the binding says "somewhere in this conversation, from this person",
+which the message already satisfies, so the same envelope could be served again
+as a new message and would open. `v: 1` is still opened, without the binding, for
+as long as retention keeps a message written before the change — seven days —
+and the literal can be dropped from `EncEnvelopeSchema` after that.
+
+The attachment carries no additional data of its own and needs none: its content
+key is reachable only through the body that names it, so a media message moved
+to another conversation fails at the body, before anything is fetched from the
+bucket.
 
 The Durable Object stores and forwards all of it and can check exactly one
 thing about it without a key: that the sender named its own device among the
@@ -310,25 +334,69 @@ Media rides the same content key. The blob is sealed in the browser before the
 presigned PUT, so the bucket, the read proxy and the edge cache hold ciphertext
 only; the real MIME travels inside the encrypted payload, which means the server
 stops learning jpeg-from-webp and keeps only the image/video distinction its
-size caps need. The cost is that a video downloads whole before it plays —
-AES-GCM authenticates the whole object, so there is nothing to stream. It is
-bounded by the existing 32MB cap; AES-CTR plus a whole-object MAC through Media
-Source Extensions is the fix, and a different change than this one.
+size caps need.
+
+The object is a sequence of independently sealed 256KB chunks rather than one
+ciphertext — the STREAM construction. Each chunk is AES-GCM under the same
+content key with a nonce of `8 bytes random prefix | 3 bytes chunk index | 1
+byte final flag`: the prefix keeps objects apart, the index means a chunk only
+opens at the position it was written to, and the flag is set on the last chunk
+only, so a truncated object fails instead of looking like a shorter one that
+ended. The layout is fixed size, so chunk `i` starts at `i * (chunk + 16)` and a
+byte range is arithmetic.
+
+That is what lets a video play before it has finished arriving. `<video>` points
+at a URL under the service worker's scope; the page hands the worker the content
+key by `postMessage` (a `CryptoKey` structured-clones without becoming bytes),
+and each Range request the element makes becomes a Range request for the chunks
+covering it, decrypted in the worker. Seeking works for the first time. Images
+still download whole — they are capped at 8MB and an `<img>` has no ranges to
+ask for. An object written before this is one whole ciphertext under a 12-byte
+IV, which `media_chunk` distinguishes and which stays readable until retention
+removes it.
 
 The push preview survives, which was not obvious. `push_preview: 'full'` used to
 be answerable on the server because the message was readable there. Now the
-ciphertext travels to the device instead, with the content key wrapped for that
-subscription's device (`push_subscriptions.device_id`), and the service worker
-decrypts it — which is what IndexedDB bought over `localStorage`: that context
-can use the key and no code anywhere can export it. Over the payload budget, or
-on any failure, it falls back to the generic line.
+notification carries only *which* message — conversation id and message id — and
+the service worker reads it back through `/api/conversations`, which already
+carries the last message with its envelope and the peer's device keys, and
+decrypts it there. That is what IndexedDB bought over `localStorage`: that
+context can use the key and no code anywhere can export it.
+
+The ciphertext used to travel in the notification itself, which capped it at Web
+Push's 4096-byte record: a short message previewed and a long one silently did
+not, with nothing on screen to explain the difference. Reading it back is one
+request and behaves the same every time, and the browser vendor's push service
+stops being handed ciphertext at all. No network at notification time means the
+generic line, which is at least a reason.
 
 `safetyNumber` is the part no code closes. The server publishes the directory,
 so it could add a device of its own to somebody's list, and the encryption would
 work perfectly to the wrong recipient. The number is derived from both device
 sets, so a tampered directory produces different numbers on the two sides, and
 comparing it out of band is the only step here a server cannot take part in.
-The thread banners a change rather than absorbing it silently.
+
+The thread reports a change, and at one of two volumes. A device set the person
+has never compared against is *news* — most people sign into a new browser every
+few weeks, and an alarm each time is one they learn to dismiss. A set that has
+moved *since* they said they compared it is an alarm, because they are holding a
+number that no longer describes the conversation. The difference is
+`verifiedFingerprint` in `lib/threadCache.ts`, written when somebody taps "já
+conferi este número". Nothing verifies anything here: the person did, out of
+band, and this is a note that they said so.
+
+Two other things keep a directory from quietly leaving somebody out. A device
+that registers while a sender's tab is open is not in the copy that tab cached,
+so the Durable Object — the only place that sees both the envelope and the
+current directory — refuses a message that misses one, and the client seals it
+again under the same client id; the person sees an ordinary send. And a browser
+signed into after the fact holds a key no envelope names, so it asks the
+account's other devices, one of them is offered the choice, and the content keys
+come across re-wrapped under that device's own pair and marked `via`. That
+handover moves who can read a message and nothing about what it says: the body
+is still bound to the original sender. It is a question rather than an
+inference, because a session token that can register a device would otherwise be
+a session token that can drain the whole retention window.
 
 **Not** provided, stated plainly because the difference matters:
 
@@ -336,6 +404,15 @@ The thread banners a change rather than absorbing it silently.
   messages that device could read. The retention window bounds that to seven
   days, which is why a ratchet is not worth its complexity here — but it is a
   weaker property than Signal's.
+- **Nothing here defends against a hostile operator serving hostile code.** The
+  app is served by the same origin it talks to, so that origin could ship one
+  browser a build that reads the message before it is encrypted. No amount of
+  crypto below that layer helps. `E2EE_REQUIRED` is a rule the server applies to
+  clients, not a defence against the server. What is written down here protects
+  against the stored bytes, the transport, and a server that tampers after the
+  fact — not against one that owns the client.
+- **Message order and timestamps are not authenticated.** `created_at` is the
+  server's, so it can reorder or withhold without leaving a trace.
 - **Avatars, display names and usernames stay plaintext**, because they are
   rendered to accounts you have never talked to.
 - **Metadata stays visible**: who talks to whom, when, how often, ciphertext
@@ -345,9 +422,12 @@ The thread banners a change rather than absorbing it silently.
   server, not about device access.
 
 Rollout needs no migration: `enc` is optional, a frame without it renders as
-plaintext, and every plaintext message is gone within seven days by itself. Once
-every client has registered a device, `E2EE_REQUIRED=true` makes the Durable
-Object refuse a message that arrives without an envelope.
+plaintext, and every plaintext message is gone within seven days by itself.
+`E2EE_REQUIRED=true` is the default and makes the Durable Object refuse a
+message that arrives without an envelope — which is what keeps the transition
+from being permanent. It has a price, and `docs/deployment.md` carries it: an
+account with no registered device key cannot be written to at all, and there is
+no owner-console view of who that is, so the query to ask D1 lives there.
 
 ### Media pipeline
 
