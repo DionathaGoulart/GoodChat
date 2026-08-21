@@ -617,6 +617,15 @@ export class ConversationAgent extends Agent<Env> {
       retention_ms: this.retention(),
       changed_by: null,
     })
+
+    // The same rule `onMessage` applies below, read from the same expression,
+    // so what the thread promises and what this object does cannot drift.
+    this.send(conn, { type: 'policy', e2ee_required: this.e2eeRequired() })
+  }
+
+  /** Whether this instance refuses a message that arrives without an envelope. */
+  private e2eeRequired(): boolean {
+    return String(this.env.E2EE_REQUIRED) === 'true'
   }
 
   /**
@@ -847,7 +856,7 @@ export class ConversationAgent extends Agent<Env> {
     // message is a client that should not be trusted rather than an old one.
     // Off by default — see the note in wrangler.jsonc for why turning it on is
     // a decision about the fleet and not about the code.
-    if (!event.enc && String(this.env.E2EE_REQUIRED) === 'true') {
+    if (!event.enc && this.e2eeRequired()) {
       this.send(conn, {
         type: 'error',
         error: 'encryption_required',

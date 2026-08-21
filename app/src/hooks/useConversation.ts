@@ -296,6 +296,12 @@ export function useConversation(
   connection: ConnectionState
   /** Whether what this thread sends is actually encrypted — see the type. */
   encryption: EncryptionState
+  /**
+   * Whether this instance refuses to carry an unencrypted message. Null until
+   * the socket has said. Together with `encryption === 'off'` this is the
+   * difference between "this is not private" and "this is not being delivered".
+   */
+  e2eeRequired: boolean | null
   /** A device of this account waiting to be handed the history, or null. */
   keysRequestedBy: string | null
   /** Answers that request with yes. There is no automatic yes. */
@@ -414,6 +420,13 @@ export function useConversation(
   const identityRef = useRef<DeviceIdentity | null>(null)
   const [encryption, setEncryption] = useState<EncryptionState>('unknown')
   /**
+   * Whether this instance refuses an unencrypted message, as the Durable Object
+   * itself reported it on connect. Null until it has: before that the thread
+   * says nothing, for the same reason `encryption` starts 'unknown' — a wrong
+   * claim about delivery is worse than a late one.
+   */
+  const [e2eeRequired, setE2eeRequired] = useState<boolean | null>(null)
+  /**
    * Another device of this account is asking for the keys it has no way to
    * derive. Null unless one is: the thread turns it into a question, because
    * handing over history is handing over read access and a session that can
@@ -460,6 +473,7 @@ export function useConversation(
     setPeerTyping(false)
     setSynced(false)
     setEncryption('unknown')
+    setE2eeRequired(null)
     setKeysRequestedBy(null)
     setSendRejected(null)
 
@@ -540,6 +554,9 @@ export function useConversation(
               changedBy: event.changed_by,
             })
           }
+          return
+        case 'policy':
+          setE2eeRequired(event.e2ee_required)
           return
         case 'keys_requested':
           // Never auto-answered. The thread asks (screens/ThreadScreen.tsx).
@@ -1001,6 +1018,7 @@ export function useConversation(
     synced,
     connection: connectionRef.current,
     encryption,
+    e2eeRequired,
     keysRequestedBy,
     shareKeysWith,
     dismissKeyRequest: () => setKeysRequestedBy(null),

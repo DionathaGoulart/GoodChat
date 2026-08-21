@@ -153,6 +153,7 @@ function LiveThread({
     retentionMs,
     retentionChange,
     encryption,
+    e2eeRequired,
     keysRequestedBy,
     shareKeysWith,
     dismissKeyRequest,
@@ -333,7 +334,9 @@ function LiveThread({
           onClick={() => setSafetyOpen(true)}
           aria-label={
             encryption === 'off'
-              ? 'esta conversa não está criptografada'
+              ? e2eeRequired
+                ? 'mensagens não estão sendo entregues nesta conversa'
+                : 'esta conversa não está criptografada'
               : verified
                 ? 'número de segurança desta conversa, já conferido'
                 : 'número de segurança desta conversa'
@@ -361,11 +364,22 @@ function LiveThread({
         </p>
       )}
 
-      {/* Not a warning about something that went wrong — a statement of what is
-          true right now. During the rollout the peer may simply not have opened
-          the app since it started registering keys, and that is a fact worth
-          seeing before typing something, not after. */}
-      {encryption === 'off' && !readonly && (
+      {/* Two different facts, and for a while only the first one was said.
+          Without a key on the other side this thread cannot encrypt — and on an
+          instance that requires encryption, that means nothing typed here is
+          being delivered at all. Announcing only "not encrypted" while messages
+          silently fail is the worse half of the truth, and it is the half the
+          person can do nothing with. `e2eeRequired` is null until the socket
+          says, so neither line is claimed before it is known. */}
+      {encryption === 'off' && !readonly && e2eeRequired === true && (
+        <p className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center font-mono text-[10px] font-bold uppercase leading-relaxed tracking-[0.2em] text-error">
+          @{otherUser.username} precisa abrir o app uma vez para receber mensagens
+          <span className="block opacity-70">
+            nada enviado aqui está sendo entregue
+          </span>
+        </p>
+      )}
+      {encryption === 'off' && !readonly && e2eeRequired === false && (
         <p className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-warning">
           esta conversa não está criptografada
         </p>
