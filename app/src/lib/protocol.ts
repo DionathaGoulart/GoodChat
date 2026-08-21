@@ -74,6 +74,13 @@ export const DEVICE_ID_RE = /^[0-9a-f]{32}$/
  */
 export const MAX_ENVELOPE_RECIPIENTS = 32
 
+/**
+ * How many messages one `share_keys` frame may carry. The sharing device sends
+ * as many frames as it needs; this only bounds what a single one can make the
+ * Durable Object rewrite in one go.
+ */
+export const MAX_SHARED_KEYS = 100
+
 export const EncEnvelopeSchema = z.object({
   v: z.union([z.literal(1), z.literal(2)]),
   /** AES-GCM IV for `body`, base64url. */
@@ -208,6 +215,36 @@ export const ClientEventSchema = z.discriminatedUnion('type', [
   // Either participant may retune the window; the change applies to both and
   // takes effect on the messages already in the thread.
   z.object({ type: z.literal('set_retention'), retention_ms: RetentionSchema }),
+  // --- handing history to another device of your own account ---
+  //
+  // A browser somebody just signed into holds a key no message was ever
+  // wrapped for, so its history is a column of placeholders. Nothing on the
+  // server can fix that — the content keys only exist wrapped, and only this
+  // account's existing devices can open them. So the new device asks, an old
+  // one is offered the choice, and the wrapped keys travel through here.
+  //
+  // The Durable Object checks that both devices belong to the account on the
+  // connection and then only ever *adds* entries to an envelope's key map. It
+  // still cannot read anything: a wrapped key is opaque to it, exactly like
+  // the ones the sender wrote.
+  z.object({ type: z.literal('request_keys'), device_id: z.string().regex(DEVICE_ID_RE) }),
+  z.object({
+    type: z.literal('share_keys'),
+    device_id: z.string().regex(DEVICE_ID_RE),
+    /** message id -> the content key, wrapped by this device for that one. */
+    keys: z
+      .record(
+        z.string().min(1).max(64),
+        z.object({
+          iv: z.string().min(1).max(64),
+          ct: z.string().min(1).max(512),
+          via: z.string().regex(DEVICE_ID_RE),
+        }),
+      )
+      .refine((keys) => Object.keys(keys).length <= MAX_SHARED_KEYS, {
+        message: `at most ${MAX_SHARED_KEYS} messages per frame`,
+      }),
+  }),
   z.object({
     type: z.literal('read_receipt'),
     up_to_message_id: z.string().min(1).max(64),
@@ -243,6 +280,22 @@ export const ServerEventSchema = z.discriminatedUnion('type', [
     retention_ms: z.number().int(),
     changed_by: z.string().nullable(),
   }),
+  // Another device of this same account has no keys and is asking. Delivered
+  // only to this account's *other* connections — never to the peer, who has
+  // nothing to hand over and no business knowing.
+  z.object({ type: z.literal('keys_requested'), device_id: z.string() }),
+  // Keys were merged into stored envelopes for this device. `count` is how
+  // many messages became readable, which is what the asking device needs to
+  // know to go and read them again.
+  z.object({ type: z.literal('keys_shared'), device_id: z.string(), count: z.number().int() }),
+  // What this instance requires of a message, stated once per connect.
+  //
+  // It comes from the Durable Object rather than from /api/health because the
+  // Durable Object is what enforces it: a client that asked somewhere else
+  // could be told one thing and refused for another. The thread uses it to say
+  // that messages are not being delivered, instead of only that they are not
+  // encrypted — two very different sentences for the person typing.
+  z.object({ type: z.literal('policy'), e2ee_required: z.boolean() }),
   // Messages that just aged out. Sent to both participants the moment the
   // sweep runs, so an open thread drops them without waiting for a reload.
   z.object({ type: z.literal('messages_expired'), ids: z.array(z.string()) }),

@@ -322,10 +322,19 @@ export async function rewrapFor(
  * Opens a message addressed to this device. Returns the payload and the content
  * key, because a media message needs the same key to decrypt its object.
  *
- * Null covers three different, all expected, situations: the message predates
- * this device (no wrapped key for it), the sender's device is no longer in the
- * directory, or the ciphertext does not authenticate. The caller renders a
- * placeholder rather than treating any of them as an error.
+ * `senderPublicKey` is whatever `unwrapsVia` named — the message's sender for
+ * an ordinary entry, or another of this account's devices for one that was
+ * handed over. The *body* is unaffected either way: it is still bound to the
+ * original sender and message through `messageAad`, so a handover changes who
+ * can open a message and nothing about what it says or who it came from.
+ *
+ * Null covers four different situations, three of them expected: the message
+ * predates this device (no wrapped key for it), the sender's device is no
+ * longer in the directory, the ciphertext does not authenticate — or the
+ * envelope was moved, and `context` no longer matches what it was sealed
+ * against. The caller renders a placeholder rather than treating any of them as
+ * an error, which is the right handling for the fourth too: a message the
+ * server relocated is one this device genuinely cannot read.
  */
 export async function openMessage(
   identity: DeviceIdentity,
@@ -342,7 +351,7 @@ export async function openMessage(
       identity.privateKey,
       senderKey,
       identity.id,
-      enc.sender_device,
+      wrapped.via ?? enc.sender_device,
     )
     const raw = await decryptBytes(
       wrapKey,

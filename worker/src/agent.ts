@@ -37,6 +37,7 @@ import { claimUpload } from './lib/mediaIndex'
 import { DEFAULT_PUSH_PREVIEW, notifyUser, previewFor, previewPreferenceOf } from './lib/push'
 import {
   ClientEventSchema,
+  MAX_ENVELOPE_RECIPIENTS,
   STICKER_ID_RE,
   retentionOr,
   type RetentionMs,
@@ -682,6 +683,108 @@ export class ConversationAgent extends Agent<Env> {
       case 'set_retention':
         await this.handleSetRetention(userId, event.data.retention_ms)
         return
+      case 'request_keys':
+        await this.handleRequestKeys(conn, userId, event.data.device_id)
+        return
+      case 'share_keys':
+        await this.handleShareKeys(conn, userId, event.data.device_id, event.data.keys)
+        return
+    }
+  }
+
+  /**
+   * A device of this account says it cannot read the history and asks the
+   * account's other devices for the keys.
+   *
+   * Only forwarded to connections on the same account. The peer is never told:
+   * they hold nothing that would help, and which browsers somebody signs into
+   * is not a thing this object should narrate to the other side of a chat.
+   */
+  private async handleRequestKeys(
+    conn: Connection<ConnState>,
+    userId: string,
+    deviceId: string,
+  ): Promise<void> {
+    if (!(await this.deviceBelongsTo(deviceId, userId))) {
+      this.send(conn, { type: 'error', error: 'unknown_device' })
+      return
+    }
+    for (const other of this.getConnections<ConnState>()) {
+      if (other === conn || other.state?.userId !== userId) continue
+      this.send(other, { type: 'keys_requested', device_id: deviceId })
+    }
+  }
+
+  /**
+   * Content keys, wrapped by one device of this account for another, merged
+   * into the envelopes already stored.
+   *
+   * Three things are checked, and they are the whole of what this object can
+   * check: the target device belongs to the account on this connection, the
+   * envelope does not grow past `MAX_ENVELOPE_RECIPIENTS`, and an entry that
+   * already exists is not overwritten — a handover adds a reader, it never
+   * rewrites one. Everything else is opaque: these bytes are as unreadable here
+   * as the ones the sender wrote.
+   *
+   * Restricting the target to the sender's own account is not what stops
+   * somebody sharing what they read — they could retype it — but it keeps this
+   * object from being the tool that does it.
+   */
+  private async handleShareKeys(
+    conn: Connection<ConnState>,
+    userId: string,
+    deviceId: string,
+    keys: Record<string, { iv: string; ct: string; via: string }>,
+  ): Promise<void> {
+    if (!(await this.deviceBelongsTo(deviceId, userId))) {
+      this.send(conn, { type: 'error', error: 'unknown_device' })
+      return
+    }
+    let merged = 0
+    for (const [messageId, wrapped] of Object.entries(keys)) {
+      const rows = this.sql<{ enc: string | null }>`
+        SELECT enc FROM messages WHERE id = ${messageId}
+      `
+      const raw = rows[0]?.enc
+      if (!raw) continue
+      const envelope = safeParseEnvelope(raw)
+      if (!envelope) continue
+      if (deviceId in envelope.keys) continue
+      if (Object.keys(envelope.keys).length >= MAX_ENVELOPE_RECIPIENTS) continue
+      envelope.keys[deviceId] = wrapped
+      this.sql`UPDATE messages SET enc = ${JSON.stringify(envelope)} WHERE id = ${messageId}`
+      merged += 1
+    }
+    if (merged === 0) return
+
+    // The envelopes on the asking device are the ones it was sent, without the
+    // entries just added, so telling it "done" is not enough — it has to be
+    // handed the rows again. Sent to every connection on this account rather
+    // than to the target alone: the browser that did the sharing is looking at
+    // the same thread, and a `history` frame is idempotent for it.
+    const rows = this.sql<MessageRow>`
+      SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, enc
+      FROM messages ORDER BY rowid ASC LIMIT ${HISTORY_LIMIT}
+    `
+    for (const other of this.getConnections<ConnState>()) {
+      if (other.state?.userId !== userId) continue
+      this.send(other, { type: 'keys_shared', device_id: deviceId, count: merged })
+      this.send(other, { type: 'history', messages: rows.map(toWire) })
+    }
+  }
+
+  /** Whether a device id is registered to this account (migration 0012). */
+  private async deviceBelongsTo(deviceId: string, userId: string): Promise<boolean> {
+    try {
+      const row = await this.env.DB.prepare(
+        'SELECT 1 AS ok FROM devices WHERE id = ? AND user_id = ?',
+      )
+        .bind(deviceId, userId)
+        .first<{ ok: number }>()
+      return row !== null
+    } catch (error) {
+      console.warn('device ownership check failed', error instanceof Error ? error.message : error)
+      return false
     }
   }
 

@@ -107,7 +107,12 @@ interface Envelope {
   v: 1
   iv: string
   sender_device: string
-  keys: Record<string, { iv: string; ct: string }>
+  /**
+   * `via` names whose public key unwraps this entry. Absent means the sender,
+   * which is every entry the sender wrote; it is set on entries a device of the
+   * recipient's own account added afterwards, handing over history.
+   */
+  keys: Record<string, { iv: string; ct: string; via?: string }>
   media_iv?: string
 }
 
@@ -143,12 +148,21 @@ async function seal(
   return { body, enc: { v: 1, iv: b64u(iv), sender_device: sender.id, keys } }
 }
 
-async function open(
+/**
+ * Opens a message and keeps the content key, which a media message needs for
+ * its object and a handover needs to re-wrap.
+ *
+ * `senderPublicKey` is whoever `via` named — the message's sender for an
+ * ordinary entry, another of the reader's own devices for a handed-over one.
+ * The salt follows the same value, because both sides of that ECDH have to
+ * agree on which pair they are deriving for.
+ */
+async function openWithKey(
   device: Device,
   senderPublicKey: string,
   body: string,
   envelope: Envelope,
-): Promise<Record<string, string> | null> {
+): Promise<{ payload: Record<string, string>; contentKey: CryptoKey } | null> {
   const wrapped = envelope.keys[device.id]
   if (!wrapped) return null
   try {
@@ -156,7 +170,7 @@ async function open(
       device.keys.privateKey,
       await importPublic(senderPublicKey),
       device.id,
-      envelope.sender_device,
+      wrapped.via ?? envelope.sender_device,
     )
     const raw = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: unb64u(wrapped.iv) },
@@ -168,16 +182,49 @@ async function open(
       raw,
       { name: 'AES-GCM', length: 256 },
       true,
-      ['decrypt'],
+      ['decrypt', 'encrypt'],
     )
     const plain = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: unb64u(envelope.iv) },
       contentKey,
       unb64u(body),
     )
-    return JSON.parse(dec.decode(plain)) as Record<string, string>
+    return { payload: JSON.parse(dec.decode(plain)) as Record<string, string>, contentKey }
   } catch {
     return null
+  }
+}
+
+async function open(
+  device: Device,
+  senderPublicKey: string,
+  body: string,
+  envelope: Envelope,
+): Promise<Record<string, string> | null> {
+  return (await openWithKey(device, senderPublicKey, body, envelope))?.payload ?? null
+}
+
+/**
+ * One device of an account wrapping an open content key for another device of
+ * the same account — the reference form of `rewrapFor` in app/src/lib/e2ee.ts.
+ */
+async function rewrap(
+  sharer: Device,
+  target: Device,
+  contentKey: CryptoKey,
+): Promise<{ iv: string; ct: string; via: string }> {
+  const raw = await crypto.subtle.exportKey('raw', contentKey)
+  const wrapKey = await wrappingKey(
+    sharer.keys.privateKey,
+    await importPublic(target.publicKey),
+    sharer.id,
+    target.id,
+  )
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  return {
+    iv: b64u(iv),
+    ct: b64u(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrapKey, raw)),
+    via: sharer.id,
   }
 }
 

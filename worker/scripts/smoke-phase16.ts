@@ -184,11 +184,15 @@ async function referenceOpen(
   const wrapped = envelope.keys[device.id]
   if (!wrapped) return null
   try {
+    // `via` when the entry was added by another device of this account handing
+    // over history, `sender_device` otherwise. Both sides of the ECDH have to
+    // agree which pair they are deriving for, so the salt follows the same
+    // value the public key came from.
     const wrapKey = await wrappingKey(
       device.privateKey,
       await importPublic(senderPublicKey),
       device.id,
-      envelope.sender_device,
+      wrapped.via ?? envelope.sender_device,
     )
     const raw = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: unb64u(wrapped.iv) },
@@ -461,6 +465,56 @@ check(
     mediaMessage.body,
     mediaMessage.enc,
   )) === null,
+)
+
+console.log('\n— a content key handed to another device of the same account')
+
+// `rewrapFor` is the only place a content key is wrapped by somebody other than
+// the message's sender, so it is the only place `via` can be got wrong — and
+// getting it wrong reads as "the new browser still cannot see anything", which
+// looks like the feature simply not working rather than like a bug.
+const aliceLaptop = await makeIdentity()
+check(
+  'the laptop is not in the envelope the sender wrote',
+  !(aliceLaptop.id in fromReference.enc.keys),
+)
+
+const handover = await rewrapFor(alicePhone as any, aliceLaptop.asDevice, openedByApp!.contentKey)
+check('the handover names the device that wrapped it', handover.via === alicePhone.id, handover)
+
+const handedOver = {
+  ...fromReference.enc,
+  keys: { ...fromReference.enc.keys, [aliceLaptop.id]: handover },
+}
+check(
+  'unwrapsVia points the laptop at the phone, not at bob',
+  unwrapsVia(handedOver as any, aliceLaptop.id) === alicePhone.id,
+)
+const byLaptop = await openMessage(
+  aliceLaptop as any,
+  fromBob,
+  // The phone's key, because the phone is what wrapped it — running this
+  // against bob's key is exactly the mistake `via` exists to prevent.
+  alicePhone.publicKey,
+  fromReference.body,
+  handedOver as any,
+)
+check("the laptop opens a message that predates it", byLaptop?.payload.t === secret, byLaptop)
+check(
+  'and the reference implementation reads the same handover',
+  (await referenceOpen(aliceLaptop, fromBob, alicePhone.publicKey, fromReference.body, handedOver))
+    ?.t === secret,
+)
+check(
+  'the body is still bound to bob — a handover moves readers, not authorship',
+  handedOver.sender_device === bobPhone.id &&
+    (await openMessage(
+      aliceLaptop as any,
+      { ...fromBob, senderId: ALICE },
+      alicePhone.publicKey,
+      fromReference.body,
+      handedOver as any,
+    )) === null,
 )
 
 console.log('\n— the safety number, and the fingerprint behind the banner')

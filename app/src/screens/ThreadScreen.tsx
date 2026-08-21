@@ -153,6 +153,9 @@ function LiveThread({
     retentionMs,
     retentionChange,
     encryption,
+    keysRequestedBy,
+    shareKeysWith,
+    dismissKeyRequest,
     sendRejected,
     send,
     sendMedia,
@@ -377,6 +380,37 @@ function LiveThread({
         <p className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
           {sendRejected}
         </p>
+      )}
+
+      {/* Handing over history is handing over read access, so it is a question
+          and never an inference. A session token that can register a device
+          would otherwise be a session token that can pull down the whole
+          retention window — the one thing this exchange must not become. The
+          device id is shown because it is the only name the new browser has,
+          and it is the same string its own safety-number dialog reports. */}
+      {keysRequestedBy && (
+        <div className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center">
+          <p className="font-mono text-[10px] font-bold uppercase leading-relaxed tracking-[0.2em] text-warning">
+            um aparelho novo da sua conta pediu esta conversa
+            <span className="block opacity-60">{keysRequestedBy.slice(0, 8)}</span>
+          </p>
+          <div className="mt-1 flex justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => void shareKeysWith(keysRequestedBy)}
+              className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] underline opacity-70 hover:opacity-100"
+            >
+              enviar
+            </button>
+            <button
+              type="button"
+              onClick={dismissKeyRequest}
+              className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] underline opacity-40 hover:opacity-100"
+            >
+              agora não
+            </button>
+          </div>
+        </div>
       )}
 
       {keysChanged && (

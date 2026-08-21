@@ -18,6 +18,7 @@ import {
   createContentKey,
   isAddressedTo,
   openMessage,
+  rewrapFor,
   sealMessage,
   type Payload,
 } from '../lib/e2ee'
@@ -25,6 +26,7 @@ import { findCachedDevice, getDevices, refreshDevices } from '../lib/deviceDirec
 import { dismissNotifications } from '../lib/push'
 import { readCachedMessages, writeCachedMessages } from '../lib/threadCache'
 import {
+  MAX_SHARED_KEYS,
   ServerEventSchema,
   retentionOr,
   type MessageStatus,
@@ -294,6 +296,12 @@ export function useConversation(
   connection: ConnectionState
   /** Whether what this thread sends is actually encrypted — see the type. */
   encryption: EncryptionState
+  /** A device of this account waiting to be handed the history, or null. */
+  keysRequestedBy: string | null
+  /** Answers that request with yes. There is no automatic yes. */
+  shareKeysWith: (deviceId: string) => Promise<void>
+  /** Answers it with no, and stops asking for this thread. */
+  dismissKeyRequest: () => void
   /** Why the server refused the last send, or null when it refused nothing. */
   sendRejected: string | null
   peerTyping: boolean
@@ -337,6 +345,13 @@ export function useConversation(
     () => readCachedMessages(myId, conversationId, retentionOr(initialRetentionMs)) ?? [],
   )
   /**
+   * The reducer's output, readable from a callback that must not re-run when it
+   * changes. `shareKeysWith` walks every message's content key; rebuilding that
+   * callback on each frame would be churn for a function called once, by hand.
+   */
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+  /**
    * Whether the `history` frame has landed for this conversation. It is the
    * only way to tell an empty thread from one that has not answered yet —
    * `messages.length === 0` means both, and the thread used to say "no
@@ -373,6 +388,13 @@ export function useConversation(
   )
   const lastReadSentRef = useRef<string | null>(null)
   /**
+   * Whether this device has already asked the account's other devices for the
+   * history it cannot open. Once per thread per session: the answer is a person
+   * tapping a button on another machine, and asking again every time a frame
+   * arrives would put a dialog in front of them repeatedly.
+   */
+  const askedForKeysRef = useRef(false)
+  /**
    * `seal`, reachable from inside the socket effect.
    *
    * The effect is declared above `seal` and must not list it: rebuilding the
@@ -391,6 +413,13 @@ export function useConversation(
    */
   const identityRef = useRef<DeviceIdentity | null>(null)
   const [encryption, setEncryption] = useState<EncryptionState>('unknown')
+  /**
+   * Another device of this account is asking for the keys it has no way to
+   * derive. Null unless one is: the thread turns it into a question, because
+   * handing over history is handing over read access and a session that can
+   * register a device would otherwise be a session that can drain the window.
+   */
+  const [keysRequestedBy, setKeysRequestedBy] = useState<string | null>(null)
   /**
    * The server's reason for refusing a send, or null. Kept as the message the
    * server wrote rather than a code the screen has to translate: the only
@@ -427,9 +456,11 @@ export function useConversation(
     pendingRef.current.clear()
     unsealedRef.current.clear()
     lastReadSentRef.current = null
+    askedForKeysRef.current = false
     setPeerTyping(false)
     setSynced(false)
     setEncryption('unknown')
+    setKeysRequestedBy(null)
     setSendRejected(null)
 
     // Peer typing is ephemeral: each frame re-arms a short expiry, and a real
@@ -448,6 +479,20 @@ export function useConversation(
       switch (event.type) {
         case 'history': {
           const identity = identityRef.current
+          // A browser signed into after these messages were sent holds a key no
+          // envelope names. Nothing on the server can fix it — the content keys
+          // exist only wrapped — so the account's other devices are asked.
+          if (identity && !askedForKeysRef.current) {
+            const strangers = event.messages.filter(
+              (m) => m.enc && !isAddressedTo(m.enc, identity.id),
+            )
+            if (strangers.length > 0) {
+              askedForKeysRef.current = true
+              wsRef.current?.send(
+                JSON.stringify({ type: 'request_keys', device_id: identity.id }),
+              )
+            }
+          }
           dispatch({
             type: 'history',
             messages: await Promise.all(
@@ -495,6 +540,16 @@ export function useConversation(
               changedBy: event.changed_by,
             })
           }
+          return
+        case 'keys_requested':
+          // Never auto-answered. The thread asks (screens/ThreadScreen.tsx).
+          if (event.device_id !== identityRef.current?.id) setKeysRequestedBy(event.device_id)
+          return
+        case 'keys_shared':
+          // The `history` frame right behind this one carries the envelopes
+          // with the new entries in them, so there is nothing to do but stop
+          // asking.
+          if (event.device_id === identityRef.current?.id) askedForKeysRef.current = true
           return
         case 'messages_expired':
           dispatch({ type: 'expired', ids: event.ids })
@@ -804,6 +859,47 @@ export function useConversation(
     [myId, seal],
   )
 
+  /**
+   * Hands the history this device can read to another device of the same
+   * account, one wrapped content key per message.
+   *
+   * Only ever called from a yes. Everything it can open, it re-wraps under its
+   * own pair and marks `via` — the sending device's private key is not here, so
+   * a handover cannot reproduce the wrap the sender would have written, and it
+   * does not pretend to. The bodies are untouched: still bound to the original
+   * sender and message, still saying exactly what they said.
+   *
+   * Messages this device cannot open itself are skipped in silence. A browser
+   * that arrived late cannot pass on what it never received either.
+   */
+  const shareKeysWith = useCallback(
+    async (deviceId: string) => {
+      const identity = identityRef.current ?? (await readDeviceKey(myId))
+      if (!identity) return
+      const target = (await getDevices(myId)).find((device) => device.id === deviceId)
+      if (!target) return
+
+      let batch: Record<string, { iv: string; ct: string; via: string }> = {}
+      let sent = 0
+      const flush = () => {
+        if (Object.keys(batch).length === 0) return
+        wsRef.current?.send(
+          JSON.stringify({ type: 'share_keys', device_id: deviceId, keys: batch }),
+        )
+        batch = {}
+      }
+      for (const message of messagesRef.current) {
+        if (!message.id || !message.contentKey) continue
+        batch[message.id] = await rewrapFor(identity, target, message.contentKey)
+        sent += 1
+        if (sent % MAX_SHARED_KEYS === 0) flush()
+      }
+      flush()
+      setKeysRequestedBy(null)
+    },
+    [myId],
+  )
+
   sealRef.current = seal
 
   const send = useCallback((body: string) => sendEvent('text', body, null), [sendEvent])
@@ -905,6 +1001,9 @@ export function useConversation(
     synced,
     connection: connectionRef.current,
     encryption,
+    keysRequestedBy,
+    shareKeysWith,
+    dismissKeyRequest: () => setKeysRequestedBy(null),
     sendRejected,
     peerTyping,
     retentionMs,
