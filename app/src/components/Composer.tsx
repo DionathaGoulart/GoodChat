@@ -16,7 +16,7 @@ import {
   prepareMedia,
   uploadEncryptedMedia,
 } from '../lib/media'
-import type { SealedUploadHandle } from '../lib/media'
+import type { MediaSealing, SealedUploadHandle } from '../lib/media'
 import { ApiError } from '../lib/api'
 import { readDraft, writeDraft } from '../lib/drafts'
 import { EmojiPicker } from './EmojiPicker'
@@ -49,14 +49,13 @@ export function Composer({
   onSend: (body: string) => void
   /**
    * `sealing` carries what the message needs to reference the object it just
-   * uploaded: the content key the bytes were sealed with, its IV, and the real
-   * MIME — none of which the worker ever sees.
+   * uploaded: the content key the bytes were sealed with, its nonce prefix, the
+   * real MIME and the chunk size it was written at — none of which the worker
+   * ever sees. It is passed through whole (`MediaSealing`) rather than picked
+   * apart here: a field dropped on the way out is a field the recipient never
+   * gets, and the object stops being readable without anything failing.
    */
-  onSendMedia: (
-    msgType: 'image' | 'video',
-    mediaKey: string,
-    sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string },
-  ) => void
+  onSendMedia: (msgType: 'image' | 'video', mediaKey: string, sealing?: MediaSealing) => void
   onSendSticker: (stickerId: string) => void
   onTyping: () => void
 }) {
@@ -150,11 +149,7 @@ export function Composer({
       )
       uploadRef.current = handle
       const sealed = await handle.promise
-      onSendMedia(prepared.kind, sealed.key, {
-        contentKey: sealed.contentKey,
-        mediaIv: sealed.mediaIv,
-        mime: sealed.mime,
-      })
+      onSendMedia(prepared.kind, sealed.key, sealed)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         // user cancelled — no error line

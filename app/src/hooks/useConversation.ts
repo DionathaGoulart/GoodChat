@@ -23,6 +23,7 @@ import {
   type Payload,
 } from '../lib/e2ee'
 import { findCachedDevice, getDevices, refreshDevices } from '../lib/deviceDirectory'
+import type { MediaSealing } from '../lib/media'
 import { dismissNotifications } from '../lib/push'
 import { readCachedMessages, writeCachedMessages } from '../lib/threadCache'
 import {
@@ -316,7 +317,7 @@ export function useConversation(
   /** The last change either side made, for the thread to announce. */
   retentionChange: { retentionMs: RetentionMs; changedBy: string } | null
   send: (body: string) => void
-  sendMedia: (msgType: 'image' | 'video', mediaKey: string) => void
+  sendMedia: (msgType: 'image' | 'video', mediaKey: string, sealing?: MediaSealing) => void
   sendSticker: (stickerId: string) => void
   sendTyping: () => void
   markRead: (upToMessageId: string) => void
@@ -386,7 +387,7 @@ export function useConversation(
       string,
       {
         plain: SendMessageEvent
-        sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number }
+        sealing?: MediaSealing
         /** Re-seals so far. One is a race; a second is a device we cannot address. */
         attempts: number
       }
@@ -410,7 +411,7 @@ export function useConversation(
    */
   const sealRef = useRef<(
     event: SendMessageEvent,
-    sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number },
+    sealing?: MediaSealing,
   ) => Promise<SendMessageEvent | null>>(() => Promise.resolve(null))
   /**
    * This device's encryption identity. Null means it has none — private mode,
@@ -792,7 +793,7 @@ export function useConversation(
   const seal = useCallback(
     async (
       event: SendMessageEvent,
-      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number },
+      sealing?: MediaSealing,
     ): Promise<SendMessageEvent | null> => {
       const identity = identityRef.current ?? (await readDeviceKey(myId))
       if (!identity) return null
@@ -829,7 +830,7 @@ export function useConversation(
       msgType: WireMessage['msg_type'],
       body: string,
       mediaKey: string | null,
-      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number },
+      sealing?: MediaSealing,
     ) => {
       const clientId = crypto.randomUUID()
       dispatch({
@@ -930,7 +931,7 @@ export function useConversation(
     (
       msgType: 'image' | 'video',
       mediaKey: string,
-      sealing?: { contentKey: CryptoKey; mediaIv: Uint8Array; mime: string; chunk: number },
+      sealing?: MediaSealing,
     ) => sendEvent(msgType, '', mediaKey, sealing),
     [sendEvent],
   )

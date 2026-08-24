@@ -533,6 +533,20 @@ export function uploadMedia(
 }
 
 /**
+ * What a message has to carry to point at the object that was just uploaded:
+ * the content key its bytes were sealed with, the object's nonce prefix, the
+ * real MIME (the worker only ever saw `application/octet-stream`) and the
+ * chunk size it was written at. All four are needed to read it back — a
+ * message missing `chunk` describes an object nobody can open.
+ */
+export interface MediaSealing {
+  contentKey: CryptoKey
+  mediaIv: Uint8Array
+  mime: string
+  chunk: number
+}
+
+/**
  * The encrypted half of the pipeline: the bytes are sealed here, before they
  * ever reach the network, so the bucket and the read proxy both hold nothing
  * but ciphertext.
@@ -545,16 +559,9 @@ export function uploadMedia(
  * the whole instance (it is rendered in search results, tiles and thread
  * headers), so there is no pair to encrypt it to.
  */
-export interface SealedUpload {
+export interface SealedUpload extends MediaSealing {
   /** Bucket object key — what the message references. */
   key: string
-  /** The key the body is sealed with too, so one unwrap serves both. */
-  contentKey: CryptoKey
-  mediaIv: Uint8Array
-  /** The real MIME, which only the encrypted payload carries. */
-  mime: string
-  /** Plaintext bytes per chunk, as this object was written. */
-  chunk: number
 }
 
 export interface SealedUploadHandle {
