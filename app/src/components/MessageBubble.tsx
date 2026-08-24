@@ -15,7 +15,13 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ThreadMessage } from '../hooks/useConversation'
-import { decryptBytes, decryptChunks, sealedChunkCount } from '../lib/e2ee'
+import {
+  CHUNK_PREFIX_BYTES,
+  MEDIA_CHUNK_BYTES,
+  decryptBytes,
+  decryptChunks,
+  sealedChunkCount,
+} from '../lib/e2ee'
 import { fromBase64url } from '../lib/deviceKeys'
 import { mediaUrl } from '../lib/media'
 import { handStreamToWorker, releaseStream } from '../lib/mediaStream'
@@ -66,6 +72,26 @@ function MetaLine({ message, mine, className = '' }: {
 }
 
 /**
+ * The chunk size to read one object back at, which is not always the one the
+ * envelope states.
+ *
+ * Everything written since chunking shipped is chunked, but for a while the
+ * composer dropped `chunk` on its way into the message, so those envelopes
+ * describe a whole-object shape the bucket never held. The nonce is what gives
+ * the real format away — eight bytes is a chunk prefix, twelve is a whole-object
+ * IV — so a mismatch is read as chunked at the only size that was ever written
+ * rather than as a broken attachment. Objects genuinely written before chunking
+ * carry a twelve-byte IV and still take the whole-object path.
+ */
+function chunkSizeOf(message: ThreadMessage): number | undefined {
+  if (message.enc_media_chunk) return message.enc_media_chunk
+  if (!message.enc_media_iv) return undefined
+  return fromBase64url(message.enc_media_iv).length === CHUNK_PREFIX_BYTES
+    ? MEDIA_CHUNK_BYTES
+    : undefined
+}
+
+/**
  * The bytes for one attachment.
  *
  * A plaintext object is just a URL and the browser streams it — including
@@ -86,7 +112,7 @@ function useMediaSource(message: ThreadMessage): { src: string | null; failed: b
   const contentKey = message.contentKey
   const mediaIv = message.enc_media_iv
 
-  const mediaChunk = message.enc_media_chunk
+  const mediaChunk = chunkSizeOf(message)
   const isVideo = message.msg_type === 'video'
 
   useEffect(() => {

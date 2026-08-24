@@ -411,10 +411,16 @@ export async function openMessage(
 export const MEDIA_CHUNK_BYTES = 256 * 1024
 /** AES-GCM tag, appended to each chunk's ciphertext. */
 export const GCM_TAG_BYTES = 16
+/**
+ * Length of a chunked object's nonce prefix. It is also what tells the two
+ * media formats apart from the outside: a whole-object `media_iv` is a full
+ * twelve-byte AES-GCM IV (`randomIv`), a chunked one is these eight bytes.
+ */
+export const CHUNK_PREFIX_BYTES = 8
 
 /** Random per-object nonce prefix. Travels in the envelope as `media_iv`. */
 export function randomChunkPrefix(): Uint8Array {
-  return crypto.getRandomValues(new Uint8Array(8))
+  return crypto.getRandomValues(new Uint8Array(CHUNK_PREFIX_BYTES))
 }
 
 /**
@@ -423,7 +429,7 @@ export function randomChunkPrefix(): Uint8Array {
  */
 export function chunkNonce(prefix: Uint8Array, index: number, final: boolean): Uint8Array {
   const nonce = new Uint8Array(12)
-  nonce.set(prefix.subarray(0, 8), 0)
+  nonce.set(prefix.subarray(0, CHUNK_PREFIX_BYTES), 0)
   nonce[8] = (index >>> 16) & 0xff
   nonce[9] = (index >>> 8) & 0xff
   nonce[10] = index & 0xff
