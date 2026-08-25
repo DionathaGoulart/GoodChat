@@ -6,18 +6,19 @@
 //
 // The owner account must exist (npm run user:create -- --owner good good-goodchat).
 //
-// Covers: guest signup and its rate limits, the session dying exactly at
+// Covers: guest signup and its rate limits, the account having no password at
+// all, signing out deleting it on the spot, the session dying exactly at
 // `expires_at`, the sweep deleting the account, a conversation with a
 // permanent account surviving it (messages and media included), the same
 // conversation turning read-only, and two guests taking their shared thread
 // with them when the last of the pair goes.
 //
-// Expiry is forced through D1 instead of waiting five hours — the sweep and
+// Expiry is forced through D1 instead of waiting three hours — the sweep and
 // the session check both read the same column, so moving it back is exactly
 // what the clock would have done.
 
 import WebSocket from 'ws'
-import { d1Execute, sqlString } from './lib.ts'
+import { d1Execute, d1Query, sqlString } from './lib.ts'
 import { startMediaDevServer } from './media-dev-server.ts'
 
 const API = process.env.API_URL ?? 'http://localhost:8000'
@@ -69,8 +70,9 @@ interface Guest {
   cookie: string
   id: string
   username: string
-  password: string
   expiresAt: number
+  /** The whole signup body, so the test can assert what is *not* in it. */
+  body: any
 }
 
 async function createGuest(): Promise<Guest | { status: number; body: any }> {
@@ -82,8 +84,8 @@ async function createGuest(): Promise<Guest | { status: number; body: any }> {
     cookie,
     id: body.user.id,
     username: body.user.username,
-    password: body.password,
     expiresAt: body.user.expires_at,
+    body,
   }
 }
 
@@ -177,16 +179,26 @@ try {
   const guestA = first
 
   check('username is a valid handle', /^temp_[a-z0-9]{9}$/.test(guestA.username), guestA.username)
-  check('password is long enough to be worth showing once', guestA.password.length >= 12)
   const ttlHours = (guestA.expiresAt - Date.now()) / 3_600_000
-  check(`expiry is ~5h out (${ttlHours.toFixed(2)}h)`, ttlHours > 4.9 && ttlHours < 5.1, ttlHours)
+  check(`expiry is ~3h out (${ttlHours.toFixed(2)}h)`, ttlHours > 2.9 && ttlHours < 3.1, ttlHours)
+
+  // --- no password, anywhere -------------------------------------------
+  //
+  // Three places, because "we stopped showing it" and "there is none" are
+  // different claims and only the third one is the property: the response body,
+  // the stored row, and the login route.
+  check('the signup response carries no password', !('password' in (guestA.body ?? {})), guestA.body)
+  const storedHash = d1Query<{ password_hash: string | null }>(
+    `SELECT password_hash FROM users WHERE id = ${sqlString(guestA.id)};`,
+  )
+  check('password_hash is NULL in D1', storedHash[0]?.password_hash === null, storedHash[0])
 
   const guestMe = await api('/api/auth/me', { cookie: guestA.cookie })
   check('the signup cookie is a working session', guestMe.status === 200, guestMe.body)
   check('the account knows it is temporary', guestMe.body?.user?.is_temp === true, guestMe.body)
 
-  const reLogin = await login(guestA.username, guestA.password)
-  check('the credentials shown once actually work', reLogin !== null)
+  const guessed = await login(guestA.username, 'whatever-somebody-would-try')
+  check('there is nothing to log back in with', guessed === null)
 
   const guestB = await createGuest()
   check('a second guest can be created', 'cookie' in guestB, guestB)
@@ -201,9 +213,25 @@ try {
     'status' in fourth && fourth.status === 429,
     'status' in fourth ? fourth : 'created a fourth account',
   )
+  // --- signing out ends the account ------------------------------------
+  //
+  // Run on the third guest rather than on a fifth one, because the per-IP
+  // quota above is the point of that fourth request: creating another account
+  // here would have to be refused, and the test would be measuring the quota
+  // instead of the logout.
+  //
+  // The row goes outright rather than becoming a tombstone: this account never
+  // talked to anybody, so nothing references it (`removeIfUnreferenced` in
+  // lib/accounts.ts).
   if ('cookie' in third) {
-    // Not needed by the rest of the test; expire it so it is swept below.
-    expire(third.id)
+    const loggedOut = await api('/api/auth/logout', { method: 'POST', cookie: third.cookie })
+    check('a guest can sign out', loggedOut.status === 200, loggedOut.body)
+    const afterLogout = await api('/api/auth/me', { cookie: third.cookie })
+    check('the session is gone after signing out', afterLogout.status === 401, afterLogout.status)
+    const rows = d1Query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM users WHERE id = ${sqlString(third.id)};`,
+    )
+    check('signing out deleted the account itself', rows[0]?.n === 0, rows[0])
   }
 
   // --- guest ↔ permanent account ---------------------------------------
@@ -259,8 +287,8 @@ try {
   expire(guestA.id)
   const afterExpiry = await api('/api/auth/me', { cookie: guestA.cookie })
   check('an expired account cannot use its session', afterExpiry.status === 401, afterExpiry.status)
-  const expiredLogin = await login(guestA.username, guestA.password)
-  check('an expired account cannot log back in', expiredLogin === null)
+  const expiredLogin = await login(guestA.username, 'whatever-somebody-would-try')
+  check('an expired account cannot log back in either', expiredLogin === null)
 
   // --- the sweep --------------------------------------------------------
   const cleanup = await api('/api/admin/cleanup', { method: 'POST', cookie: ownerCookie })

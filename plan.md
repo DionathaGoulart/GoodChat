@@ -131,7 +131,25 @@ estruturalmente mais fraco".
 
 **Entrega:** guest de 3h, sem senha, apagado no logout.
 
-**Handoff:** _(preencher ao concluir)_
+**Handoff:** feito. `password_hash` fica NULL — não é um hash de algo
+inadivinhável, é ausência, e é por isso que "não dá pra voltar nessa conta"
+passa a ser propriedade do schema e não de um segredo. `logout` agora resolve a
+sessão antes de revogá-la e chama `deleteAccountKeepingPeers` quando `is_temp`;
+falha ali é logada e engolida, porque o sweep do TTL é o backstop e sair não
+pode falhar por causa da limpeza.
+
+Uma correção à tabela desta fase: **`PasswordCard.tsx` não some.** Ele é o card
+de *trocar* senha da tela de config e já retorna `null` para guest
+(`if (!user || user.is_temp) return null`) — quem só existia pro guest era o
+`GuestCredentialsCard` de `TempAccount.tsx`, e foi esse que foi removido, junto
+com `guestCredentials`/`forgetGuestCredentials` no `useSession` e com o campo
+`password` em `TempAccountResult`. A fase 4 depende do `PasswordCard`.
+
+`smoke:phase10` reescrito: TTL de ~3h, ausência de senha checada em três
+lugares (corpo da resposta, `password_hash` no D1, e o login recusando), e o
+logout apagando a conta. O teste do logout roda no *terceiro* convidado em vez
+de criar um quinto — a quarta criação existe para provar a quota por IP, e criar
+mais uma ali mediria a quota, não o logout.
 
 ---
 

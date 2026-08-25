@@ -1,14 +1,17 @@
-// Guest-account surfaces: the countdown that tells you how long this account
-// still exists, and the one-time credentials card shown right after signup.
+// The guest-account countdown: how long this account still exists.
 //
-// Both are deliberately loud. A guest account deletes itself and takes its
-// conversations with it — that has to be impossible to miss, and the password
-// is never recoverable once the tab is gone.
+// Deliberately loud. A guest account deletes itself and takes its conversations
+// with it — that has to be impossible to miss.
+//
+// There used to be a credentials card beside this one. There are no
+// credentials anymore: a guest account has no password, so it cannot be
+// reopened from another browser and there is nothing to write down. The tab is
+// the account, and signing out ends it now rather than at the deadline below
+// (worker/src/routes/auth.ts).
 
 import { useEffect, useState } from 'react'
 import { useSession } from '../hooks/useSession'
 import { MINUTE_MS, formatRemaining } from '../lib/time'
-import { RetroIconButton } from './RetroIconButton'
 
 /** Re-renders once a minute — the countdown never needs finer than that. */
 function useNow(): number {
@@ -34,37 +37,5 @@ export function TempAccountBanner() {
       conta temporária · some em {formatRemaining(user.expires_at, now)} — as conversas
       que só existirem aqui vão junto
     </p>
-  )
-}
-
-/**
- * The credentials, shown once. The worker returns the password a single time,
- * so this card is the only chance to write it down — it stays until dismissed.
- */
-export function GuestCredentialsCard() {
-  const { guestCredentials, forgetGuestCredentials } = useSession()
-  if (!guestCredentials) return null
-
-  return (
-    <section className="animate-enter card card-border border-accent bg-base-200 retro-shadow">
-      <div className="card-body gap-3">
-        <h2 className="section-label font-mono text-xs font-bold uppercase tracking-widest text-accent">
-          <span className="sigil">{'>'}</span> anote suas credenciais
-        </h2>
-        <p className="text-sm leading-relaxed opacity-70">
-          Servem para voltar nesta conta de outro navegador enquanto ela durar. A senha
-          não é mostrada de novo.
-        </p>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-sm">
-          <dt className="text-[10px] uppercase tracking-[0.2em] opacity-50">user</dt>
-          <dd className="font-bold select-all">{guestCredentials.username}</dd>
-          <dt className="text-[10px] uppercase tracking-[0.2em] opacity-50">senha</dt>
-          <dd className="font-bold select-all">{guestCredentials.password}</dd>
-        </dl>
-        <RetroIconButton className="self-start" onClick={forgetGuestCredentials}>
-          anotei
-        </RetroIconButton>
-      </div>
-    </section>
   )
 }

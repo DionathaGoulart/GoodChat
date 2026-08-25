@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   createTempAccount,
+  deleteAccountKeepingPeers,
   liveTempAccounts,
   tempAccountConfig,
 } from '../lib/accounts'
@@ -100,9 +101,11 @@ export async function login(request: Request, env: Env): Promise<Response> {
  * quota, a cap on how many guests can be alive at once, and an off switch.
  * Without them this endpoint is a free account factory pointed at D1.
  *
- * The password is returned once, in the clear, and never again — it exists so
- * the person can get back in from another tab or device before the clock runs
- * out.
+ * No password comes back, because none was minted. A guest is the tab that
+ * created it: `password_hash` is NULL, login refuses the account, and there is
+ * nothing to write down, nothing to leak, and nothing to relogin with. It also
+ * makes this the one account on the instance whose encryption key the server
+ * has no wrapped copy of — see lib/accounts.ts.
  */
 export async function createTempSession(request: Request, env: Env): Promise<Response> {
   const config = tempAccountConfig(env)
@@ -146,7 +149,7 @@ export async function createTempSession(request: Request, env: Env): Promise<Res
     is_temp: true,
     expires_at: account.expiresAt,
   }
-  return json({ user, password: account.password }, 201, { 'Set-Cookie': cookie })
+  return json({ user }, 201, { 'Set-Cookie': cookie })
 }
 
 const ChangePasswordSchema = z.object({
@@ -224,9 +227,33 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
   return json({ ok: true }, 200, { 'Set-Cookie': cookie })
 }
 
+/**
+ * POST /api/auth/logout — end the session, and for a guest end the account.
+ *
+ * A guest has no password, so a session that ends is an account nobody can
+ * ever open again: leaving the row until its TTL would keep a few hours of
+ * data alive with no reader. Deleting now is the same call the expiry sweep
+ * makes, with the same rule about the other side's history — a conversation
+ * whose peer is still alive is kept, with a tombstone in place of the guest
+ * (lib/accounts.ts).
+ *
+ * The session is looked up before it is revoked, and the deletion runs after:
+ * a failure in either half must still clear the cookie, or the browser would
+ * be left holding a token for an account in an unknown state.
+ */
 export async function logout(request: Request, env: Env): Promise<Response> {
   const token = readSessionCookie(request)
+  const auth = await requireSession(request, env.DB)
   if (token) await revokeSession(env.DB, token)
+  if (!(auth instanceof Response) && auth.user.is_temp) {
+    try {
+      await deleteAccountKeepingPeers(env, auth.user.id)
+    } catch (error) {
+      // The TTL sweep is the backstop. Signing out must not fail because the
+      // cleanup did.
+      console.error('guest deletion on logout failed', auth.user.id, error)
+    }
+  }
   return json({ ok: true }, 200, { 'Set-Cookie': clearCookie() })
 }
 

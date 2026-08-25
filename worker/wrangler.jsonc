@@ -102,7 +102,10 @@
     // instance back down: no public way in, invite-only again.
     "TEMP_ACCOUNTS_ENABLED": "true",
     // How long a guest account lives before it and its data are deleted.
-    "TEMP_ACCOUNT_TTL_HOURS": "5",
+    // Also the ceiling, not the rule: a guest has no password, so signing out
+    // deletes the account on the spot (routes/auth.ts). This is what catches
+    // the tab that was simply closed.
+    "TEMP_ACCOUNT_TTL_HOURS": "3",
     // Ceiling on guest accounts alive at once, and how many one address may
     // create per hour. Both exist because the endpoint is unauthenticated.
     "TEMP_ACCOUNTS_MAX": "100",

@@ -41,14 +41,12 @@ interface SessionContextValue {
   /** Painting from the local copy while /api/auth/me is still in flight. */
   revalidating: boolean
   login: (username: string, password: string) => Promise<void>
-  /** Guest signup: creates a throwaway account and signs in with it. */
-  loginAsGuest: () => Promise<void>
   /**
-   * The guest password, held in memory for this tab only: the worker returns
-   * it once at signup and never again, so the app has one chance to show it.
+   * Guest signup: creates a throwaway account and signs in with it. Nothing
+   * comes back to show — a guest has no password (worker/src/lib/accounts.ts),
+   * so this tab is the only way into that account and logging out ends it.
    */
-  guestCredentials: { username: string; password: string } | null
-  forgetGuestCredentials: () => void
+  loginAsGuest: () => Promise<void>
   logout: () => Promise<void>
   /** Persists mode, palettes and skin on the account; the DOM updates at once. */
   setTheme: (prefs: ThemePrefs) => Promise<void>
@@ -98,10 +96,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<SessionStatus>(cached ? 'authenticated' : 'loading')
   const [user, setUser] = useState<SessionUser | null>(cached)
   const [revalidating, setRevalidating] = useState(true)
-  const [guestCredentials, setGuestCredentials] = useState<{
-    username: string
-    password: string
-  } | null>(null)
 
   // The account preference is the source of truth: it overwrites whatever the
   // boot-time local copy pinned, including unpinning it back to "system".
@@ -208,13 +202,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   )
 
   const loginAsGuest = useCallback(async () => {
-    const { user, password } = await api.createTempAccount()
-    setGuestCredentials({ username: user.username, password })
+    const { user } = await api.createTempAccount()
     adopt(user)
     setStatus('authenticated')
   }, [adopt])
-
-  const forgetGuestCredentials = useCallback(() => setGuestCredentials(null), [])
 
   const logout = useCallback(async () => {
     try {
@@ -228,7 +219,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // including the cached copy: the next account here is someone else.
       forgetLocalState()
       setUser(null)
-      setGuestCredentials(null)
       setStatus('anonymous')
     }
   }, [])
@@ -285,8 +275,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       revalidating,
       login,
       loginAsGuest,
-      guestCredentials,
-      forgetGuestCredentials,
       logout,
       setTheme,
       setProfile,
@@ -298,8 +286,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       revalidating,
       login,
       loginAsGuest,
-      guestCredentials,
-      forgetGuestCredentials,
       logout,
       setTheme,
       setProfile,

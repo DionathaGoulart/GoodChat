@@ -24,7 +24,7 @@ import { Panel } from '../components/Panel'
 import { ConversationTile } from '../components/ConversationTile'
 import { MoonIcon, SunIcon } from '../components/Icons'
 import { ConversationListSkeleton } from '../components/Skeleton'
-import { GuestCredentialsCard, TempAccountBanner } from '../components/TempAccount'
+import { TempAccountBanner } from '../components/TempAccount'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { UserSearch } from '../components/UserSearch'
 import { navigate } from '../lib/router'
@@ -266,7 +266,6 @@ export function ConversationsScreen() {
       </header>
 
       <TempAccountBanner />
-      <GuestCredentialsCard />
 
       <UserSearch />
 

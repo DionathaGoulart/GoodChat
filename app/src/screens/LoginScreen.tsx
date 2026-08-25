@@ -143,8 +143,9 @@ export function LoginScreen() {
               <span className="sigil">{'>'}</span> sem conta?
             </p>
             <p className="mt-1 text-sm leading-relaxed opacity-70">
-              Entre como convidado: a conta dura 5 horas e depois some, levando junto
-              as conversas que só existirem nela.
+              Entre como convidado: a conta dura 3 horas e depois some, levando junto
+              as conversas que só existirem nela. Não tem senha — some também na hora
+              em que você sair, e não dá pra voltar nela de outro navegador.
             </p>
             <button
               type="button"
@@ -165,7 +166,7 @@ export function LoginScreen() {
 
         <p className="mt-4 font-mono text-[8px] uppercase tracking-[0.2em] opacity-40 md:text-[10px]">
           contas permanentes criadas pelo operador
-          {guestsOffered ? ' · convidados expiram em 5h' : ' · sem sign-up público'}
+          {guestsOffered ? ' · convidados expiram em 3h' : ' · sem sign-up público'}
         </p>
       </div>
     </main>

@@ -1,10 +1,17 @@
 // Temporary accounts (migration 0004) and the deletion rule that makes them
 // safe for the person on the other side.
 //
-// Creation: POST /api/auth/temp mints a random username + password, sets
-// `expires_at = now + TEMP_ACCOUNT_TTL_HOURS`, and signs the browser in. The
-// credentials are shown once and never recoverable — the account is meant to
-// die.
+// Creation: POST /api/auth/temp mints a random username, sets
+// `expires_at = now + TEMP_ACCOUNT_TTL_HOURS`, and signs the browser in. There
+// is no password: `password_hash` stays NULL, so nothing is shown once, nothing
+// is written down, and there is no way back in from another browser. The
+// session cookie in the tab that created it *is* the account.
+//
+// That is not a shortcut, it is the point. A guest has one device by
+// definition, so its encryption key is generated in that browser and never
+// leaves it — no wrapped copy in D1, nothing for the server to know. The rest
+// of the instance derives its key from a password (app/src/lib/kdf.ts); a guest
+// is the one account where there is no password for anyone to derive from.
 //
 // Deletion is the interesting half. "Delete the account and everything it
 // owns" would take the other side's history with it, which is wrong: a
@@ -24,24 +31,26 @@
 //   - sessions and push subscriptions → always deleted, explicitly: the FK
 //     cascade never fires because the row survives as a tombstone.
 //
+// Logging out runs the same deletion immediately (routes/auth.ts): with no
+// password there is nothing to come back to, so keeping the row until the TTL
+// would only keep data alive that nobody can ever read again.
+//
 // The `users` row itself is hard-deleted when nothing references it anymore
 // (no conversations, no media objects); otherwise it stays as a tombstone —
 // stripped of credentials and personal fields — so the surviving side's
 // conversation list still has a name to render. See migration 0004.
 
-import { hashPassword } from './password'
 import { destroyConversation } from './purge'
 import { deleteMediaObjects } from './mediaGc'
 
 /** Defaults for the TEMP_* vars (wrangler.jsonc), used when they are unset. */
-const DEFAULT_TTL_HOURS = 5
+const DEFAULT_TTL_HOURS = 3
 const DEFAULT_MAX_LIVE = 100
 const DEFAULT_PER_IP_HOUR = 3
 
-/** Username/password alphabet: no vowels-turned-slurs, no 0/O/1/l/i mixups. */
+/** Username alphabet: no vowels-turned-slurs, no 0/O/1/l/i mixups. */
 const ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
 const USERNAME_RANDOM_CHARS = 9
-const PASSWORD_CHARS = 16
 /** Collisions are astronomically unlikely; the retry is here for correctness. */
 const USERNAME_ATTEMPTS = 5
 
@@ -73,8 +82,6 @@ function positive(raw: string | undefined, fallback: number): number {
 export interface TempAccount {
   id: string
   username: string
-  /** Plaintext, returned exactly once — never stored, never recoverable. */
-  password: string
   expiresAt: number
 }
 
@@ -90,13 +97,20 @@ export async function liveTempAccounts(db: D1Database, now = Date.now()): Promis
   return row?.n ?? 0
 }
 
+/**
+ * A guest account, with `password_hash` left NULL.
+ *
+ * NULL rather than a hash of something unguessable, which would have been the
+ * smaller change: the login route already refuses an account with no hash
+ * (`burnPasswordTime` and a 401), so NULL is what makes "there is no way back
+ * into this account" a property of the schema instead of a property of a
+ * secret nobody happens to hold.
+ */
 export async function createTempAccount(
   db: D1Database,
   ttlMs: number,
   now = Date.now(),
 ): Promise<TempAccount> {
-  const password = randomString(PASSWORD_CHARS)
-  const passwordHash = await hashPassword(password)
   const expiresAt = now + ttlMs
 
   for (let attempt = 0; attempt < USERNAME_ATTEMPTS; attempt += 1) {
@@ -108,11 +122,11 @@ export async function createTempAccount(
           `INSERT INTO users
              (id, username, display_name, avatar_key, password_hash, created_at,
               role, created_by, is_temp, expires_at)
-           VALUES (?1, ?2, NULL, NULL, ?3, ?4, 'user', NULL, 1, ?5)`,
+           VALUES (?1, ?2, NULL, NULL, NULL, ?3, 'user', NULL, 1, ?4)`,
         )
-        .bind(id, username, passwordHash, now, expiresAt)
+        .bind(id, username, now, expiresAt)
         .run()
-      return { id, username, password, expiresAt }
+      return { id, username, expiresAt }
     } catch (error) {
       // Only a username collision is retryable; anything else is a real fault.
       if (!String(error).includes('UNIQUE')) throw error

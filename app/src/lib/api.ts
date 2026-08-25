@@ -131,11 +131,14 @@ export function login(username: string, password: string): Promise<{ user: Sessi
 
 export interface TempAccountResult {
   user: SessionUser
-  /** Shown once, right after signup — the worker never returns it again. */
-  password: string
 }
 
-/** Guest signup: a throwaway account that deletes itself when it expires. */
+/**
+ * Guest signup: a throwaway account with no password at all. It deletes itself
+ * when it expires — or the moment this browser signs out, whichever is first.
+ * There is nothing to show and nothing to store: this tab's cookie is the only
+ * way into it (worker/src/lib/accounts.ts).
+ */
 export function createTempAccount(): Promise<TempAccountResult> {
   return call('/api/auth/temp', { method: 'POST' })
 }
