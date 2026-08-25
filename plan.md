@@ -5,7 +5,8 @@ com contexto limpo. Cada uma declara o que ler ao começar, o que entrega, e
 termina com um handoff preenchido aqui dentro.
 
 As fases são sequenciais a partir da 1 — a 0 é independente e pode ir primeiro ou
-em paralelo. A 6 é manual, precisa de navegador, e fecha o conjunto.
+em paralelo. A 6 precisa de navegador e fecha o conjunto; foi escrita para ser
+feita à mão e acabou virando `smoke:phase18`, o que o handoff dela explica.
 
 Funde o antigo `plan.md` de verificação criptográfica: a fase 17 dele já estava
 executada e virou a evidência citada abaixo; a 18, nunca executada, virou a fase
@@ -625,39 +626,93 @@ Dois perfis do navegador, `alice` e `bob`, conversando.
 **Critérios de aceite:** os doze; nenhum erro no console; e os passos 2, 4, 8 e 9
 são os que provam o que este plano inteiro existe para entregar.
 
-**Handoff:** _não executada._ Fases 0–5 entregues e verificadas; esta ficou
-aberta por decisão, com a extensão de navegador indisponível na sessão em que o
-resto foi feito.
+**Handoff:** feita, e **automatizada em vez de manual** — `npm run
+smoke:phase18`, Playwright, três contextos Chromium isolados. Foi decisão do
+usuário quando a passada manual esbarrou em dois muros ao mesmo tempo: a
+extensão de navegador não respondia, e os doze passos pedem três sessões
+simultâneas na mesma origem, o que um perfil de navegador não sustenta (o
+cookie é `HttpOnly; SameSite=Strict` por origem, `session.ts:233`, e a chave de
+conta vive no IndexedDB, também por origem). Um `BrowserContext` do Playwright
+é um perfil privado — cookies, IndexedDB e localStorage próprios —, então
+"alice entra num lugar novo" passa a ser uma frase que o teste consegue dizer.
 
-O que já está coberto sem navegador, e que encurta a passada manual: os passos
-**2, 4, 8 e 9** — os quatro que este plano chama de "os que provam o que ele
-existe para entregar" — são asserções em `smoke:phase15` e `smoke:phase17`,
-contra a stack local:
+Os doze passos, 46 asserções, verdes. A ordem no arquivo é a do plano com uma
+troca: o passo 11 roda **antes** do 10, porque o reset do 10 tira a chave da
+alice e um service worker sem chave mostraria a linha genérica pelo motivo
+honesto em vez do que está sob teste.
 
-| passo | onde está provado |
-| --- | --- |
-| 2 · o guardado é ciphertext | `phase15`: "and the stored body is still ciphertext" |
-| 4 · `/api/media/<key>` devolve bytes ilegíveis | `phase15`: "what the proxy serves is the ciphertext, not the picture" |
-| 8 · navegador zerado lê o histórico inteiro | `phase17`: "a browser with an empty key store reads the whole history" |
-| 9 · número de segurança estável entre navegadores | `phase15` + `phase16`: "and the same account elsewhere computes the same number" |
+### O que a passada encontrou
 
-O que **continua precisando de navegador**, e é o motivo desta fase existir
-separada: a fiação React (`useConversation`), o IndexedDB de verdade (o
-`structured clone` preservando `extractable: false` foi medido uma vez, em
-2026-08-20, mas não é regressão automatizada), e tudo que só se vê com olho —
-sticker renderizando arte em vez de `[sticker]`, vídeo tocando, previews da
-lista, reload dentro da thread, e push com a aba fechada.
+Quatro defeitos. Nenhum deles aparece nas smokes de Node — script não faz
+preflight, não pinta `<img>` e não tem service worker — e três deles não
+existem em produção, onde o Worker serve o app e nada é cross-origin. Existiam
+só no ambiente que este plano manda usar (`:5173` falando com `:8000`), que é
+onde a fase 6 sempre foi feita para olhar:
 
-Uma correção ao passo 8 antes de alguém executá-lo: o placeholder
-`[mensagem de antes deste dispositivo]` não existe mais em lugar nenhum, mas
-`[mensagem de antes desta mudança]` **pode** aparecer, para mensagens `v:1`/`v:2`
-seladas antes da virada e só naquele navegador. Não é regressão; é o que a fase 3
-explica no handoff, e some quando a retenção limpar as últimas.
+1. **`PUT` fora do `Access-Control-Allow-Methods`** (`lib/http.ts`). O
+   preflight de `PUT /api/account/key` respondia sem `PUT`, o navegador nunca
+   mandava a requisição, e nenhuma conta conseguia publicar chave. A fase 2
+   inteira era inalcançável pelo navegador documentado, desde que foi escrita.
+2. **`Cross-Origin-Resource-Policy: same-origin` + `<img>` cru.** CORP vale
+   para carga *no-cors*, que é o que um `<img src>` faz: os bytes chegavam com
+   200 e o navegador se recusava a pintá-los
+   (`ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`). Sticker e avatar nunca
+   renderizaram em dev. Corrigido do lado do app —
+   `crossOrigin="use-credentials"` nos quatro elementos que apontam para o
+   proxy (`lib/media.ts`, `MEDIA_CROSS_ORIGIN`) — e não afrouxando o header:
+   uma carga CORS não é policiada por CORP, e a página de um estranho continua
+   sem receber `Access-Control-Allow-Origin`.
+3. **`Content-Range` não exposto.** O service worker pede `bytes=0-0` só para
+   ler o tamanho do objeto desse header antes de decifrar (`sw.js`,
+   `ciphertextSize`), e `Content-Range` não é um dos sete headers que o CORS
+   expõe por padrão: a leitura dava `null`, `serveRange` estourava, e **todo**
+   vídeo chunked virava `[mídia indisponível]`. Um `Access-Control-Expose-Headers`
+   em `routes/media.ts`.
+4. **Este não é só de dev, e é o mais sério.** O `writeCachedThread` do resolve
+   gravava um registro novo por cima do guardado, apagando `peerFingerprint` e
+   `verifiedFingerprint` a cada abertura de thread. Consequência: a faixa
+   "a chave de @fulano mudou" **nunca disparava para ninguém** — não tinha
+   contra o que comparar —, e "conferido" não sobrevivia a sair da conversa. E
+   junto: a checagem lia o diretório em cache, cujo TTL é de cinco minutos, ou
+   seja, uma chave trocada *desde o último olhar* — que é exatamente a janela
+   em que uma troca dirigida vive — não produzia faixa. Os dois consertados em
+   `ThreadScreen.tsx`; o segundo com o mesmo argumento que o
+   `SafetyNumberDialog` já tinha escrito: quando a pergunta é "isto mudou?", uma
+   cópia em cache é a coisa errada de olhar.
 
-Uma nota prática: a stack precisa dos três processos (worker `:8000`, media
-`:9000`, app `:5173`) mais `npm run stickers:publish`, e as fixtures de dev
-estão em `alice-goodchat` / `bob-goodchat` / `good-goodchat`, já em v2 com chave
-de conta publicada.
+Vale dizer o que isso significa sobre o plano: as fases 0–5 estavam
+verificadas, e estavam mesmo — o que elas provam, elas provam. O que não havia
+era nenhuma execução do app inteiro num navegador, e quatro defeitos moravam
+justamente aí. É a justificativa retroativa desta fase existir.
+
+### Onde o teste é honesto sobre as bordas
+
+- **Push (passo 11).** Não há serviço de push alcançável de um laptop, então a
+  entrega é por CDP (`ServiceWorker.deliverPushMessage`). O que é entregue é o
+  payload que o Worker monta — título, linha genérica e os dois ids
+  (`lib/push.ts`, `withPreview`) —, e daí em diante é o service worker de
+  verdade: lê a conversa de volta pelo cookie, acha a chave da conta no
+  IndexedDB e abre o envelope. O transporte cifrado é da fase 8, que já o prova.
+- **`E2EE_REQUIRED` (passo 12).** Detectado em vez de exigido, como a fase 15
+  faz: virar a chave exige reiniciar o Worker, e um teste que não roda contra a
+  stack como ela está configurada é um teste que ninguém roda. As duas metades
+  têm asserção.
+- **Fora do CI, de propósito.** Quer quatro processos e um download de
+  navegador; o workflow de deploy faz typecheck, lint e build. É a passada que
+  se roda antes de acreditar numa mudança no caminho da mensagem — que é o que
+  o risco 5 pedia para anotar.
+
+### Duas notas para quem for mexer
+
+O `smoke:phase16` ganhou uma asserção junto: o sandbox dele agora dá ao `self`
+um `location.href` com `?api=`, e checa que o worker lê a conversa de volta na
+origem com que foi registrado. Sem isso o defeito 3 voltaria calado — o worker
+usaria a própria origem e todo preview iria para a linha genérica.
+
+As fixtures `alice`/`bob` **não** são usadas: a fase 18 cria contas próprias por
+execução e as apaga pelo console do dono. O passo 10 redefine uma senha, o que
+destrói o histórico daquela conta para sempre, e `PUT /api/account/key` é
+create-only — uma execução que comesse as fixtures passaria uma vez só.
 
 ---
 
@@ -672,9 +727,22 @@ refactor: delete the device handover the account key replaced
 feat(app): re-wrap on password change, and say what an owner reset costs
 test: prove the server cannot unwrap what it stores
 docs(e2ee): the account is the unit of read access now
+fix(worker): allow PUT in the CORS preflight response
+fix(worker): expose Content-Range on media responses
+fix(app): load media as credentialed CORS requests
+fix(app): register the service worker with the API origin
+test(worker): pin the service worker to its registered API origin
+fix(app): keep the thread's key fingerprints when a conversation resolves
+fix(app): force a directory refresh before comparing the peer's key
+build(worker): add playwright as a dev dependency
+test(worker): add phase 18, the twelve-step browser pass
+docs: describe the phase 18 browser suite
+docs(plan): close phase 6 with what the browser pass found
 ```
 
-A fase 6 não gera commit: ela preenche o handoff acima.
+A fase 6 acabou gerando commits: ela encontrou quatro defeitos e virou uma
+suíte. Os onze últimos são dela — um por defeito, um por peça, porque foram
+achados um de cada vez e é assim que dá para reverter um sem levar os outros.
 
 ---
 
@@ -689,11 +757,14 @@ A fase 6 não gera commit: ela preenche o handoff acima.
    determinístico é obrigatório, não opcional.
 4. **Perde-se o escopo de comprometimento.** Aparelho roubado passa a vazar a
    conta, não só o que aquele aparelho endereçava.
-5. **A fase 6 é manual e não repetível.** É a única prova de ponta a ponta do
-   caminho criptográfico dentro de um navegador, e roda no braço. Automatizar com
-   Playwright vale a pena, mas é decisão de escopo própria — dependência nova,
-   tempo de CI, e um segundo lugar onde a criptografia passa a ser descrita.
-   Anotar no handoff o que doeu manualmente: é a evidência para decidir depois.
+5. ~~**A fase 6 é manual e não repetível.**~~ Resolvido: virou
+   `smoke:phase18`. A dependência nova é o Playwright, em `devDependencies` do
+   worker; o tempo de CI não é pago porque a suíte fica fora do CI; e a
+   criptografia não é descrita num segundo lugar — o teste dirige o app e não
+   reimplementa nada, ao contrário das fases 15 e 17, onde a segunda
+   implementação é o ponto. O que doeu manualmente está no handoff da fase 6, e
+   a resposta é que a passada manual nunca chegou a acontecer: quatro defeitos
+   estavam esperando exatamente ali.
 
 ## Fora de escopo
 
