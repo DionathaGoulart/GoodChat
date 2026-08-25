@@ -4,8 +4,13 @@ Mesmo protocolo dos planos anteriores: **fases autocontidas**, feitas para rodar
 com contexto limpo. Cada uma declara o que ler ao começar, o que entrega, e
 termina com um handoff preenchido aqui dentro.
 
-As fases são sequenciais a partir da 1 — a 0 é independente e pode ir primeiro
-ou em paralelo.
+As fases são sequenciais a partir da 1 — a 0 é independente e pode ir primeiro ou
+em paralelo. A 6 é manual, precisa de navegador, e fecha o conjunto.
+
+Funde o antigo `plan.md` de verificação criptográfica: a fase 17 dele já estava
+executada e virou a evidência citada abaixo; a 18, nunca executada, virou a fase
+6 daqui, reescrita porque três dos doze passos dela descreviam comportamento que
+este plano apaga.
 
 ---
 
@@ -52,16 +57,23 @@ IndexedDB — a mesma técnica do `deviceKeys.ts` de hoje. Isso depende de o
 structured clone preservar a não-extratibilidade, o que nenhum teste em Node
 responde.
 
-**Já foi respondido: sim.** `plan-e2ee-verification.md` fase 17, executada em
-2026-08-20 (Chrome 151, macOS): a chave lida de volta é `CryptoKey`,
-`extractable: false`, `type: 'private'`, `algorithm.name: 'ECDH'`; `exportKey`
-rejeita nos três formatos; e o `deriveBits` com a chave **lida do IndexedDB**
-bate com o derivado no sentido inverso — ou seja, a chave guardada é a que o
-diretório anuncia.
+**Já foi respondido: sim.** Medido em 2026-08-20, Chrome 151 em macOS, contra a
+stack local, conta `alice`:
 
-Nada a fazer aqui. Está registrado porque é a premissa de que a fase 2 depende, e
-porque quem retomar isto com contexto limpo vai querer saber que ela foi medida e
-não presumida.
+- lida de volta pelo próprio módulo: `privateKey instanceof CryptoKey` → `true`;
+  `.extractable` → `false`; `.type` → `'private'`; `.algorithm.name` → `'ECDH'`
+  (`namedCurve: 'P-256'`, `usages: ['deriveBits']`)
+- `exportKey` rejeita nos três formatos (`raw`, `pkcs8`, `jwk`) com
+  `InvalidAccessError: key is not extractable`
+- `deriveBits` com a chave **lida do IndexedDB** (não a recém-gerada) devolve 32
+  bytes estáveis, e o segredo bate com o derivado no sentido inverso — privada do
+  par × pública publicada. Ou seja: a chave guardada é a que o diretório anuncia
+- reload mantém o id; logout esvazia a object store; outra conta no mesmo
+  navegador não vê nada da anterior
+
+Nada a fazer. Está registrado porque é a premissa de que a fase 2 depende, e quem
+retomar isto com contexto limpo vai querer saber que ela foi medida e não
+presumida.
 
 ---
 
@@ -330,6 +342,81 @@ consequências do topo deste arquivo entram em algum lugar visível.
 
 ---
 
+## Fase 6 — a conversa de ponta a ponta, no navegador
+
+Herdada do plano de verificação anterior (fase 18, nunca executada) e reescrita
+para o desenho por conta. Existe separada das smokes porque precisa de navegador:
+nenhum teste em Node exercita a fiação React nem o IndexedDB.
+
+**Ler antes:** `app/src/hooks/useConversation.ts` (`toThread`, `seal`,
+`sendEvent`, a fila `frameQueue`), `app/src/components/MessageBubble.tsx`
+(`useMediaSource`), `app/src/screens/ConversationsScreen.tsx` (`openPreviews`),
+`app/src/screens/ThreadScreen.tsx`, `app/src/components/SafetyNumber.tsx`.
+
+### Subir a stack
+
+```bash
+cd worker && npm run db:migrate && npm run db:seed
+node scripts/create-user.ts --owner good good-goodchat Good
+npm run dev            # :8000
+npm run media:dev      # :9000  (outro terminal)
+npm run stickers:publish
+cd ../app && npm run dev   # :5173
+```
+
+O D1 local acumula estado entre execuções. Antes de afirmar qualquer coisa da
+forma "ainda não existe", apague `worker/.wrangler/state` e refaça o seed — foi o
+que fez a `smoke:phase3` falhar três vezes por motivo nenhum.
+
+### Passos
+
+Dois perfis do navegador, `alice` e `bob`, conversando.
+
+1. **Texto.** Mandar dos dois lados. Cadeado fechado 🔒 no cabeçalho, sem faixa de
+   aviso, texto legível nas duas telas.
+2. **Não confiar na tela.** Confirmar no servidor que o guardado é ciphertext —
+   DevTools → Network → WS, frame `history`. Nenhum trecho do que foi digitado
+   pode aparecer. Este passo e o 4 são os únicos que provam a propriedade; o
+   resto prova a usabilidade.
+3. **Emoji e sticker.** Sticker tem que renderizar a arte, não `[sticker]` — é o
+   caminho onde o id sai do ciphertext e passa pelo `STICKER_ID_RE` no
+   destinatário.
+4. **Imagem.** Bolha renderiza; e `GET /api/media/<key>` com o cookie de sessão,
+   fora do app, tem que devolver bytes ilegíveis.
+5. **Vídeo.** Confirmar que toca — e que a espera é o download inteiro, que é a
+   regressão conhecida e documentada.
+6. **Previews da lista.** Voltar para `#/`: o tile mostra o texto da última
+   mensagem, não `[mensagem cifrada]` nem base64.
+7. **Recarregar dentro da thread.** O cache local não serializa `CryptoKey`,
+   então a mídia mostra esqueleto e resolve quando o `history` chega — nunca
+   "[mídia indisponível]".
+8. **Segundo dispositivo — o passo que inverteu.** Entrar como `alice` num
+   terceiro perfil, com IndexedDB zerado. **Todo o histórico tem que abrir**,
+   não só as mensagens novas. No desenho antigo o esperado aqui era
+   `[mensagem de antes deste dispositivo]`; agora esse placeholder não pode
+   aparecer em lugar nenhum. É a prova da fase 3.
+9. **Safety number.** Abrir o 🔒 nos dois lados e comparar: idênticos, 12 grupos
+   de 5 dígitos. Depois abrir num terceiro navegador da mesma conta — **tem que
+   ser o mesmo número**, porque agora deriva da chave da conta e não do conjunto
+   de aparelhos. É a outra metade da prova da fase 3.
+10. **Troca de chave de verdade.** Reset de senha pelo dono numa das contas.
+    Do outro lado, a faixa de chave trocada tem que aparecer — e a conta
+    resetada tem que perder o histórico, como a fase 4 promete.
+11. **Push com preview.** Ativar notificações, `push_preview` em "mostrar
+    trecho", mandar com a aba fechada: a notificação mostra o texto — e o log do
+    worker não contém nenhum trecho dele.
+12. **Fechar a transição.** `E2EE_REQUIRED=true` no `.dev.vars`, reiniciar,
+    mandar de um navegador sem chave: recusado com `encryption_required`
+    visível, não engolido.
+
+**Critérios de aceite:** os doze; nenhum erro no console; e os passos 2, 4, 8 e 9
+são os que provam o que este plano inteiro existe para entregar.
+
+**Handoff:** _(preencher ao concluir: navegadores e versões, o que apareceu nos
+passos 2, 4, 8 e 9, e qualquer passo que precisou de retentativa)_
+
+---
+
 ## Ordem de commits
 
 ```
@@ -342,6 +429,8 @@ feat(app): re-wrap on password change, and say what an owner reset costs
 test: prove the server cannot unwrap what it stores
 docs(e2ee): the account is the unit of read access now
 ```
+
+A fase 6 não gera commit: ela preenche o handoff acima.
 
 ---
 
@@ -356,13 +445,11 @@ docs(e2ee): the account is the unit of read access now
    determinístico é obrigatório, não opcional.
 4. **Perde-se o escopo de comprometimento.** Aparelho roubado passa a vazar a
    conta, não só o que aquele aparelho endereçava.
-5. **`plan-e2ee-verification.md` fase 18 fica desatualizada.** Ela é a
-   verificação manual em navegador do caminho criptográfico, ainda pendente, e
-   três dos doze passos deixam de fazer sentido depois da fase 3 deste plano: o
-   passo 8 (segundo aparelho vendo `[mensagem de antes deste dispositivo]`) vira
-   o oposto do esperado, o 10 (aviso de troca de chave por dispositivo) perde o
-   gatilho, e o 9 (safety number) passa a ser estável em vez de por conjunto de
-   aparelhos. Reescrever junto com a fase 5 daqui.
+5. **A fase 6 é manual e não repetível.** É a única prova de ponta a ponta do
+   caminho criptográfico dentro de um navegador, e roda no braço. Automatizar com
+   Playwright vale a pena, mas é decisão de escopo própria — dependência nova,
+   tempo de CI, e um segundo lugar onde a criptografia passa a ser descrita.
+   Anotar no handoff o que doeu manualmente: é a evidência para decidir depois.
 
 ## Fora de escopo
 
@@ -372,3 +459,14 @@ docs(e2ee): the account is the unit of read access now
   sem lista de dispositivos, não há o que assinar
 - backup/escrow no servidor em qualquer forma — é exatamente o que este plano
   existe para não ter
+
+## Em aberto, e de produto — não de verificação
+
+Registrado em `docs/architecture.md`, herdado do plano anterior e ainda válido:
+
+- **sem forward secrecy** — ECDH estático; a janela de 7 dias é o que limita uma
+  chave vazada. Com a regra de 3h após lida, na prática é bem menos
+- **vídeo baixa inteiro antes de tocar** — AES-CTR mais MAC do objeto inteiro via
+  Media Source Extensions seria a saída
+- **avatares, nomes e presença seguem em texto claro**, porque são renderizados
+  para contas com quem você nunca falou
