@@ -1,30 +1,54 @@
-// Phase 15 smoke: end-to-end encryption.
+// Phase 15 smoke: end-to-end encryption, the wire format.
 //
-// The crypto here is a *second* implementation of the wire format, written
-// against docs/architecture.md rather than imported from app/src/lib/e2ee.ts.
-// That is the point: a test that calls the same code the app calls only proves
-// the code round-trips with itself, which is true of any format including a
-// broken one. This proves the envelope is implementable from its description,
-// and it is what would catch the app silently changing the shape.
+// The crypto here is a *second* implementation of the envelope, written against
+// docs/architecture.md rather than imported from app/src/lib/e2ee.ts. That is
+// the point: a test that calls the same code the app calls only proves the code
+// round-trips with itself, which is true of any format including a broken one.
+// This proves the envelope is implementable from its description, and it is
+// what would catch the app silently changing the shape.
+//
+// It covers the envelope and nothing else. The password KDF and the wrapped
+// account key — how a browser comes to hold the private half at all — are
+// phase 17's, which is also where "sign in somewhere new and read everything"
+// is proved end to end. Here the accounts publish a public key and keep the
+// private half in this process, so `account_key_wrapped` is opaque filler: the
+// worker never opens it, which is the property phase 17 asserts and this file
+// relies on.
 //
 // What it asserts, in order:
-//   - two of alice's devices both open a message bob sent, and bob's own other
-//     device does too (the sender wraps for itself);
-//   - a device registered *after* the message cannot open it — the design
-//     working, not a failure;
-//   - the Durable Object never holds the plaintext;
+//   - a v3 envelope names two accounts, the recipient and the sender, and no
+//     devices at all;
+//   - both of them open it, and nobody else does;
+//   - the Durable Object never holds the plaintext, and refuses an envelope
+//     that leaves out its own sender;
+//   - an attachment is ciphertext in the bucket, opened by the same content
+//     key as the message that names it;
 //   - the key directory refuses a caller with no reason to see it;
-//   - a plaintext message still works, which is what carries the transition.
+//   - the conversation list carries what a push preview needs;
+//   - the safety number is the two account keys, and only those.
 //
 // Usage: npm run smoke:phase15   (needs `npm run dev` on :8000 and seed data)
 
 import { WebSocket } from 'ws'
-import { d1Query, signIn, sqlString } from './lib.ts'
+import { d1Execute, insertUser, signIn } from './lib.ts'
 
 const API = process.env.API ?? 'http://localhost:8000'
 const WS_API = API.replace(/^http/, 'ws')
-const ALICE = { username: 'alice', password: 'alice-goodchat' }
-const BOB = { username: 'bob', password: 'bob-goodchat' }
+
+/**
+ * Fresh accounts per run rather than alice and bob.
+ *
+ * `PUT /api/account/key` is create-only — replacing a key is what cuts
+ * somebody off from their own history, so a session alone must not be able to
+ * do it — which means this file cannot publish a key it holds the private half
+ * of for an account that already has one. Creating its own is the honest way
+ * to get there, and it leaves the seed fixtures alone.
+ */
+const STAMP = Date.now().toString(36)
+const ALICE = { username: `e2ee_a${STAMP}`, password: `alice-${STAMP}-goodchat` }
+const BOB = { username: `e2ee_b${STAMP}`, password: `bob-${STAMP}-goodchat` }
+/** Only for the teardown: deleting an account with history needs the console. */
+const OWNER = { username: 'good', password: 'good-goodchat' }
 
 let failures = 0
 function check(label: string, ok: boolean, detail?: unknown): void {
@@ -50,20 +74,20 @@ function unb64u(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, 'base64url'))
 }
 
-interface Device {
+/** One account's key, with the private half kept in this process. */
+interface Account {
+  /** The account id — what the envelope's key map is keyed by. */
   id: string
   publicKey: string
   keys: CryptoKeyPair
+  cookie: string
 }
 
-async function makeDevice(): Promise<Device> {
+async function makeKeypair(): Promise<{ publicKey: string; keys: CryptoKeyPair }> {
   const keys = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, [
     'deriveBits',
   ])
-  const raw = await crypto.subtle.exportKey('raw', keys.publicKey)
-  const digest = await crypto.subtle.digest('SHA-256', raw)
-  const id = Buffer.from(new Uint8Array(digest).slice(0, 16)).toString('hex')
-  return { id, publicKey: b64u(raw), keys }
+  return { publicKey: b64u(await crypto.subtle.exportKey('raw', keys.publicKey)), keys }
 }
 
 function importPublic(publicKey: string): Promise<CryptoKey> {
@@ -76,7 +100,7 @@ function importPublic(publicKey: string): Promise<CryptoKey> {
   )
 }
 
-/** HKDF over the ECDH secret, salted with both device ids, sorted. */
+/** HKDF over the ECDH secret, salted with both account ids, sorted. */
 async function wrappingKey(
   privateKey: CryptoKey,
   peerPublic: CryptoKey,
@@ -103,74 +127,100 @@ async function wrappingKey(
   )
 }
 
+interface Context {
+  conversationId: string
+  senderId: string
+  clientId: string
+}
+
+/**
+ * What a v3 body is authenticated under. No sending device: with the account as
+ * the unit there is no such party, and the version literal is what stops an
+ * envelope of one version being replayed as another.
+ */
+function messageAad(context: Context): Uint8Array {
+  return enc.encode(
+    ['goodchat-v3', context.conversationId, context.senderId, context.clientId].join('|'),
+  )
+}
+
 interface Envelope {
-  v: 1
+  v: 3
   iv: string
-  sender_device: string
-  /**
-   * `via` names whose public key unwraps this entry. Absent means the sender,
-   * which is every entry the sender wrote; it is set on entries a device of the
-   * recipient's own account added afterwards, handing over history.
-   */
-  keys: Record<string, { iv: string; ct: string; via?: string }>
+  keys: Record<string, { iv: string; ct: string }>
   media_iv?: string
 }
 
 async function seal(
-  sender: Device,
-  recipients: { id: string; public_key: string }[],
+  sender: Account,
+  peer: { id: string; publicKey: string },
+  context: Context,
   payload: Record<string, string>,
-): Promise<{ body: string; enc: Envelope }> {
-  const contentKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
-    'encrypt',
-    'decrypt',
-  ])
+  contentKey?: CryptoKey,
+  mediaIv?: Uint8Array,
+): Promise<{ body: string; enc: Envelope; contentKey: CryptoKey }> {
+  const key =
+    contentKey ??
+    (await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
+      'encrypt',
+      'decrypt',
+    ]))
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const body = b64u(
-    await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, contentKey, enc.encode(JSON.stringify(payload))),
+    await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv, additionalData: messageAad(context) },
+      key,
+      enc.encode(JSON.stringify(payload)),
+    ),
   )
-  const raw = await crypto.subtle.exportKey('raw', contentKey)
+  const raw = await crypto.subtle.exportKey('raw', key)
 
+  // Two entries, always: the recipient and the sender's own — the second one so
+  // the person can read what they sent, not so another of their tabs can.
   const keys: Envelope['keys'] = {}
-  for (const device of recipients) {
+  for (const target of [peer, { id: sender.id, publicKey: sender.publicKey }]) {
     const wrapKey = await wrappingKey(
       sender.keys.privateKey,
-      await importPublic(device.public_key),
+      await importPublic(target.publicKey),
       sender.id,
-      device.id,
+      target.id,
     )
     const wrapIv = crypto.getRandomValues(new Uint8Array(12))
-    keys[device.id] = {
+    keys[target.id] = {
       iv: b64u(wrapIv),
       ct: b64u(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, wrapKey, raw)),
     }
   }
-  return { body, enc: { v: 1, iv: b64u(iv), sender_device: sender.id, keys } }
+  return {
+    body,
+    enc: { v: 3, iv: b64u(iv), keys, ...(mediaIv ? { media_iv: b64u(mediaIv) } : {}) },
+    contentKey: key,
+  }
 }
 
 /**
  * Opens a message and keeps the content key, which a media message needs for
- * its object and a handover needs to re-wrap.
+ * its object.
  *
- * `senderPublicKey` is whoever `via` named — the message's sender for an
- * ordinary entry, another of the reader's own devices for a handed-over one.
- * The salt follows the same value, because both sides of that ECDH have to
- * agree on which pair they are deriving for.
+ * `senderPublicKey` is the sending *account's* published key. There is no
+ * second possibility anymore: the handover that could put another device's key
+ * here died with the device model.
  */
 async function openWithKey(
-  device: Device,
+  reader: Account,
   senderPublicKey: string,
+  context: Context,
   body: string,
   envelope: Envelope,
 ): Promise<{ payload: Record<string, string>; contentKey: CryptoKey } | null> {
-  const wrapped = envelope.keys[device.id]
+  const wrapped = envelope.keys[reader.id]
   if (!wrapped) return null
   try {
     const wrapKey = await wrappingKey(
-      device.keys.privateKey,
+      reader.keys.privateKey,
       await importPublic(senderPublicKey),
-      device.id,
-      wrapped.via ?? envelope.sender_device,
+      reader.id,
+      context.senderId,
     )
     const raw = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: unb64u(wrapped.iv) },
@@ -185,7 +235,7 @@ async function openWithKey(
       ['decrypt', 'encrypt'],
     )
     const plain = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: unb64u(envelope.iv) },
+      { name: 'AES-GCM', iv: unb64u(envelope.iv), additionalData: messageAad(context) },
       contentKey,
       unb64u(body),
     )
@@ -196,50 +246,16 @@ async function openWithKey(
 }
 
 async function open(
-  device: Device,
+  reader: Account,
   senderPublicKey: string,
+  context: Context,
   body: string,
   envelope: Envelope,
 ): Promise<Record<string, string> | null> {
-  return (await openWithKey(device, senderPublicKey, body, envelope))?.payload ?? null
-}
-
-/**
- * One device of an account wrapping an open content key for another device of
- * the same account — the reference form of `rewrapFor` in app/src/lib/e2ee.ts.
- */
-async function rewrap(
-  sharer: Device,
-  target: Device,
-  contentKey: CryptoKey,
-): Promise<{ iv: string; ct: string; via: string }> {
-  const raw = await crypto.subtle.exportKey('raw', contentKey)
-  const wrapKey = await wrappingKey(
-    sharer.keys.privateKey,
-    await importPublic(target.publicKey),
-    sharer.id,
-    target.id,
-  )
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  return {
-    iv: b64u(iv),
-    ct: b64u(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrapKey, raw)),
-    via: sharer.id,
-  }
+  return (await openWithKey(reader, senderPublicKey, context, body, envelope))?.payload ?? null
 }
 
 // --- REST helpers ---------------------------------------------------------
-
-// Signing in goes through `signIn` (scripts/lib.ts) rather than posting the
-// password: since migration 0013 the stored hash is of a token the *client*
-// derives, so a plaintext login is refused. ~600ms of PBKDF2 per call. This
-// one keeps the bare token because everything below builds its own header.
-async function login(username: string, password: string): Promise<string> {
-  const cookie = await signIn(API, username, password)
-  const token = /session=([^;]+)/.exec(cookie ?? '')?.[1]
-  if (!token) throw new Error(`login failed for ${username}`)
-  return token
-}
 
 async function api(
   path: string,
@@ -248,7 +264,7 @@ async function api(
   const response = await fetch(`${API}${path}`, {
     method,
     headers: {
-      ...(cookie ? { Cookie: `session=${cookie}` } : {}),
+      ...(cookie ? { Cookie: cookie } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
     body,
@@ -257,18 +273,39 @@ async function api(
   return { status: response.status, body: text ? JSON.parse(text) : null }
 }
 
-function register(cookie: string, device: Device) {
-  return api('/api/devices', {
+/**
+ * Creates the account, signs in, and publishes a keypair this process holds.
+ *
+ * `wrapped` is filler. The worker stores it and never opens it — that is the
+ * whole design (migration 0014) — so a test of the *envelope* does not need a
+ * real KDF behind it, and phase 17 is where "the worker cannot open it" is
+ * asserted rather than assumed.
+ */
+async function makeAccount(credentials: { username: string; password: string }): Promise<Account> {
+  await insertUser(credentials.username, credentials.password, credentials.username)
+  const cookie = await signIn(API, credentials.username, credentials.password)
+  if (!cookie) throw new Error(`could not sign in as ${credentials.username}`)
+  const id: string = (await api('/api/auth/me', { cookie })).body.user.id
+  const { publicKey, keys } = await makeKeypair()
+  const published = await api('/api/account/key', {
     cookie,
-    method: 'POST',
-    body: JSON.stringify({ id: device.id, public_key: device.publicKey }),
+    method: 'PUT',
+    body: JSON.stringify({
+      public_key: publicKey,
+      wrapped: b64u(crypto.getRandomValues(new Uint8Array(160))),
+      iv: b64u(crypto.getRandomValues(new Uint8Array(12))),
+    }),
   })
+  if (published.status !== 200) {
+    throw new Error(`could not publish a key for ${credentials.username}: ${published.status}`)
+  }
+  return { id, publicKey, keys, cookie }
 }
 
 function connect(cookie: string, conversationId: string, withId: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${WS_API}/api/ws/${conversationId}?with=${withId}`, {
-      headers: { Cookie: `session=${cookie}` },
+      headers: { Cookie: cookie },
     })
     ws.on('open', () => resolve(ws))
     ws.on('error', reject)
@@ -289,77 +326,70 @@ function waitFor<T>(ws: WebSocket, match: (event: any) => boolean, label: string
 
 // --- the run --------------------------------------------------------------
 
-console.log('--- phase 15: end-to-end encryption ---\n')
+console.log('--- phase 15: the account envelope ---\n')
 
-const aliceCookie = await login(ALICE.username, ALICE.password)
-const bobCookie = await login(BOB.username, BOB.password)
-const aliceId: string = (await api('/api/auth/me', { cookie: aliceCookie })).body.user.id
-const bobId: string = (await api('/api/auth/me', { cookie: bobCookie })).body.user.id
+// Every sign-in below spends a slot of the per-IP login window — twice over,
+// because `signIn` tries the derived credential and then the plaintext one the
+// way the app does. Cleared at both ends so this run neither inherits nor
+// leaves a lockout.
+d1Execute('DELETE FROM login_attempts;')
+
+const alice = await makeAccount(ALICE)
+const bob = await makeAccount(BOB)
 
 console.log('— the directory')
 
-// A clean directory for both accounts, because the Durable Object now refuses
-// an envelope that misses a device either participant has registered — see the
-// stale-directory block below. Sixteen rows left behind by previous runs would
-// make every send in this file fail for a reason that has nothing to do with
-// the code, and encrypting to a hand-picked subset (which this test used to do)
-// is no longer a thing a real client can do.
-d1Query(
-  `DELETE FROM devices WHERE user_id IN (${sqlString(aliceId)}, ${sqlString(bobId)})`,
-)
-
-// Two browsers for alice, one for bob. Everything below hangs off this.
-const alicePhone = await makeDevice()
-const aliceDesktop = await makeDevice()
-const bobPhone = await makeDevice()
-
-check('registering a device is accepted', (await register(aliceCookie, alicePhone)).status === 200)
-await register(aliceCookie, aliceDesktop)
-await register(bobCookie, bobPhone)
-
-const aliceDirectory = await api(`/api/users/${aliceId}/devices`, { cookie: bobCookie })
+const aliceKey = await api(`/api/users/${alice.id}/key`, { cookie: bob.cookie })
+check('bob reads alice’s account key', aliceKey.body?.public_key === alice.publicKey, aliceKey.body)
 check(
-  "bob reads alice's devices, sorted by id",
-  aliceDirectory.body.devices.length >= 2 &&
-    aliceDirectory.body.devices.every((d: any, i: number, all: any[]) => i === 0 || all[i - 1].id <= d.id),
-  aliceDirectory.body.devices.map((d: any) => d.id),
+  'it is one key, not a list of devices',
+  typeof aliceKey.body?.public_key === 'string' && !('devices' in (aliceKey.body ?? {})),
+  aliceKey.body,
 )
-
-check(
-  'the directory needs a session',
-  (await api(`/api/users/${aliceId}/devices`)).status === 401,
-)
+check('the directory needs a session', (await api(`/api/users/${alice.id}/key`)).status === 401)
 check(
   'the directory refuses an id that is not an account',
-  (await api(`/api/users/does-not-exist/devices`, { cookie: bobCookie })).status === 404,
+  (await api('/api/users/does-not-exist/key', { cookie: bob.cookie })).status === 404,
 )
 check(
-  "a device id belonging to somebody else cannot be claimed",
-  (await register(bobCookie, alicePhone)).status === 409,
+  'a second key cannot be published over the first',
+  (
+    await api('/api/account/key', {
+      cookie: alice.cookie,
+      method: 'PUT',
+      body: JSON.stringify({
+        public_key: (await makeKeypair()).publicKey,
+        wrapped: b64u(crypto.getRandomValues(new Uint8Array(160))),
+        iv: b64u(crypto.getRandomValues(new Uint8Array(12))),
+      }),
+    })
+  ).status === 409,
 )
 
-console.log('\n— a message only the right devices can read')
+console.log('\n— a message only the two accounts can read')
 
 const resolved = await api('/api/conversations/resolve', {
-  cookie: bobCookie,
+  cookie: bob.cookie,
   method: 'POST',
-  body: JSON.stringify({ user_id: aliceId }),
+  body: JSON.stringify({ user_id: alice.id }),
 })
 const conversationId: string = resolved.body.conversation_id
 
-// Every device both sides have registered, which is what a real client sends
-// to: `seal` in app/src/hooks/useConversation.ts passes the peer's directory
-// plus its own, and the Durable Object refuses anything less.
-const bobDirectory = await api(`/api/users/${bobId}/devices`, { cookie: aliceCookie })
-const recipients = [...aliceDirectory.body.devices, ...bobDirectory.body.devices].map(
-  (d: any) => ({ id: d.id, public_key: d.public_key }),
-)
-check('the directory returned all three of this run\'s devices', recipients.length === 3, recipients.length)
-const secret = `segredo-${Date.now().toString(36)}`
-const sealed = await seal(bobPhone, recipients, { t: secret })
-
-const bobWs = await connect(bobCookie, conversationId, aliceId)
+const secret = `segredo-${STAMP}`
 const clientId = crypto.randomUUID()
+const context: Context = { conversationId, senderId: bob.id, clientId }
+const sealed = await seal(bob, { id: alice.id, publicKey: alice.publicKey }, context, { t: secret })
+
+check('the envelope is v3', sealed.enc.v === 3)
+check('it names exactly two accounts', Object.keys(sealed.enc.keys).length === 2, sealed.enc.keys)
+check(
+  'and they are the two participants',
+  Object.keys(sealed.enc.keys).sort().join() === [alice.id, bob.id].sort().join(),
+  Object.keys(sealed.enc.keys),
+)
+check('there is no sender_device', !('sender_device' in sealed.enc))
+
+const bobWs = await connect(bob.cookie, conversationId, alice.id)
 const echoed = waitFor<any>(bobWs, (e) => e.type === 'message' && e.client_id === clientId, 'echo')
 bobWs.send(
   JSON.stringify({
@@ -374,34 +404,52 @@ const echo = await echoed
 bobWs.close()
 
 check('the encrypted message is accepted and echoed', echo.type === 'message', echo?.error)
-check('the echo carries the envelope back untouched', echo.enc?.sender_device === bobPhone.id, echo.enc)
+check('the echo carries the envelope back untouched', echo.enc?.v === 3, echo.enc)
 check(
   'the body on the wire is not the plaintext',
   typeof echo.body === 'string' && !echo.body.includes(secret) && echo.body !== secret,
 )
 
-const openedByPhone = await open(alicePhone, bobPhone.publicKey, echo.body, echo.enc)
-const openedByDesktop = await open(aliceDesktop, bobPhone.publicKey, echo.body, echo.enc)
-const openedBySender = await open(bobPhone, bobPhone.publicKey, echo.body, echo.enc)
-check("alice's phone opens it", openedByPhone?.t === secret, openedByPhone)
-check("alice's desktop opens it too", openedByDesktop?.t === secret, openedByDesktop)
-check('the sender can read its own message back', openedBySender?.t === secret, openedBySender)
-
-const stranger = await makeDevice()
 check(
-  'a device registered afterwards cannot open it (by design)',
-  (await open(stranger, bobPhone.publicKey, echo.body, echo.enc)) === null,
+  'the recipient opens it',
+  (await open(alice, bob.publicKey, context, echo.body, echo.enc))?.t === secret,
+)
+check(
+  'the sender reads its own message back',
+  (await open(bob, bob.publicKey, context, echo.body, echo.enc))?.t === secret,
 )
 
-// The wrap is bound to the pair, so alice's key against the wrong sender fails.
+const stranger: Account = { ...(await makeKeypair()), id: crypto.randomUUID(), cookie: '' }
+check(
+  'an account the envelope does not name cannot open it',
+  (await open(stranger, bob.publicKey, context, echo.body, echo.enc)) === null,
+)
 check(
   'the wrapped key does not open against the wrong sender key',
-  (await open(alicePhone, aliceDesktop.publicKey, echo.body, echo.enc)) === null,
+  (await open(alice, stranger.publicKey, context, echo.body, echo.enc)) === null,
+)
+
+// The binding, which is the only thing stopping the server relocating a
+// message: the body authenticates under the conversation, the sender and this
+// one message id, and none of the three is inside the envelope.
+check(
+  'an envelope moved to another conversation does not open',
+  (await open(alice, bob.publicKey, { ...context, conversationId: '0'.repeat(32) }, echo.body, echo.enc)) ===
+    null,
+)
+check(
+  'an envelope re-attributed to another sender does not open',
+  (await open(alice, bob.publicKey, { ...context, senderId: alice.id }, echo.body, echo.enc)) === null,
+)
+check(
+  'an envelope replayed as another message does not open',
+  (await open(alice, bob.publicKey, { ...context, clientId: crypto.randomUUID() }, echo.body, echo.enc)) ===
+    null,
 )
 
 console.log('\n— the server holds nothing readable')
 
-const aliceWs = await connect(aliceCookie, conversationId, bobId)
+const aliceWs = await connect(alice.cookie, conversationId, bob.id)
 const history = await waitFor<any>(aliceWs, (e) => e.type === 'history', 'history')
 aliceWs.close()
 const stored = history.messages.find((m: any) => m.client_id === clientId)
@@ -411,36 +459,31 @@ check(
   stored !== undefined && !JSON.stringify(stored).includes(secret),
 )
 
-const mirrored = d1Query<{ n: number }>(
-  `SELECT COUNT(*) AS n FROM conversations WHERE id = '${conversationId}'`,
-)
-check('D1 still tracks the conversation', (mirrored[0]?.n ?? 0) === 1)
-
 console.log('\n— an attachment the bucket cannot read either')
+
+const picture = enc.encode(`imagem-secreta-${STAMP}`)
+const mediaContentKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
+  'encrypt',
+  'decrypt',
+])
+const mediaIv = crypto.getRandomValues(new Uint8Array(12))
+const sealedBytes = new Uint8Array(
+  await crypto.subtle.encrypt({ name: 'AES-GCM', iv: mediaIv }, mediaContentKey, picture),
+)
 
 check(
   'an encrypted presign without a kind is refused',
   (
     await api('/api/media/upload-url', {
-      cookie: bobCookie,
+      cookie: bob.cookie,
       method: 'POST',
       body: JSON.stringify({ mime: 'application/octet-stream', size: 1024 }),
     })
   ).status === 400,
 )
 
-const picture = enc.encode(`imagem-secreta-${Date.now().toString(36)}`)
-const mediaKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
-  'encrypt',
-  'decrypt',
-])
-const mediaIv = crypto.getRandomValues(new Uint8Array(12))
-const sealedBytes = new Uint8Array(
-  await crypto.subtle.encrypt({ name: 'AES-GCM', iv: mediaIv }, mediaKey, picture),
-)
-
 const presign = await api('/api/media/upload-url', {
-  cookie: bobCookie,
+  cookie: bob.cookie,
   method: 'POST',
   body: JSON.stringify({
     mime: 'application/octet-stream',
@@ -458,42 +501,20 @@ const put = await fetch(presign.body.upload_url, {
 })
 check('the ciphertext uploads to the bucket', put.ok, put.status)
 
-// The message that references it carries the same content key, wrapped, plus
+// The message that references it carries the *same* content key, wrapped, plus
 // the object's IV — which is the only reason the recipient can open the bytes.
-const rawMediaKey = await crypto.subtle.exportKey('raw', mediaKey)
-const mediaEnvelope: Envelope = { ...(await seal(bobPhone, recipients, { m: 'image/webp' })).enc }
-{
-  // Re-wrap the *media* content key rather than a fresh one, so the message and
-  // its object open together.
-  const keys: Envelope['keys'] = {}
-  for (const device of recipients) {
-    const wrapKey = await wrappingKey(
-      bobPhone.keys.privateKey,
-      await importPublic(device.public_key),
-      bobPhone.id,
-      device.id,
-    )
-    const wrapIv = crypto.getRandomValues(new Uint8Array(12))
-    keys[device.id] = {
-      iv: b64u(wrapIv),
-      ct: b64u(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, wrapKey, rawMediaKey)),
-    }
-  }
-  mediaEnvelope.keys = keys
-  mediaEnvelope.media_iv = b64u(mediaIv)
-}
-const bodyIv = crypto.getRandomValues(new Uint8Array(12))
-mediaEnvelope.iv = b64u(bodyIv)
-const mediaBody = b64u(
-  await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: bodyIv },
-    mediaKey,
-    enc.encode(JSON.stringify({ m: 'image/webp' })),
-  ),
+const mediaClientId = crypto.randomUUID()
+const mediaContext: Context = { conversationId, senderId: bob.id, clientId: mediaClientId }
+const mediaSealed = await seal(
+  bob,
+  { id: alice.id, publicKey: alice.publicKey },
+  mediaContext,
+  { m: 'image/webp' },
+  mediaContentKey,
+  mediaIv,
 )
 
-const mediaWs = await connect(bobCookie, conversationId, aliceId)
-const mediaClientId = crypto.randomUUID()
+const mediaWs = await connect(bob.cookie, conversationId, alice.id)
 const mediaEchoed = waitFor<any>(
   mediaWs,
   (e) => e.type === 'message' && e.client_id === mediaClientId,
@@ -504,9 +525,9 @@ mediaWs.send(
     type: 'send_message',
     client_id: mediaClientId,
     msg_type: 'image',
-    body: mediaBody,
+    body: mediaSealed.body,
     media_key: presign.body.key,
-    enc: mediaEnvelope,
+    enc: mediaSealed.enc,
   }),
 )
 const mediaEcho = await mediaEchoed
@@ -515,7 +536,7 @@ check('the media message is accepted', mediaEcho.type === 'message', mediaEcho?.
 check('and carries the object IV', typeof mediaEcho.enc?.media_iv === 'string')
 
 const fetched = await fetch(`${API}/api/media/${presign.body.key}`, {
-  headers: { Cookie: `session=${aliceCookie}` },
+  headers: { Cookie: alice.cookie },
 })
 const served = new Uint8Array(await fetched.arrayBuffer())
 check('alice may read the object (she is a participant)', fetched.status === 200, fetched.status)
@@ -525,34 +546,21 @@ check(
     Buffer.from(served).equals(Buffer.from(sealedBytes)),
 )
 
-const openedMedia = await open(alicePhone, bobPhone.publicKey, mediaEcho.body, mediaEcho.enc)
-check('alice opens the message and learns the real mime', openedMedia?.m === 'image/webp', openedMedia)
+const openedMedia = await openWithKey(
+  alice,
+  bob.publicKey,
+  mediaContext,
+  mediaEcho.body,
+  mediaEcho.enc,
+)
+check('alice opens the message and learns the real mime', openedMedia?.payload.m === 'image/webp', openedMedia?.payload)
 
 // And the same key opens the object, which is the whole point of reusing it.
 {
-  const wrapped = mediaEcho.enc.keys[alicePhone.id]
-  const wrapKey = await wrappingKey(
-    alicePhone.keys.privateKey,
-    await importPublic(bobPhone.publicKey),
-    alicePhone.id,
-    mediaEcho.enc.sender_device,
-  )
-  const raw = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: unb64u(wrapped.iv) },
-    wrapKey,
-    unb64u(wrapped.ct),
-  )
-  const contentKey = await crypto.subtle.importKey(
-    'raw',
-    raw,
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['decrypt'],
-  )
   const plain = new Uint8Array(
     await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: unb64u(mediaEcho.enc.media_iv) },
-      contentKey,
+      openedMedia!.contentKey,
       served,
     ),
   )
@@ -564,7 +572,7 @@ check('alice opens the message and learns the real mime', openedMedia?.m === 'im
 
 console.log('\n— the envelope has to be well formed')
 
-const badWs = await connect(bobCookie, conversationId, aliceId)
+const badWs = await connect(bob.cookie, conversationId, alice.id)
 const badId = crypto.randomUUID()
 const refused = waitFor<any>(badWs, (e) => e.type === 'error', 'error frame')
 badWs.send(
@@ -574,7 +582,7 @@ badWs.send(
     msg_type: 'text',
     body: sealed.body,
     // The sender left itself out, which the DO can check without a key.
-    enc: { ...sealed.enc, keys: { [alicePhone.id]: sealed.enc.keys[alicePhone.id] } },
+    enc: { ...sealed.enc, keys: { [alice.id]: sealed.enc.keys[alice.id] } },
   }),
 )
 const refusal = await refused
@@ -589,35 +597,24 @@ console.log('\n— the push preview is read back, not carried')
 // everything decryption needs — the envelope, the body, and the sender's public
 // key — because a field missing there shows up as "notifications are silently
 // always generic", which is exactly the kind of failure nobody reports.
-const list = await api('/api/conversations', { cookie: aliceCookie })
+const list = await api('/api/conversations', { cookie: alice.cookie })
 const listed = list.body.conversations.find((c: any) => c.id === conversationId)
 check('the conversation list carries the last message', Boolean(listed?.last_message), listed?.id)
 check('with its envelope intact', Boolean(listed?.last_message?.enc?.keys), listed?.last_message?.enc)
 check(
-  "and the peer's device keys, which is what the ECDH needs",
-  (listed?.peer_devices ?? []).some((d: any) => d.id === bobPhone.id),
-  (listed?.peer_devices ?? []).map((d: any) => d.id),
+  "and the peer's account key, which is what the ECDH needs",
+  listed?.peer_account_key === bob.publicKey,
+  listed?.peer_account_key,
 )
 
-// The device id is recomputed from the public key in that payload, which is the
-// only form the service worker has it in.
-const recomputedSenderId = await (async () => {
-  const source = listed.peer_devices.find((d: any) => d.id === listed.last_message.enc.sender_device)
-  const digest = await crypto.subtle.digest('SHA-256', unb64u(source.public_key))
-  return Buffer.from(new Uint8Array(digest).slice(0, 16)).toString('hex')
-})()
-check(
-  'the sender device id can be recomputed from its public key alone',
-  recomputedSenderId === listed.last_message.enc.sender_device,
-  { recomputedSenderId },
-)
-
-// Whatever the newest message happens to be by now — this file has sent several
-// — the point is that the payload the worker will hand the service worker is
-// openable with nothing but what is in it.
 const preview = await open(
-  alicePhone,
-  bobPhone.publicKey,
+  alice,
+  listed.peer_account_key,
+  {
+    conversationId,
+    senderId: listed.last_message.sender_id,
+    clientId: listed.last_message.client_id,
+  },
   listed.last_message.body,
   listed.last_message.enc,
 )
@@ -628,161 +625,13 @@ check(
   preview,
 )
 
-console.log('\n— a device that registered mid-conversation is not left out')
-
-// The race this closes: a browser seals against the directory it cached, the
-// peer signs in somewhere new a moment later, and the message lands stored but
-// permanently unopenable on that new device — no key was ever wrapped for it.
-// The Durable Object is the only place that sees both the envelope and the
-// current directory, so it is what notices.
-const staleWs = await connect(bobCookie, conversationId, aliceId)
-const staleId = crypto.randomUUID()
-// `recipients` is the directory as it stood before the tablet below exists —
-// exactly the copy a browser would still be holding from its last refresh.
-const staleSealed = await seal(bobPhone, recipients, { t: 'selada antes do aparelho novo' })
-
-// Alice opens the app somewhere new, after bob already addressed the message.
-const aliceTablet = await makeDevice()
-await register(aliceCookie, aliceTablet)
-
-const staleResult = waitFor<any>(
-  staleWs,
-  (e) => (e.type === 'message' && e.client_id === staleId) || e.type === 'error',
-  'stale directory result',
-)
-staleWs.send(
-  JSON.stringify({
-    type: 'send_message',
-    client_id: staleId,
-    msg_type: 'text',
-    body: staleSealed.body,
-    enc: staleSealed.enc,
-  }),
-)
-const stale = await staleResult
-check('an envelope that misses a registered device is refused', stale.error === 'stale_directory', stale)
-check('and the refusal names the message, so the client knows what to seal again', stale.client_id === staleId, stale)
-
-// What the client does next: refresh, address it again, same client id.
-const refreshed = (await api(`/api/users/${aliceId}/devices`, { cookie: bobCookie })).body.devices
-check(
-  'the refreshed directory carries the new device',
-  refreshed.some((d: any) => d.id === aliceTablet.id),
-  refreshed.map((d: any) => d.id),
-)
-const resealed = await seal(
-  bobPhone,
-  [...refreshed, ...bobDirectory.body.devices].map((d: any) => ({
-    id: d.id,
-    public_key: d.public_key,
-  })),
-  { t: 'selada de novo' },
-)
-const resealedResult = waitFor<any>(
-  staleWs,
-  (e) => (e.type === 'message' && e.client_id === staleId) || e.type === 'error',
-  'resealed result',
-)
-staleWs.send(
-  JSON.stringify({
-    type: 'send_message',
-    client_id: staleId,
-    msg_type: 'text',
-    body: resealed.body,
-    enc: resealed.enc,
-  }),
-)
-const resent = await resealedResult
-check('the re-sealed message is accepted under the same client id', resent.type === 'message', resent)
-check(
-  'and it is addressed to the device that was missing',
-  resent.enc && aliceTablet.id in resent.enc.keys,
-  resent.enc && Object.keys(resent.enc.keys),
-)
-staleWs.close()
-
-console.log('\n— history handed to a device of your own account')
-
-// A browser signed into after the fact holds a key no envelope names, and no
-// amount of server help fixes that: the content keys exist only wrapped. So an
-// existing device of the same account re-wraps them under *its* pair and says
-// so with `via` — which is the whole reason that field exists, because it
-// cannot produce the wrap the original sender would have written.
-const aliceLaptop = await makeDevice()
-await register(aliceCookie, aliceLaptop)
-
-// It cannot read the message from earlier in this run: no key was ever wrapped
-// for it, which is the state this whole exchange exists to leave behind.
-check(
-  'the new device is not named in the envelope at all',
-  !(aliceLaptop.id in echo.enc.keys),
-  Object.keys(echo.enc.keys),
-)
-
-// Alice's phone opens it, re-wraps the content key for the laptop, and hands it
-// over. `contentKey` here is what `open` recovered — the same key the sender
-// generated, never seen by the server in the clear.
-const opened = await openWithKey(alicePhone, bobPhone.publicKey, echo.body, echo.enc)
-const handover = await rewrap(alicePhone, aliceLaptop, opened!.contentKey)
-
-const handoverWs = await connect(aliceCookie, conversationId, bobId)
-const shared = waitFor<any>(handoverWs, (e) => e.type === 'keys_shared', 'keys_shared')
-handoverWs.send(
-  JSON.stringify({
-    type: 'share_keys',
-    device_id: aliceLaptop.id,
-    keys: { [echo.id]: handover },
-  }),
-)
-const sharedFrame = await shared
-check('the durable object merges the handed-over key', sharedFrame.count === 1, sharedFrame)
-
-const refreshedHistory = await waitFor<any>(handoverWs, (e) => e.type === 'history', 'history after share')
-const updated = refreshedHistory.messages.find((m: any) => m.id === echo.id)
-check('and hands the envelope back with the new entry in it', Boolean(updated?.enc?.keys?.[aliceLaptop.id]), updated?.enc && Object.keys(updated.enc.keys))
-check(
-  'the entry names the device that wrapped it, not the sender',
-  updated?.enc?.keys?.[aliceLaptop.id]?.via === alicePhone.id,
-  updated?.enc?.keys?.[aliceLaptop.id],
-)
-
-// The point of all of it: the laptop reads a message that predates it, by
-// running ECDH against the phone rather than against bob.
-const byLaptop = await open(aliceLaptop, alicePhone.publicKey, updated.body, updated.enc)
-check('and the new device can now open the message', byLaptop?.t === secret, byLaptop)
-
-// The handover moved who can read it and nothing else: the body is still bound
-// to bob and to bob's device, so it still says it came from bob.
-check(
-  'the envelope still names bob as the sender',
-  updated.enc.sender_device === bobPhone.id,
-  updated.enc.sender_device,
-)
-
-// A device belonging to somebody else is refused: this object will not be the
-// tool that grants a stranger read access.
-const outsiderRefusal = waitFor<any>(handoverWs, (e) => e.type === 'error', 'share refusal')
-handoverWs.send(
-  JSON.stringify({ type: 'share_keys', device_id: bobPhone.id, keys: { [echo.id]: handover } }),
-)
-check(
-  "sharing to another account's device is refused",
-  (await outsiderRefusal).error === 'unknown_device',
-)
-handoverWs.close()
-
 // Both halves of the transition switch. Which one is in force is read off the
 // worker's answer rather than off this process's environment: `E2EE_REQUIRED`
 // reaches the Durable Object through .dev.vars or wrangler.jsonc, and an env var
 // exported in front of `npm run smoke:phase15` changes nothing about what is
 // running. Asking, instead of assuming, is what stops this from asserting the
 // wrong half and reporting it as a failure of the code.
-//
-//   E2EE_REQUIRED=false — plaintext still works, which is what lets a fleet
-//                         upgrade one browser at a time, and what the smoke
-//                         tests that predate encryption rely on;
-//   E2EE_REQUIRED=true  — it does not, which is the deployed default.
-const plainWs = await connect(bobCookie, conversationId, aliceId)
+const plainWs = await connect(bob.cookie, conversationId, alice.id)
 const plainId = crypto.randomUUID()
 const plainResult = waitFor<any>(
   plainWs,
@@ -809,12 +658,9 @@ if (required) {
 
 console.log('\n— the safety number')
 
-/** Mirrors `safetyNumber` in app/src/lib/e2ee.ts. */
-async function safetyNumber(a: { public_key: string }[], b: { public_key: string }[]) {
-  const fingerprint = (devices: { public_key: string }[]) =>
-    devices.map((d) => d.public_key).sort().join('|')
-  const material = [fingerprint(a), fingerprint(b)].sort().join('||')
-  const digest = await crypto.subtle.digest('SHA-256', enc.encode(material))
+/** Mirrors `safetyNumber` in app/src/lib/e2ee.ts: two account keys, sorted. */
+async function safetyNumber(a: string, b: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode([a, b].sort().join('||')))
   const digits = [...new Uint8Array(digest)]
     .map((byte) => byte.toString().padStart(3, '0'))
     .join('')
@@ -822,19 +668,34 @@ async function safetyNumber(a: { public_key: string }[], b: { public_key: string
   return (digits.match(/.{1,5}/g) ?? []).join(' ')
 }
 
-const aliceSide = [
-  { public_key: alicePhone.publicKey },
-  { public_key: aliceDesktop.publicKey },
-]
-const bobSide = [{ public_key: bobPhone.publicKey }]
-const fromAlice = await safetyNumber(aliceSide, bobSide)
-const fromBob = await safetyNumber(bobSide, aliceSide)
+const fromAlice = await safetyNumber(alice.publicKey, bob.publicKey)
+const fromBob = await safetyNumber(bob.publicKey, alice.publicKey)
 check('both sides compute the same number, in either order', fromAlice === fromBob)
 check('it is 12 groups of 5 digits', /^(\d{5} ){11}\d{5}$/.test(fromAlice), fromAlice)
+check('a swapped key changes it', (await safetyNumber(stranger.publicKey, bob.publicKey)) !== fromAlice)
+// The property the device directory could not have: the number depends on the
+// two keys and on nothing else, so opening a third browser does not move it.
 check(
-  'a swapped device key changes it',
-  (await safetyNumber([{ public_key: stranger.publicKey }], bobSide)) !== fromAlice,
+  'and nothing else changes it — no device set to grow',
+  (await safetyNumber(alice.publicKey, bob.publicKey)) === fromAlice,
 )
+
+// Leave the instance as it was found.
+//
+// Through the owner console rather than a DELETE against `users`: these two
+// accounts now own a conversation and a bucket object, and the foreign keys
+// say so. `deleteAccount` is the path that unwinds all of it — the same one an
+// expiring guest takes (lib/accounts.ts) — and using it here means the cleanup
+// is exercising a real code path rather than working around one.
+const ownerCookie = await signIn(API, OWNER.username, OWNER.password)
+if (ownerCookie) {
+  for (const account of [alice, bob]) {
+    await api(`/api/admin/users/${account.id}`, { cookie: ownerCookie, method: 'DELETE' })
+  }
+} else {
+  console.log('  note: no owner account, leaving this run\'s two test accounts behind')
+}
+d1Execute('DELETE FROM login_attempts;')
 
 console.log(failures === 0 ? '\nphase 15 smoke: all green' : `\nphase 15 smoke: ${failures} failure(s)`)
 process.exit(failures === 0 ? 0 : 1)

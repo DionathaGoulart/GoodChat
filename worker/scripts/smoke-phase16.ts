@@ -22,7 +22,8 @@
 //
 // What is still not covered, named here so nobody reads this file as more than
 // it is: the React wiring in hooks/useConversation.ts, and the IndexedDB
-// storage in lib/deviceKeys.ts. Those need a browser.
+// storage in lib/accountKeys.ts. Those need a browser, which is what the
+// plan's last phase is for.
 //
 // Usage: npm run smoke:phase16   (no server needed — this is pure crypto)
 
@@ -33,14 +34,12 @@ import {
   chunkCount,
   decryptChunks,
   encryptChunked,
+  keyFingerprint,
   openMessage,
   plaintextLength,
   randomChunkPrefix,
-  rewrapFor,
   safetyNumber,
   sealMessage,
-  unwrapsVia,
-  devicesFingerprint,
 } from '../../app/src/lib/e2ee.ts'
 
 let failures = 0
@@ -65,21 +64,19 @@ function unb64u(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, 'base64url'))
 }
 
-/** The shape lib/deviceKeys.ts stores, built here without IndexedDB. */
-async function makeIdentity() {
+/** The shape lib/accountKeys.ts stores, built here without IndexedDB. */
+async function makeIdentity(accountId: string) {
   const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, [
     'deriveBits',
   ])
   const raw = await crypto.subtle.exportKey('raw', pair.publicKey)
   const digest = await crypto.subtle.digest('SHA-256', raw)
-  const id = Buffer.from(new Uint8Array(digest).slice(0, 16)).toString('hex')
   return {
-    id,
+    accountId,
+    id: Buffer.from(new Uint8Array(digest).slice(0, 16)).toString('hex'),
     publicKey: b64u(raw),
     privateKey: pair.privateKey,
     createdAt: Date.now(),
-    /** How the directory publishes it. */
-    asDevice: { id, public_key: b64u(raw), created_at: 0, last_seen_at: 0 },
   }
 }
 
@@ -118,9 +115,9 @@ async function wrappingKey(privateKey: CryptoKey, peerPublic: CryptoKey, a: stri
  * sides of the comparison the same code, which is the one thing this file
  * exists to avoid.
  */
-function referenceAad(context: Context, senderDevice: string): Uint8Array {
+function referenceAad(context: Context): Uint8Array {
   return enc.encode(
-    `goodchat-v2|${context.conversationId}|${context.senderId}|${senderDevice}|${context.clientId}`,
+    `goodchat-v3|${context.conversationId}|${context.senderId}|${context.clientId}`,
   )
 }
 
@@ -130,69 +127,68 @@ interface Context {
   clientId: string
 }
 
+type Identity = Awaited<ReturnType<typeof makeIdentity>>
+
 /** Reference seal — what the app's `openMessage` has to be able to read. */
 async function referenceSeal(
-  sender: Awaited<ReturnType<typeof makeIdentity>>,
+  sender: Identity,
   context: Context,
-  recipients: { id: string; public_key: string }[],
+  peer: { accountId: string; publicKey: string },
   payload: Record<string, string>,
-  /** 1 seals the way this format did before the binding — see the v1 check. */
-  version: 1 | 2 = 2,
+  contentKey?: CryptoKey,
+  mediaIv?: Uint8Array,
 ) {
-  const contentKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
-    'encrypt',
-    'decrypt',
-  ])
+  const key =
+    contentKey ??
+    (await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
+      'encrypt',
+      'decrypt',
+    ]))
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const body = b64u(
     await crypto.subtle.encrypt(
-      {
-        name: 'AES-GCM',
-        iv,
-        ...(version === 1 ? {} : { additionalData: referenceAad(context, sender.id) }),
-      },
-      contentKey,
+      { name: 'AES-GCM', iv, additionalData: referenceAad(context) },
+      key,
       enc.encode(JSON.stringify(payload)),
     ),
   )
-  const raw = await crypto.subtle.exportKey('raw', contentKey)
+  const raw = await crypto.subtle.exportKey('raw', key)
   const keys: Record<string, { iv: string; ct: string }> = {}
-  for (const device of recipients) {
+  for (const target of [peer, { accountId: sender.accountId, publicKey: sender.publicKey }]) {
     const wrapKey = await wrappingKey(
       sender.privateKey,
-      await importPublic(device.public_key),
-      sender.id,
-      device.id,
+      await importPublic(target.publicKey),
+      sender.accountId,
+      target.accountId,
     )
     const wrapIv = crypto.getRandomValues(new Uint8Array(12))
-    keys[device.id] = {
+    keys[target.accountId] = {
       iv: b64u(wrapIv),
       ct: b64u(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, wrapKey, raw)),
     }
   }
-  return { body, enc: { v: version, iv: b64u(iv), sender_device: sender.id, keys } }
+  return { body, enc: { v: 3 as const, iv: b64u(iv), keys, ...(mediaIv ? { media_iv: b64u(mediaIv) } : {}) } }
 }
 
 /** Reference open — what the app's `sealMessage` has to produce. */
 async function referenceOpen(
-  device: Awaited<ReturnType<typeof makeIdentity>>,
+  reader: Identity,
   context: Context,
   senderPublicKey: string,
   body: string,
   envelope: any,
 ): Promise<Record<string, string> | null> {
-  const wrapped = envelope.keys[device.id]
+  const wrapped = envelope.keys[reader.accountId]
   if (!wrapped) return null
   try {
-    // `via` when the entry was added by another device of this account handing
-    // over history, `sender_device` otherwise. Both sides of the ECDH have to
-    // agree which pair they are deriving for, so the salt follows the same
-    // value the public key came from.
+    // Both sides of the ECDH have to agree which pair they are deriving for,
+    // and there is only one pair now: this account and the sending one. The
+    // `via` indirection the device model needed has no counterpart here.
     const wrapKey = await wrappingKey(
-      device.privateKey,
+      reader.privateKey,
       await importPublic(senderPublicKey),
-      device.id,
-      wrapped.via ?? envelope.sender_device,
+      reader.accountId,
+      context.senderId,
     )
     const raw = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: unb64u(wrapped.iv) },
@@ -207,13 +203,7 @@ async function referenceOpen(
       ['decrypt'],
     )
     const plain = await crypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: unb64u(envelope.iv),
-        ...(envelope.v === 1
-          ? {}
-          : { additionalData: referenceAad(context, envelope.sender_device) }),
-      },
+      { name: 'AES-GCM', iv: unb64u(envelope.iv), additionalData: referenceAad(context) },
       contentKey,
       unb64u(body),
     )
@@ -227,15 +217,17 @@ async function referenceOpen(
 
 console.log('--- phase 16: the app\'s own crypto, executed ---\n')
 
-const alicePhone = await makeIdentity()
-const aliceDesktop = await makeIdentity()
-const bobPhone = await makeIdentity()
-
-// The three values a v2 body is bound to, in the shapes the real ones have: a
-// conversation id is hex, an account id is a UUID. The device id comes out of
-// the envelope, so it is not named here.
+// The three values a v3 body is bound to, in the shapes the real ones have: a
+// conversation id is hex, an account id is a UUID.
 const ALICE = 'a1000000-0000-4000-8000-0000000a11ce'
 const BOB = 'b1000000-0000-4000-8000-00000000b0b0'
+
+// One key per account, which is the whole point: `aliceElsewhere` is the same
+// account signed into a second browser, and it holds the *same* key rather than
+// one of its own. There is no per-browser identity left to make.
+const alice = await makeIdentity(ALICE)
+const aliceElsewhere = { ...alice }
+const bob = await makeIdentity(BOB)
 const THREAD = '4d1f8c3b9a2e5701'
 const OTHER_THREAD = '9e07a5c2b3f81d46'
 const MSG = 'e6b1f0d4-0000-4000-8000-000000000001'
@@ -247,37 +239,42 @@ console.log('— the app opens what an independent implementation sealed')
 
 const secret = `cruzado-${Date.now().toString(36)}`
 const fromReference = await referenceSeal(
-  bobPhone,
+  bob,
   fromBob,
-  [alicePhone.asDevice, aliceDesktop.asDevice, bobPhone.asDevice],
+  { accountId: ALICE, publicKey: alice.publicKey },
   { t: secret },
 )
+check('the reference seals two entries and no more', Object.keys(fromReference.enc.keys).length === 2)
 
 const openedByApp = await openMessage(
-  alicePhone as any,
+  alice as any,
   fromBob,
-  bobPhone.publicKey,
+  bob.publicKey,
   fromReference.body,
   fromReference.enc as any,
 )
 check("app's openMessage reads it", openedByApp?.payload.t === secret, openedByApp?.payload)
 
-const openedBySecondDevice = await openMessage(
-  aliceDesktop as any,
+// The property this whole change exists for: a second browser of the same
+// account opens it, without the envelope naming that browser and without
+// anybody handing anything over. It holds the same key, because the key belongs
+// to the person.
+const openedElsewhere = await openMessage(
+  aliceElsewhere as any,
   fromBob,
-  bobPhone.publicKey,
+  bob.publicKey,
   fromReference.body,
   fromReference.enc as any,
 )
-check("and so does the account's other device", openedBySecondDevice?.payload.t === secret)
+check('and so does the same account in another browser', openedElsewhere?.payload.t === secret)
 
-const outsider = await makeIdentity()
+const outsider = await makeIdentity('c1000000-0000-4000-8000-00000000cccc')
 check(
-  'a device not named in the envelope gets null, not a throw',
+  'an account not named in the envelope gets null, not a throw',
   (await openMessage(
     outsider as any,
     fromBob,
-    bobPhone.publicKey,
+    bob.publicKey,
     fromReference.body,
     fromReference.enc as any,
   )) === null,
@@ -285,9 +282,9 @@ check(
 check(
   'a tampered ciphertext gets null, not a throw',
   (await openMessage(
-    alicePhone as any,
+    alice as any,
     fromBob,
-    bobPhone.publicKey,
+    bob.publicKey,
     b64u(enc.encode('nao-e-ciphertext')),
     fromReference.enc as any,
   )) === null,
@@ -301,9 +298,9 @@ console.log('\n— the envelope is bound to where it was sealed')
 check(
   'the same envelope in another conversation does not open',
   (await openMessage(
-    alicePhone as any,
+    alice as any,
     { ...fromBob, conversationId: OTHER_THREAD },
-    bobPhone.publicKey,
+    bob.publicKey,
     fromReference.body,
     fromReference.enc as any,
   )) === null,
@@ -311,9 +308,9 @@ check(
 check(
   'nor does it when attributed to another account',
   (await openMessage(
-    alicePhone as any,
+    alice as any,
     { ...fromBob, senderId: ALICE },
-    bobPhone.publicKey,
+    bob.publicKey,
     fromReference.body,
     fromReference.enc as any,
   )) === null,
@@ -325,9 +322,9 @@ check(
 check(
   'nor does the same envelope served again as a different message',
   (await openMessage(
-    alicePhone as any,
+    alice as any,
     { ...fromBob, clientId: OTHER_MSG },
-    bobPhone.publicKey,
+    bob.publicKey,
     fromReference.body,
     fromReference.enc as any,
   )) === null,
@@ -335,16 +332,16 @@ check(
 check(
   'and the reference implementation agrees on all three',
   (await referenceOpen(
-    alicePhone,
+    alice,
     { ...fromBob, conversationId: OTHER_THREAD },
-    bobPhone.publicKey,
+    bob.publicKey,
     fromReference.body,
     fromReference.enc,
   )) === null &&
     (await referenceOpen(
-      alicePhone,
+      alice,
       { ...fromBob, clientId: OTHER_MSG },
-      bobPhone.publicKey,
+      bob.publicKey,
       fromReference.body,
       fromReference.enc,
     )) === null,
@@ -353,26 +350,20 @@ check(
   'the untouched context still opens it — the binding is not just breaking things',
   (
     await openMessage(
-      alicePhone as any,
+      alice as any,
       fromBob,
-      bobPhone.publicKey,
+      bob.publicKey,
       fromReference.body,
       fromReference.enc as any,
     )
   )?.payload.t === secret,
 )
 
-// The seven-day tail: a message sealed before this shipped carries no binding
-// and has to stay readable until retention removes it. It is also, necessarily,
-// still movable — which is the cost of not breaking a week of history, and ends
-// on its own.
-const legacy = await referenceSeal(bobPhone, fromBob, [alicePhone.asDevice], { t: secret }, 1)
-check('a v1 envelope is still opened', legacy.enc.v === 1)
-check(
-  'and it opens, because v1 was never bound to anything',
-  (await openMessage(alicePhone as any, fromBob, bobPhone.publicKey, legacy.body, legacy.enc as any))
-    ?.payload.t === secret,
-)
+// The seven-day tail used to be checked here: a v1 envelope, opened without a
+// binding. It is not, anymore, and deliberately — `openMessage` no longer knows
+// what a v1 or v2 envelope is. That path moved whole to lib/legacyEnvelope.ts,
+// which needs a device key this file has no reason to invent, and it is deleted
+// the week the last such message expires.
 
 console.log('\n— an independent implementation opens what the app sealed')
 
@@ -382,26 +373,27 @@ const contentKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 25
 ])
 const reply = `resposta-${Date.now().toString(36)}`
 const fromApp = await sealMessage(
-  alicePhone as any,
+  alice as any,
   fromAlice,
-  [bobPhone.asDevice, aliceDesktop.asDevice],
+  { accountId: BOB, publicKey: bob.publicKey },
   { t: reply },
   contentKey,
 )
-check('the app seals v2', fromApp.enc.v === 2, fromApp.enc.v)
+check('the app seals v3', fromApp.enc.v === 3, fromApp.enc.v)
 check(
   "the app's envelope names the sender among its recipients (the DO checks this)",
-  fromApp.enc.sender_device in fromApp.enc.keys,
+  ALICE in fromApp.enc.keys,
   Object.keys(fromApp.enc.keys),
 )
 check(
-  'and every recipient it was given',
-  [bobPhone.id, aliceDesktop.id].every((id) => id in fromApp.enc.keys),
+  'and the recipient, and nobody else',
+  Object.keys(fromApp.enc.keys).sort().join() === [ALICE, BOB].sort().join(),
+  Object.keys(fromApp.enc.keys),
 )
 const openedByReference = await referenceOpen(
-  bobPhone,
+  bob,
   fromAlice,
-  alicePhone.publicKey,
+  alice.publicKey,
   fromApp.body,
   fromApp.enc,
 )
@@ -410,9 +402,9 @@ check('the reference implementation reads it', openedByReference?.t === reply, o
 // The round trip that would hide a pair of cancelling mistakes if it were the
 // only assertion here — kept because it is also the one the app actually runs.
 const roundTrip = await openMessage(
-  bobPhone as any,
+  bob as any,
   fromAlice,
-  alicePhone.publicKey,
+  alice.publicKey,
   fromApp.body,
   fromApp.enc,
 )
@@ -426,18 +418,18 @@ const sealedPicture = new Uint8Array(
   await crypto.subtle.encrypt({ name: 'AES-GCM', iv: mediaIv }, contentKey, picture),
 )
 const mediaMessage = await sealMessage(
-  alicePhone as any,
+  alice as any,
   fromAlice,
-  [bobPhone.asDevice],
+  { accountId: BOB, publicKey: bob.publicKey },
   { m: 'image/webp' },
   contentKey,
   mediaIv,
 )
 check('the envelope carries the object IV', mediaMessage.enc.media_iv === b64u(mediaIv))
 const openedMedia = await openMessage(
-  bobPhone as any,
+  bob as any,
   fromAlice,
-  alicePhone.publicKey,
+  alice.publicKey,
   mediaMessage.body,
   mediaMessage.enc,
 )
@@ -459,86 +451,42 @@ check(
 check(
   'a media envelope in the wrong conversation never yields the key',
   (await openMessage(
-    bobPhone as any,
+    bob as any,
     { ...fromAlice, conversationId: OTHER_THREAD },
-    alicePhone.publicKey,
+    alice.publicKey,
     mediaMessage.body,
     mediaMessage.enc,
   )) === null,
 )
 
-console.log('\n— a content key handed to another device of the same account')
-
-// `rewrapFor` is the only place a content key is wrapped by somebody other than
-// the message's sender, so it is the only place `via` can be got wrong — and
-// getting it wrong reads as "the new browser still cannot see anything", which
-// looks like the feature simply not working rather than like a bug.
-const aliceLaptop = await makeIdentity()
-check(
-  'the laptop is not in the envelope the sender wrote',
-  !(aliceLaptop.id in fromReference.enc.keys),
-)
-
-const handover = await rewrapFor(alicePhone as any, aliceLaptop.asDevice, openedByApp!.contentKey)
-check('the handover names the device that wrapped it', handover.via === alicePhone.id, handover)
-
-const handedOver = {
-  ...fromReference.enc,
-  keys: { ...fromReference.enc.keys, [aliceLaptop.id]: handover },
-}
-check(
-  'unwrapsVia points the laptop at the phone, not at bob',
-  unwrapsVia(handedOver as any, aliceLaptop.id) === alicePhone.id,
-)
-const byLaptop = await openMessage(
-  aliceLaptop as any,
-  fromBob,
-  // The phone's key, because the phone is what wrapped it — running this
-  // against bob's key is exactly the mistake `via` exists to prevent.
-  alicePhone.publicKey,
-  fromReference.body,
-  handedOver as any,
-)
-check("the laptop opens a message that predates it", byLaptop?.payload.t === secret, byLaptop)
-check(
-  'and the reference implementation reads the same handover',
-  (await referenceOpen(aliceLaptop, fromBob, alicePhone.publicKey, fromReference.body, handedOver))
-    ?.t === secret,
-)
-check(
-  'the body is still bound to bob — a handover moves readers, not authorship',
-  handedOver.sender_device === bobPhone.id &&
-    (await openMessage(
-      aliceLaptop as any,
-      { ...fromBob, senderId: ALICE },
-      alicePhone.publicKey,
-      fromReference.body,
-      handedOver as any,
-    )) === null,
-)
-
 console.log('\n— the safety number, and the fingerprint behind the banner')
 
-const aliceSide = [alicePhone.asDevice, aliceDesktop.asDevice]
-const bobSide = [bobPhone.asDevice]
-const a = await safetyNumber(aliceSide, bobSide)
-const b = await safetyNumber(bobSide, aliceSide)
+// What used to sit above this was the handover: one device of an account
+// re-wrapping a content key for another, with `via` naming who did it. There is
+// nothing to hand over — every browser of an account holds the same key — so
+// `rewrapFor`, `unwrapsVia` and the `via` field are all gone, and this file
+// stopped needing to check the one thing about them that could go wrong.
+
+const a = await safetyNumber(alice.publicKey, bob.publicKey)
+const b = await safetyNumber(bob.publicKey, alice.publicKey)
 check('both sides compute the same number, in either order', a === b, { a, b })
 check('it is 12 groups of 5 digits', /^(\d{5} ){11}\d{5}$/.test(a), a)
+check('a different key changes it', (await safetyNumber(outsider.publicKey, bob.publicKey)) !== a)
+// The property the device directory could not have. It used to be derived from
+// both device *sets*, so it moved whenever either person opened a new browser —
+// often, innocently, and often enough that people learned to dismiss the banner
+// it raised. The same account in a second browser is the same key, so the same
+// number.
 check(
-  'adding a device changes it',
-  (await safetyNumber([...aliceSide, outsider.asDevice], bobSide)) !== a,
-)
-check(
-  'device order does not',
-  (await safetyNumber([aliceDesktop.asDevice, alicePhone.asDevice], bobSide)) === a,
+  'and the same account elsewhere computes the same number',
+  (await safetyNumber(aliceElsewhere.publicKey, bob.publicKey)) === a,
 )
 
-const before = await devicesFingerprint(aliceSide)
-check('the fingerprint is stable for the same set', (await devicesFingerprint(aliceSide)) === before)
+const before = await keyFingerprint(alice.publicKey)
+check('the fingerprint is stable for the same key', (await keyFingerprint(alice.publicKey)) === before)
 check(
-  'and moves when the set does — which is what raises the banner',
-  (await devicesFingerprint([...aliceSide, outsider.asDevice])) !== before,
+  'and moves when the key does — which is what raises the banner',
+  (await keyFingerprint(outsider.publicKey)) !== before,
 )
 
 console.log('\n— the service worker\'s copy of the derivation')
@@ -557,9 +505,9 @@ const swSource = await readFile(new URL('../../app/public/sw.js', import.meta.ur
 const PREVIEW_MSG = 'f00dcafe-0000-4000-8000-00000000feed'
 const previewContext: Context = { conversationId: THREAD, senderId: BOB, clientId: PREVIEW_MSG }
 const previewPayload = await sealMessage(
-  bobPhone as any,
+  bob as any,
   previewContext,
-  [alicePhone.asDevice],
+  { accountId: ALICE, publicKey: alice.publicKey },
   { t: secret },
   await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']),
 )
@@ -570,7 +518,7 @@ function conversationsResponse(overrides: Record<string, unknown> = {}) {
     conversations: [
       {
         id: THREAD,
-        peer_devices: [bobPhone.asDevice],
+        peer_account_key: bob.publicKey,
         last_message: {
           id: PREVIEW_MSG,
           client_id: PREVIEW_MSG,
@@ -588,12 +536,19 @@ let conversationsBody = conversationsResponse()
 /** Stands in for the bucket while the range tests run. */
 let mediaObject: { url: string; bytes: Uint8Array } | null = null
 
-/** The identity record lib/deviceKeys.ts stores, as IndexedDB would return it. */
+/**
+ * The record lib/accountKeys.ts stores, as IndexedDB would return it.
+ *
+ * `accountId` is in there rather than only being the key it is filed under,
+ * because this is exactly the reader that cannot see the key: the worker uses
+ * `getAll()`, which hands back values without them.
+ */
 const storedIdentity = {
-  id: alicePhone.id,
-  publicKey: alicePhone.publicKey,
-  privateKey: alicePhone.privateKey,
-  createdAt: alicePhone.createdAt,
+  accountId: alice.accountId,
+  id: alice.id,
+  publicKey: alice.publicKey,
+  privateKey: alice.privateKey,
+  createdAt: alice.createdAt,
 }
 
 function fakeRequest<T>(value: T) {
