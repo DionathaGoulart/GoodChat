@@ -194,7 +194,7 @@ check(
 // --- the sender cannot condemn its own message ----------------------------
 wsAlice.send({ type: 'read_receipt', ids: [echo.id] })
 wsBob.send({ type: 'typing' })
-await wsBob.nextNew('a round trip to let any wrong receipt land', (e) => e.type === 'typing')
+await wsAlice.nextNew('a round trip to let any wrong receipt land', (e) => e.type === 'typing')
 const selfRead = wsAlice.received.filter((e) => e.type === 'read_receipt')
 check(
   'a sender reporting its own message read changes nothing',
@@ -232,7 +232,9 @@ check(
   { after: read.expires_at, before: echo.expires_at },
 )
 // The reader's own connection is told too — its other tabs did not witness it.
-const onReader = await wsBob.nextNew(
+// `next`, not `nextNew`: the reader's copy is broadcast in the same breath as
+// the sender's, so by the time Alice's await resolved it was already buffered.
+const onReader = await wsBob.next(
   'the reader hears its own receipt',
   (e) => e.type === 'read_receipt' && e.reads.some((r: any) => r.id === echo.id),
 )
@@ -241,11 +243,11 @@ check(
   onReader.reads.find((r: any) => r.id === echo.id).expires_at === read.expires_at,
   onReader.reads,
 )
-const tick = await wsAlice.nextNew(
-  'the sender tick still moves',
-  (e) => e.type === 'message_status' && e.id === echo.id,
+check(
+  'and no second frame says the same thing: the receipt is the status change',
+  wsAlice.received.filter((e) => e.type === 'message_status' && e.id === echo.id).length === 0,
+  wsAlice.received.filter((e) => e.type === 'message_status'),
 )
-check('the sender is told its message was read', tick.status === 'read', tick)
 
 // --- a second report cannot restart a clock -------------------------------
 wsBob.send({ type: 'read_receipt', ids: [echo.id] })

@@ -1078,8 +1078,8 @@ export class ConversationAgent extends Agent<Env> {
     const wanted = new Set(ids)
     // One scan, filtered in memory: `IN (...)` needs a dynamic placeholder list
     // and this table holds at most a few days of one conversation.
-    const targets = this.sql<{ id: string; client_id: string; expires_at: number }>`
-      SELECT id, client_id, expires_at FROM messages
+    const targets = this.sql<{ id: string; expires_at: number }>`
+      SELECT id, expires_at FROM messages
       WHERE sender_id != ${userId} AND read_at IS NULL
     `.filter((row) => wanted.has(row.id))
     if (targets.length === 0) return
@@ -1099,18 +1099,13 @@ export class ConversationAgent extends Agent<Env> {
     // Everyone, the reader's own other tabs included: the row is shared, so the
     // countdown is shared, and a second browser of the reader's did not witness
     // the read that started it.
+    //
+    // One frame for the whole batch, and no `message_status` behind it. The tick
+    // and the countdown are the same event — a receipt already says which
+    // messages were read — and sending both would be a second frame per message
+    // saying what this one already said, fifty of them for one scrollback.
     for (const conn of this.getConnections<ConnState>()) {
       this.send(conn, { type: 'read_receipt', user_id: userId, reads })
-    }
-    // The sender's tick still moves through `message_status`, which is what it
-    // has always listened to for a message it sent in an earlier session.
-    for (const row of targets) {
-      this.sendToOthers(userId, {
-        type: 'message_status',
-        id: row.id,
-        client_id: row.client_id,
-        status: 'read',
-      })
     }
 
     // A read can make a message due inside the same second — three hours is the
