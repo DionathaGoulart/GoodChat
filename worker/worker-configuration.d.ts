@@ -22,6 +22,7 @@ interface __BaseEnv_Env {
 	MEDIA_LEGACY_READS: string;
 	PUBLIC_ORIGIN: string;
 	RATE_LIMIT_SALT: string;
+	KDF_DECOY_SALT: string;
 	PUSH_ENDPOINT_HOSTS: string;
 	E2EE_REQUIRED: string;
 	ConversationAgent: DurableObjectNamespace<import("./src/index").ConversationAgent>;
@@ -38,7 +39,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "TEMP_ACCOUNTS_ENABLED" | "TEMP_ACCOUNT_TTL_HOURS" | "TEMP_ACCOUNTS_MAX" | "TEMP_ACCOUNTS_PER_IP_HOUR" | "DO_STORAGE_LIMIT_GB" | "B2_STORAGE_LIMIT_GB" | "B2_KEY_ID" | "B2_APPLICATION_KEY" | "B2_BUCKET_NAME" | "B2_S3_ENDPOINT" | "VAPID_PUBLIC_KEY" | "VAPID_PRIVATE_KEY" | "VAPID_SUBJECT" | "ALLOWED_ORIGINS" | "MEDIA_RETENTION_DAYS" | "MEDIA_LEGACY_READS" | "PUBLIC_ORIGIN" | "RATE_LIMIT_SALT" | "PUSH_ENDPOINT_HOSTS" | "E2EE_REQUIRED">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "TEMP_ACCOUNTS_ENABLED" | "TEMP_ACCOUNT_TTL_HOURS" | "TEMP_ACCOUNTS_MAX" | "TEMP_ACCOUNTS_PER_IP_HOUR" | "DO_STORAGE_LIMIT_GB" | "B2_STORAGE_LIMIT_GB" | "B2_KEY_ID" | "B2_APPLICATION_KEY" | "B2_BUCKET_NAME" | "B2_S3_ENDPOINT" | "VAPID_PUBLIC_KEY" | "VAPID_PRIVATE_KEY" | "VAPID_SUBJECT" | "ALLOWED_ORIGINS" | "MEDIA_RETENTION_DAYS" | "MEDIA_LEGACY_READS" | "PUBLIC_ORIGIN" | "RATE_LIMIT_SALT" | "KDF_DECOY_SALT" | "PUSH_ENDPOINT_HOSTS" | "E2EE_REQUIRED">> {}
 }
 
 // Begin runtime types

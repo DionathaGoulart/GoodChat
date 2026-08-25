@@ -28,6 +28,7 @@ import { clearDrafts } from '../lib/drafts'
 import { clearCachedThreads, pruneCachedMessages } from '../lib/threadCache'
 import { startHeartbeat } from '../lib/presence'
 import { disablePush } from '../lib/push'
+import { deriveAccountSecrets, newKdfParams } from '../lib/kdf'
 import { skinOr } from '../lib/skins'
 import { darkPaletteOr, lightPaletteOr } from '../lib/themes'
 import { applyThemePrefs, type ThemePrefs } from './useTheme'
@@ -40,6 +41,11 @@ interface SessionContextValue {
   isOwner: boolean
   /** Painting from the local copy while /api/auth/me is still in flight. */
   revalidating: boolean
+  /**
+   * Signs in without the password ever leaving the browser (lib/kdf.ts). Falls
+   * back to sending it for an account that has not rotated yet, and only after
+   * the derived attempt was refused — see `login` below.
+   */
   login: (username: string, password: string) => Promise<void>
   /**
    * Guest signup: creates a throwaway account and signs in with it. Nothing
@@ -48,6 +54,12 @@ interface SessionContextValue {
    */
   loginAsGuest: () => Promise<void>
   logout: () => Promise<void>
+  /**
+   * The one-time move off a password the worker knows (`user.must_rotate`).
+   * Takes the current password, which the worker still has to verify the old
+   * way, and a new one, which it only ever sees derived.
+   */
+  rotatePassword: (currentPassword: string, newPassword: string) => Promise<void>
   /** Persists mode, palettes and skin on the account; the DOM updates at once. */
   setTheme: (prefs: ThemePrefs) => Promise<void>
   /** Persists display name and/or profile picture key on the account. */
@@ -192,11 +204,63 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return startHeartbeat()
   }, [status])
 
+  /**
+   * Two requests before the login, and a possible third after it.
+   *
+   * `/api/auth/kdf` first, because the derivation needs a salt and the salt is
+   * per account. Then the derived token. If that is refused, the account may
+   * simply not have rotated yet (migration 0013) — its stored hash is of the
+   * plaintext, so no derived token could ever match it — and the password goes
+   * the old way, once.
+   *
+   * Ordered that way on purpose: an unknown username and a real account with
+   * the wrong password both take the same two refusals, so the sequence says
+   * nothing about which one it was. Reversing it — asking "has this account
+   * rotated?" first — would answer "does this account exist?" along the way.
+   *
+   * The `wrapKey` that comes out of the same derivation is dropped here. It is
+   * what unwraps the account key, which does not exist yet; the derivation
+   * stays a single call so that when it does, there is one place to thread it
+   * through and no second 600ms round of PBKDF2.
+   */
   const login = useCallback(
     async (username: string, password: string) => {
-      const { user } = await api.login(username, password)
+      const params = await api.kdfParams(username)
+      const { authToken } = await deriveAccountSecrets(password, params)
+      let user: SessionUser
+      try {
+        ;({ user } = await api.login(username, authToken))
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== 'invalid_credentials') throw error
+        ;({ user } = await api.loginLegacy(username, password))
+      }
       adopt(user)
       setStatus('authenticated')
+    },
+    [adopt],
+  )
+
+  /**
+   * The rotation. A new password, derived here; the old one sent in the clear
+   * one last time because the worker holds a hash of exactly that and has
+   * nothing else to check against.
+   *
+   * `/api/auth/me` afterwards rather than trusting the local copy: the flag
+   * this clears is what the whole app is gated on, and a stale `true` would
+   * leave somebody staring at the rotation form they just completed.
+   */
+  const rotatePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      const params = newKdfParams()
+      const { authToken } = await deriveAccountSecrets(newPassword, params)
+      await api.rotatePassword({
+        current_password: currentPassword,
+        auth_token: authToken,
+        kdf_salt: params.salt,
+        kdf_iterations: params.iterations,
+      })
+      const { user } = await api.me()
+      adopt(user)
     },
     [adopt],
   )
@@ -276,6 +340,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       login,
       loginAsGuest,
       logout,
+      rotatePassword,
       setTheme,
       setProfile,
       setPushPreview,
@@ -287,6 +352,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       login,
       loginAsGuest,
       logout,
+      rotatePassword,
       setTheme,
       setProfile,
       setPushPreview,

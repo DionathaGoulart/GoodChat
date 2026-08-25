@@ -48,6 +48,13 @@ export interface SessionUser {
   is_temp: boolean
   /** When this account stops existing; null for permanent accounts. */
   expires_at: number | null
+  /**
+   * This account still holds a hash of a password the server was told
+   * (migration 0013). Everything works, but the account key cannot exist until
+   * it is replaced by one derived in the browser — so the app demands a new
+   * password before it shows anything else. Cleared by POST /api/auth/rotate.
+   */
+  must_rotate: boolean
 }
 
 /** The subset other accounts are allowed to see (search results, peers). */
@@ -137,7 +144,8 @@ export async function requireSession(
       `SELECT s.created_at AS session_created_at, s.expires_at AS session_expires_at,
               u.id, u.username, u.display_name, u.avatar_key, u.created_at,
               u.role, u.theme_mode, u.theme_light, u.theme_dark, u.skin,
-              u.push_preview, u.is_temp, u.expires_at AS account_expires_at
+              u.push_preview, u.is_temp, u.expires_at AS account_expires_at,
+              u.must_rotate
        FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ?1
          AND u.disabled_at IS NULL
@@ -161,6 +169,7 @@ export async function requireSession(
       push_preview: string | null
       is_temp: number
       account_expires_at: number | null
+      must_rotate: number
     }>()
 
   if (!row || row.session_expires_at <= now) {
@@ -185,6 +194,7 @@ export async function requireSession(
       push_preview: row.push_preview,
       is_temp: row.is_temp === 1,
       expires_at: row.account_expires_at,
+      must_rotate: row.must_rotate === 1,
     },
   }
 

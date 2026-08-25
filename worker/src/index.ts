@@ -15,7 +15,15 @@ import {
   updateAccount,
 } from './routes/admin'
 import { tempAccountConfig } from './lib/accounts'
-import { changePassword, createTempSession, login, logout, me } from './routes/auth'
+import {
+  changePassword,
+  createTempSession,
+  kdfParams,
+  login,
+  logout,
+  me,
+  rotatePassword,
+} from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
 import { listDevices, registerDevice } from './routes/devices'
 import { createUploadUrl, serveMedia } from './routes/media'
@@ -88,6 +96,8 @@ async function route(
     })
   }
   if (pathname === '/api/auth/login' && method === 'POST') return login(request, env)
+  if (pathname === '/api/auth/kdf' && method === 'POST') return kdfParams(request, env)
+  if (pathname === '/api/auth/rotate' && method === 'POST') return rotatePassword(request, env)
   if (pathname === '/api/auth/temp' && method === 'POST') return createTempSession(request, env)
   if (pathname === '/api/auth/password' && method === 'PATCH') {
     return changePassword(request, env)

@@ -11,6 +11,8 @@
 //     -H 'Content-Type: application/json' -d '{"user_id":"<id from lookup>"}'
 //   curl -b /tmp/gc.jar localhost:8000/api/conversations
 
+import { signIn } from './lib.ts'
+
 const API = process.env.API_URL ?? 'http://localhost:8000'
 
 let failures = 0
@@ -36,15 +38,13 @@ async function api(
   return { status: res.status, body, setCookie: res.headers.get('Set-Cookie') }
 }
 
+// Signing in goes through `signIn` (scripts/lib.ts) rather than posting the
+// password: since migration 0013 the stored hash is of a token the *client*
+// derives, so a plaintext login is refused. ~600ms of PBKDF2 per call.
 async function login(username: string, password: string): Promise<string> {
-  const res = await api('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ username, password }),
-  })
-  if (res.status !== 200 || !res.setCookie) {
-    throw new Error(`login ${username} failed (${res.status}): ${JSON.stringify(res.body)}`)
-  }
-  return res.setCookie.split(';')[0]
+  const cookie = await signIn(API, username, password)
+  if (!cookie) throw new Error(`login ${username} failed`)
+  return cookie
 }
 
 const alice = await login('alice', 'alice-goodchat')

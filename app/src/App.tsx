@@ -10,17 +10,23 @@ import { AdminScreen } from './screens/AdminScreen'
 import { AppearanceScreen } from './screens/AppearanceScreen'
 import { ConversationsScreen } from './screens/ConversationsScreen'
 import { LoginScreen } from './screens/LoginScreen'
+import { RotatePasswordScreen } from './screens/RotatePasswordScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
 import { ThreadScreen } from './screens/ThreadScreen'
 
 function Screens() {
-  const { status, isOwner } = useSession()
+  const { status, user, isOwner } = useSession()
   const route = useRoute()
 
   // Only a cold start reaches this: with a cached account (hooks/useSession)
   // the status is already 'authenticated' and the screen below paints at once.
   if (status === 'loading') return <BootSkeleton />
   if (status === 'anonymous') return <LoginScreen />
+  // Ahead of every route, and with no way past it. An account still holding a
+  // password the server knows has no key of its own (migration 0013/0014), so
+  // anything it opened would be a thread whose messages it cannot read —
+  // including the ones it sends. See screens/RotatePasswordScreen.tsx.
+  if (user?.must_rotate) return <RotatePasswordScreen />
   if (route.name === 'thread') return <ThreadScreen userId={route.userId} />
   if (route.name === 'settings') return <SettingsScreen />
   if (route.name === 'appearance') return <AppearanceScreen />

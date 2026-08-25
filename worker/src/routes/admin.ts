@@ -270,7 +270,15 @@ const CreateUserSchema = z.object({
   display_name: z.string().trim().min(1).max(64).optional(),
 })
 
-/** POST /api/admin/users — the owner panel's replacement for the CLI. */
+/**
+ * POST /api/admin/users — the owner panel's replacement for the CLI.
+ *
+ * The owner types the password, so the owner knows it, so the server knows it:
+ * this account starts on the legacy side of migration 0013 with `must_rotate`
+ * set, and the person replaces it with one only they know the first time they
+ * sign in. There is no way around that from here — deriving `authToken` needs
+ * the password, and if this route had it the whole point would be gone.
+ */
 export async function createAccount(request: Request, env: Env): Promise<Response> {
   const owner = await requireOwner(request, env)
   if (owner instanceof Response) return owner
@@ -289,8 +297,8 @@ export async function createAccount(request: Request, env: Env): Promise<Respons
 
   const id = crypto.randomUUID()
   await env.DB.prepare(
-    `INSERT INTO users (id, username, display_name, avatar_key, password_hash, created_at, role, created_by)
-     VALUES (?1, ?2, ?3, NULL, ?4, ?5, 'user', ?6)`,
+    `INSERT INTO users (id, username, display_name, avatar_key, password_hash, created_at, role, created_by, must_rotate)
+     VALUES (?1, ?2, ?3, NULL, ?4, ?5, 'user', ?6, 1)`,
   )
     .bind(
       id,
@@ -343,27 +351,40 @@ export async function updateAccount(
     if (invalid) return apiError('invalid_request', 400, invalid)
   }
 
+  // Placeholders are numbered off `bindings`, not off `sets`: the password
+  // branch adds three assignments that bind nothing (`= NULL`, `= 1`), so the
+  // two lengths stopped agreeing the moment it did.
   const sets: string[] = []
   const bindings: unknown[] = []
+  const placeholder = () => `?${bindings.length + 1}`
   if (parsed.display_name !== undefined) {
-    sets.push(`display_name = ?${sets.length + 1}`)
+    sets.push(`display_name = ${placeholder()}`)
     bindings.push(parsed.display_name)
   }
   if (parsed.password !== undefined) {
-    sets.push(`password_hash = ?${sets.length + 1}`)
+    sets.push(`password_hash = ${placeholder()}`)
     bindings.push(await hashPassword(parsed.password))
+    // A password the owner chose is a password the server knows, which is the
+    // legacy shape by definition — so the account goes back to it, salt and
+    // all, and the person is made to replace it on their next sign-in
+    // (migration 0013). `kdf_salt IS NULL` alongside `must_rotate = 1` is the
+    // invariant; writing one without the other would leave an account whose
+    // stored salt no longer describes its stored hash, which is an account
+    // nobody can sign in to.
+    sets.push('kdf_salt = NULL', 'kdf_iterations = NULL', 'must_rotate = 1')
   }
   if (parsed.disabled !== undefined) {
-    sets.push(`disabled_at = ?${sets.length + 1}`)
+    sets.push(`disabled_at = ${placeholder()}`)
     bindings.push(parsed.disabled ? Date.now() : null)
   }
   if (parsed.role !== undefined) {
-    sets.push(`role = ?${sets.length + 1}`)
+    sets.push(`role = ${placeholder()}`)
     bindings.push(parsed.role)
   }
   if (sets.length === 0) return apiError('invalid_request', 400, 'nothing to update')
 
-  await env.DB.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?${sets.length + 1}`)
+  const where = placeholder()
+  await env.DB.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ${where}`)
     .bind(...bindings, target.id)
     .run()
 

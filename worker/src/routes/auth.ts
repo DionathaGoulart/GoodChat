@@ -6,6 +6,7 @@ import {
   tempAccountConfig,
 } from '../lib/accounts'
 import { apiError, json } from '../lib/http'
+import { KDF_ITERATIONS, decoyKdfSalt } from '../lib/kdf'
 import { burnPasswordTime, hashPassword, verifyPassword } from '../lib/password'
 import {
   clearCookie,
@@ -17,7 +18,6 @@ import {
   sessionHeaders,
   type SessionUser,
 } from '../lib/session'
-import { validateCredentials } from '../lib/users'
 import {
   HOUR_MS,
   addressQuotaKey,
@@ -27,16 +27,119 @@ import {
   recordLoginFailure,
 } from '../lib/ratelimit'
 
-const LoginSchema = z.object({
-  username: z.string().min(1).max(64),
-  password: z.string().min(1).max(256),
-})
+/**
+ * One of `auth_token` or `password`, never both, and the server does not care
+ * which: `password_hash` is PBKDF2 of whatever the client sent when the
+ * account was written, so verification is the same call either way
+ * (lib/password.ts is untouched by all of this — it just gets a different
+ * string).
+ *
+ * Two fields rather than one, even though the server treats them alike,
+ * because they are not alike on the wire: `password` is the plaintext, and a
+ * request carrying it is a request that has to be justified. Naming it
+ * separately is what makes it possible to grep for the paths that still do.
+ */
+const LoginSchema = z
+  .object({
+    username: z.string().min(1).max(64),
+    /** base64url of 32 bytes — app/src/lib/kdf.ts. */
+    auth_token: z.string().min(1).max(128).optional(),
+    /**
+     * The legacy path, for an account that has not rotated (migration 0013).
+     * The client only reaches for it after the derived attempt was refused,
+     * which means the typed password is already known not to open this account
+     * the new way — see the note on `login` below.
+     */
+    password: z.string().min(1).max(256).optional(),
+  })
+  .refine(
+    (body) => (body.auth_token === undefined) !== (body.password === undefined),
+    { message: 'exactly one of auth_token or password' },
+  )
 
-interface UserRow extends Omit<SessionUser, 'is_temp'> {
+const KdfSchema = z.object({ username: z.string().min(1).max(64) })
+
+/**
+ * POST /api/auth/kdf — the salt and iteration count the browser needs before
+ * it can derive anything.
+ *
+ * Answers for every username, real or not: a rotated account gets its stored
+ * salt, anything else gets a deterministic decoy (lib/kdf.ts). Without that
+ * this is an account-enumeration oracle with no rate limit in front of it,
+ * which is the same reason `burnPasswordTime` exists a few lines down.
+ *
+ * Not quota-counted, and that is deliberate rather than an omission. It costs
+ * one indexed read and returns a value that is public by construction; every
+ * counter in this codebase is a D1 *write*, so metering this would spend more
+ * than it protects. What it fronts — the login attempt — is already limited on
+ * two keys.
+ */
+export async function kdfParams(request: Request, env: Env): Promise<Response> {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return apiError('invalid_request', 400, 'body must be JSON')
+  }
+  const parsed = KdfSchema.safeParse(body)
+  if (!parsed.success) return apiError('invalid_request', 400, 'username is required')
+
+  const username = parsed.data.username.trim().toLowerCase()
+  const row = await env.DB.prepare(
+    `SELECT kdf_salt, kdf_iterations FROM users
+     WHERE username = ?1
+       AND disabled_at IS NULL
+       AND deleted_at IS NULL
+       AND (expires_at IS NULL OR expires_at > ?2)`,
+  )
+    .bind(username, Date.now())
+    .first<{ kdf_salt: string | null; kdf_iterations: number | null }>()
+
+  // `kdf_salt IS NULL` covers three cases on purpose — no such account, a
+  // disabled or expired one, and one that has not rotated yet — and answers
+  // all three identically.
+  if (row?.kdf_salt) {
+    return json({ salt: row.kdf_salt, iterations: row.kdf_iterations ?? KDF_ITERATIONS })
+  }
+  return json({ salt: await decoyKdfSalt(username, env), iterations: KDF_ITERATIONS })
+}
+
+interface UserRow extends Omit<SessionUser, 'is_temp' | 'must_rotate'> {
   is_temp: number
+  must_rotate: number
   password_hash: string | null
 }
 
+/**
+ * POST /api/auth/login.
+ *
+ * The client derives `authToken` from the salt `/kdf` handed it and sends
+ * that. For an account that has not rotated, `password_hash` is a hash of the
+ * *plaintext*, so the derived token cannot match and the attempt is refused
+ * like any other — at which point the client tries again with the password
+ * itself, and that one lands.
+ *
+ * That fallback is what keeps this endpoint from being an enumeration oracle:
+ * an unknown username and a rotated account with a wrong password both take
+ * the same two refusals, so nothing distinguishes "no such account" from "not
+ * that password". The price is that a *failed* derived attempt is followed by
+ * the plaintext going over the wire — which is acceptable precisely because it
+ * failed: a password that does not open this account tells the server nothing
+ * about the account. The one case where it does cost something is somebody
+ * typing *another* account's password on this instance by mistake, which is
+ * the argument against reusing one, and is written down here rather than left
+ * to be discovered.
+ *
+ * One more cost of the same ordering: a sign-in to an unrotated account spends
+ * a failure slot on the derived attempt before the plaintext one succeeds, and
+ * success clears the counters — so it nets to nothing except for an account
+ * already sitting at four failures, which would lock itself out one attempt
+ * early. Not worth special-casing: skipping the record when the account is
+ * unrotated would make the *rate limiter* answer a question the responses
+ * carefully do not (probe six times with a token; a 429 means "a rotated
+ * account by this name exists"). It ends when the account rotates, which is
+ * once.
+ */
 export async function login(request: Request, env: Env): Promise<Response> {
   let body: unknown
   try {
@@ -46,8 +149,9 @@ export async function login(request: Request, env: Env): Promise<Response> {
   }
   const parsed = LoginSchema.safeParse(body)
   if (!parsed.success) {
-    return apiError('invalid_request', 400, 'username and password are required')
+    return apiError('invalid_request', 400, 'username and one credential are required')
   }
+  const secret = parsed.data.auth_token ?? (parsed.data.password as string)
 
   const username = parsed.data.username.trim().toLowerCase()
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
@@ -64,7 +168,7 @@ export async function login(request: Request, env: Env): Promise<Response> {
   const user = await env.DB.prepare(
     `SELECT id, username, display_name, avatar_key, created_at, role,
             theme_mode, theme_light, theme_dark, skin, push_preview,
-            is_temp, expires_at, password_hash
+            is_temp, expires_at, must_rotate, password_hash
      FROM users
      WHERE username = ?1
        AND disabled_at IS NULL
@@ -78,16 +182,20 @@ export async function login(request: Request, env: Env): Promise<Response> {
   // a fast 401 vs a slow one is a user-enumeration oracle that the rate limit
   // does not close (five probes are enough to classify a username).
   const valid = user?.password_hash
-    ? await verifyPassword(parsed.data.password, user.password_hash)
-    : await burnPasswordTime(parsed.data.password).then(() => false)
+    ? await verifyPassword(secret, user.password_hash)
+    : await burnPasswordTime(secret).then(() => false)
   if (!user || !valid) {
     await recordLoginFailure(env.DB, ip, username, env)
     return apiError('invalid_credentials', 401)
   }
 
   await clearLoginFailures(env.DB, username, env, ip)
-  const { password_hash, is_temp, ...rest } = user
-  const publicUser: SessionUser = { ...rest, is_temp: is_temp === 1 }
+  const { password_hash, is_temp, must_rotate, ...rest } = user
+  const publicUser: SessionUser = {
+    ...rest,
+    is_temp: is_temp === 1,
+    must_rotate: must_rotate === 1,
+  }
   const { cookie } = await createSession(env.DB, user.id, user.expires_at)
   return json({ user: publicUser }, 200, { 'Set-Cookie': cookie })
 }
@@ -148,13 +256,115 @@ export async function createTempSession(request: Request, env: Env): Promise<Res
     push_preview: null,
     is_temp: true,
     expires_at: account.expiresAt,
+    // A guest has no password, so there is nothing to rotate into anything.
+    must_rotate: false,
   }
   return json({ user }, 201, { 'Set-Cookie': cookie })
 }
 
-const ChangePasswordSchema = z.object({
+const RotateSchema = z.object({
+  /** The password this account still has. Verified against the legacy hash. */
   current_password: z.string().min(1).max(256),
-  new_password: z.string().min(1).max(256),
+  /** Derived from the *new* password, client-side (app/src/lib/kdf.ts). */
+  auth_token: z.string().min(1).max(128),
+  kdf_salt: z.string().min(16).max(64),
+  kdf_iterations: z.number().int().min(100_000).max(5_000_000),
+})
+
+/**
+ * POST /api/auth/rotate — the one-time move off a server-known password.
+ *
+ * Only reachable on an account carrying `must_rotate` (migration 0013), which
+ * is every account that existed before this shipped and every one the owner
+ * console has reset since. The flag is cleared here and nothing sets it again
+ * except a reset, so this route is a door that closes behind each account.
+ *
+ * A *new* password, not a re-encoding of the old one. The old one reached the
+ * server in the clear — twice by the time this runs, once on the legacy login
+ * and once in `current_password` below — so it is spent. The client picks the
+ * new one, derives everything from it locally, and only `auth_token` arrives.
+ *
+ * `current_password` is required even though the session is already
+ * authenticated: without it, a stolen cookie on an unrotated account is enough
+ * to set a new password and lock the owner out. With it, this route is exactly
+ * as strong as `changePassword`, which is the one it becomes afterwards.
+ *
+ * The new password's *length* is not checked here and cannot be — the server
+ * sees `auth_token` and nothing else. MIN_PASSWORD_LENGTH in app/src/lib/kdf.ts
+ * is the whole of that rule on this path, which is the honest cost of the
+ * server not knowing the password.
+ */
+export async function rotatePassword(request: Request, env: Env): Promise<Response> {
+  const auth = await requireSession(request, env.DB)
+  if (auth instanceof Response) return auth
+
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return apiError('invalid_request', 400, 'body must be JSON')
+  }
+  const parsed = RotateSchema.safeParse(body)
+  if (!parsed.success) {
+    return apiError('invalid_request', 400, parsed.error.issues[0]?.message ?? 'invalid body')
+  }
+
+  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
+  const rate = await checkLoginAllowed(env.DB, ip, auth.user.username, env)
+  if (rate.blocked) {
+    return apiError('rate_limited', 429, 'too many attempts, try again later', {
+      'Retry-After': String(rate.retryAfterSeconds),
+    })
+  }
+
+  const row = await env.DB.prepare(
+    'SELECT password_hash, must_rotate FROM users WHERE id = ?',
+  )
+    .bind(auth.user.id)
+    .first<{ password_hash: string | null; must_rotate: number }>()
+  if (!row || row.must_rotate !== 1) {
+    return apiError('rotation_not_required', 409, 'esta conta já usa o formato novo')
+  }
+
+  const valid = row.password_hash
+    ? await verifyPassword(parsed.data.current_password, row.password_hash)
+    : false
+  if (!valid) {
+    await recordLoginFailure(env.DB, ip, auth.user.username, env)
+    return apiError('invalid_credentials', 401, 'senha atual incorreta')
+  }
+
+  // One statement, so an account can never be left holding a new hash with the
+  // old salt — or with `must_rotate` cleared and no salt to derive against,
+  // which would be an account nobody can sign in to.
+  await env.DB.prepare(
+    `UPDATE users SET password_hash = ?1, kdf_salt = ?2, kdf_iterations = ?3, must_rotate = 0
+     WHERE id = ?4`,
+  )
+    .bind(
+      await hashPassword(parsed.data.auth_token),
+      parsed.data.kdf_salt,
+      parsed.data.kdf_iterations,
+      auth.user.id,
+    )
+    .run()
+  await clearLoginFailures(env.DB, auth.user.username, env, ip)
+
+  // Same reasoning as changePassword: the password really did change, so every
+  // other session goes, and this tab gets a fresh cookie rather than being
+  // signed out in the middle of the thing it just did.
+  await revokeAllSessions(env.DB, auth.user.id)
+  const { cookie } = await createSession(env.DB, auth.user.id, auth.user.expires_at)
+  return json({ ok: true }, 200, { 'Set-Cookie': cookie })
+}
+
+const ChangePasswordSchema = z.object({
+  /** Derived from the current password against the account's stored salt. */
+  current_auth_token: z.string().min(1).max(128),
+  /** Derived from the new one, against `kdf_salt` below. */
+  auth_token: z.string().min(1).max(128),
+  kdf_salt: z.string().min(16).max(64),
+  kdf_iterations: z.number().int().min(100_000).max(5_000_000),
 })
 
 /**
@@ -167,16 +377,27 @@ const ChangePasswordSchema = z.object({
  * the new one. For a product whose premise is that the operator sees as little
  * as possible, that is the wrong shape.
  *
- * The current password is required and verified, so a stolen *session* cannot
- * be escalated into a stolen *account*. Every other session is revoked on
+ * Neither password arrives. The browser derives `current_auth_token` against
+ * the account's stored salt and `auth_token` against a fresh one, exactly as
+ * the login form does (app/src/lib/kdf.ts), and both of those are one-way away
+ * from anything that unwraps a message. The new salt travels with the token it
+ * belongs to and is written in the same statement, because a hash stored
+ * against the wrong salt is an account nobody can sign in to.
+ *
+ * The current token is required and verified, so a stolen *session* cannot be
+ * escalated into a stolen *account*. Every other session is revoked on
  * success, which is the point of changing it: if someone else was signed in,
  * they are not anymore. The caller gets a fresh cookie so the tab doing the
  * change stays signed in.
  *
  * Rate-limited on the same counters as login (the account key, the address
- * key), because verifying `current_password` here is the same oracle the login
- * form is — without it, this route is a way to brute-force a password from
- * inside a session that only had read access to a shared browser.
+ * key), because verifying `current_auth_token` here is the same oracle the
+ * login form is — without it, this route is a way to brute-force a password
+ * from inside a session that only had read access to a shared browser.
+ *
+ * The new password's length is checked in the browser and nowhere else: what
+ * reaches here is a fixed-length token with nothing to measure. See
+ * MIN_PASSWORD_LENGTH in app/src/lib/kdf.ts.
  */
 export async function changePassword(request: Request, env: Env): Promise<Response> {
   const auth = await requireSession(request, env.DB)
@@ -190,11 +411,8 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
   }
   const parsed = ChangePasswordSchema.safeParse(body)
   if (!parsed.success) {
-    return apiError('invalid_request', 400, 'current_password and new_password are required')
+    return apiError('invalid_request', 400, parsed.error.issues[0]?.message ?? 'invalid body')
   }
-
-  const invalid = validateCredentials(auth.user.username, parsed.data.new_password)
-  if (invalid) return apiError('invalid_request', 400, invalid)
 
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
   const rate = await checkLoginAllowed(env.DB, ip, auth.user.username, env)
@@ -204,19 +422,35 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
     })
   }
 
-  const row = await env.DB.prepare('SELECT password_hash FROM users WHERE id = ?')
+  const row = await env.DB.prepare(
+    'SELECT password_hash, must_rotate FROM users WHERE id = ?',
+  )
     .bind(auth.user.id)
-    .first<{ password_hash: string | null }>()
+    .first<{ password_hash: string | null; must_rotate: number }>()
+  // An account still on the legacy hash cannot be changed from here: the
+  // browser has no salt to have derived `current_auth_token` against, so it
+  // could only ever fail. /api/auth/rotate is the door for that one, and
+  // saying so beats a 401 that reads as "wrong password".
+  if (row?.must_rotate === 1) {
+    return apiError('rotation_required', 409, 'esta conta precisa migrar a senha primeiro')
+  }
   const valid = row?.password_hash
-    ? await verifyPassword(parsed.data.current_password, row.password_hash)
+    ? await verifyPassword(parsed.data.current_auth_token, row.password_hash)
     : false
   if (!valid) {
     await recordLoginFailure(env.DB, ip, auth.user.username, env)
     return apiError('invalid_credentials', 401, 'senha atual incorreta')
   }
 
-  await env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
-    .bind(await hashPassword(parsed.data.new_password), auth.user.id)
+  await env.DB.prepare(
+    'UPDATE users SET password_hash = ?1, kdf_salt = ?2, kdf_iterations = ?3 WHERE id = ?4',
+  )
+    .bind(
+      await hashPassword(parsed.data.auth_token),
+      parsed.data.kdf_salt,
+      parsed.data.kdf_iterations,
+      auth.user.id,
+    )
     .run()
   await clearLoginFailures(env.DB, auth.user.username, env, ip)
 

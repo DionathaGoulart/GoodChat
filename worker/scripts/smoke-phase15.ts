@@ -19,7 +19,7 @@
 // Usage: npm run smoke:phase15   (needs `npm run dev` on :8000 and seed data)
 
 import { WebSocket } from 'ws'
-import { d1Query, sqlString } from './lib.ts'
+import { d1Query, signIn, sqlString } from './lib.ts'
 
 const API = process.env.API ?? 'http://localhost:8000'
 const WS_API = API.replace(/^http/, 'ws')
@@ -230,15 +230,14 @@ async function rewrap(
 
 // --- REST helpers ---------------------------------------------------------
 
+// Signing in goes through `signIn` (scripts/lib.ts) rather than posting the
+// password: since migration 0013 the stored hash is of a token the *client*
+// derives, so a plaintext login is refused. ~600ms of PBKDF2 per call. This
+// one keeps the bare token because everything below builds its own header.
 async function login(username: string, password: string): Promise<string> {
-  const response = await fetch(`${API}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  })
-  const cookie = response.headers.get('set-cookie')
+  const cookie = await signIn(API, username, password)
   const token = /session=([^;]+)/.exec(cookie ?? '')?.[1]
-  if (!token) throw new Error(`login failed for ${username} (${response.status})`)
+  if (!token) throw new Error(`login failed for ${username}`)
   return token
 }
 

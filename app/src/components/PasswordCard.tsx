@@ -10,24 +10,30 @@
 // tab keeps its session, which is why the copy says so before the button rather
 // than after it.
 //
-// A guest account is excluded: its password was shown once at signup, it dies
-// with the account in a few hours, and there is nothing to protect by rotating
-// it. TempAccountBanner is where that account's credentials live.
+// A guest account is excluded: it has no password at all (worker/src/lib/
+// accounts.ts), dies in a few hours, and its key never left the browser — there
+// is nothing here to rotate.
+//
+// Neither password travels. Both are run through the account KDF in this tab
+// and only the derived tokens are posted (lib/kdf.ts), which is what keeps the
+// worker from ever holding something that could unwrap a message. The new salt
+// goes with the new token, in one request, because a hash stored against the
+// wrong salt is an account nobody can sign in to.
 
 import { useState } from 'react'
-import { ApiError, changePassword } from '../lib/api'
+import { ApiError, changePassword, kdfParams } from '../lib/api'
+import { MIN_PASSWORD_LENGTH, deriveAccountSecrets, newKdfParams } from '../lib/kdf'
 import { useSession } from '../hooks/useSession'
 import { Panel } from './Panel'
+import { PasswordStrength } from './PasswordStrength'
 import { RetroIconButton } from './RetroIconButton'
-
-/** Mirrors MIN_PASSWORD_LENGTH in worker/src/lib/users.ts. */
-const MIN_PASSWORD_LENGTH = 8
 
 function messageFor(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 0) return 'servidor inacessível — tenta de novo'
     if (error.code === 'invalid_credentials') return 'senha atual incorreta'
     if (error.code === 'rate_limited') return 'muitas tentativas — espera um pouco'
+    if (error.code === 'rotation_required') return 'esta conta precisa migrar a senha primeiro'
     if (error.code === 'invalid_request') return error.message
   }
   return 'não deu pra trocar a senha'
@@ -54,7 +60,24 @@ export function PasswordCard() {
     setBusy(true)
     setError(null)
     setNotice(null)
-    changePassword(current, next)
+    // Two derivations, and the order matters only for the first: the current
+    // password has to be run against the salt the account is *stored* under,
+    // which is what /api/auth/kdf answers, while the new one gets a fresh salt
+    // that travels with it.
+    void (async () => {
+      const currentParams = await kdfParams(user.username)
+      const nextParams = newKdfParams()
+      const [currentSecrets, nextSecrets] = [
+        await deriveAccountSecrets(current, currentParams),
+        await deriveAccountSecrets(next, nextParams),
+      ]
+      return changePassword({
+        current_auth_token: currentSecrets.authToken,
+        auth_token: nextSecrets.authToken,
+        kdf_salt: nextParams.salt,
+        kdf_iterations: nextParams.iterations,
+      })
+    })()
       .then(() => {
         setNotice('senha trocada — os outros dispositivos foram desconectados')
         setCurrent('')
@@ -103,12 +126,14 @@ export function PasswordCard() {
         </h2>
         <p className="mt-1 text-sm opacity-70">
           Trocar a senha desconecta todos os outros dispositivos. Este continua conectado.
+          A senha não sai deste navegador — o servidor guarda só um derivado dela.
         </p>
       </div>
 
       <div className="flex flex-col gap-3">
         {field('current-password', 'senha atual', current, setCurrent, 'current-password')}
         {field('new-password', 'nova senha', next, setNext, 'new-password')}
+        <PasswordStrength password={next} />
         {field('confirm-password', 'repetir a nova', confirm, setConfirm, 'new-password')}
       </div>
 
@@ -117,7 +142,7 @@ export function PasswordCard() {
         onClick={save}
         className={`self-start ${ready ? 'bg-accent text-accent-content' : ''}`}
       >
-        {busy ? 'salvando …' : 'trocar senha'}
+        {busy ? 'derivando …' : 'trocar senha'}
       </RetroIconButton>
 
       {tooShort && (

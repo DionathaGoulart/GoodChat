@@ -18,7 +18,7 @@
 // what the clock would have done.
 
 import WebSocket from 'ws'
-import { d1Execute, d1Query, sqlString } from './lib.ts'
+import { d1Execute, d1Query, signIn, sqlString } from './lib.ts'
 import { startMediaDevServer } from './media-dev-server.ts'
 
 const API = process.env.API_URL ?? 'http://localhost:8000'
@@ -56,14 +56,11 @@ function cookieOf(headers: Headers): string | null {
   return setCookie ? setCookie.split(';')[0] : null
 }
 
-async function login(username: string, password: string): Promise<string | null> {
-  const res = await fetch(`${API}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  })
-  if (res.status !== 200) return null
-  return cookieOf(res.headers)
+// Signing in goes through `signIn` (scripts/lib.ts) rather than posting the
+// password: since migration 0013 the stored hash is of a token the *client*
+// derives, so a plaintext login is refused. ~600ms of PBKDF2 per call.
+function login(username: string, password: string): Promise<string | null> {
+  return signIn(API, username, password)
 }
 
 interface Guest {

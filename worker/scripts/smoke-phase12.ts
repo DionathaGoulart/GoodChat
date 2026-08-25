@@ -13,7 +13,7 @@
 // window is a minute wide, and a smoke test that sleeps for it is a smoke test
 // nobody runs.
 
-import { d1Execute, sqlString } from './lib.ts'
+import { d1Execute, signIn, sqlString } from './lib.ts'
 
 const API = process.env.API_URL ?? 'http://localhost:8000'
 
@@ -46,15 +46,13 @@ async function api(
   return { status: res.status, body }
 }
 
+// Signing in goes through `signIn` (scripts/lib.ts) rather than posting the
+// password: since migration 0013 the stored hash is of a token the *client*
+// derives, so a plaintext login is refused. ~600ms of PBKDF2 per call.
 async function login(username: string, password: string): Promise<string> {
-  const res = await fetch(`${API}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  })
-  const setCookie = res.headers.get('Set-Cookie')
-  if (res.status !== 200 || !setCookie) throw new Error(`login ${username} failed (${res.status})`)
-  return setCookie.split(';')[0]
+  const cookie = await signIn(API, username, password)
+  if (!cookie) throw new Error(`login ${username} failed`)
+  return cookie
 }
 
 const aliceCookie = await login(ALICE.username, ALICE.password)

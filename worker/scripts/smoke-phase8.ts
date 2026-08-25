@@ -24,7 +24,7 @@ import { randomUUID, subtle, getRandomValues } from 'node:crypto'
 import WebSocket from 'ws'
 import { generateVapidKeys } from '@mmmike/web-push/vapid'
 import { sendPushNotification } from '@mmmike/web-push/send'
-import { insertUser } from './lib.ts'
+import { insertUser, signIn } from './lib.ts'
 
 const API = process.env.API_URL ?? 'http://localhost:8000'
 const WS_API = API.replace(/^http/, 'ws')
@@ -54,15 +54,13 @@ async function api(
   return { status: res.status, body, setCookie: res.headers.get('Set-Cookie') }
 }
 
+// Signing in goes through `signIn` (scripts/lib.ts) rather than posting the
+// password: since migration 0013 the stored hash is of a token the *client*
+// derives, so a plaintext login is refused. ~600ms of PBKDF2 per call.
 async function login(username: string, password: string): Promise<string> {
-  const res = await api('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ username, password }),
-  })
-  if (res.status !== 200 || !res.setCookie) {
-    throw new Error(`login ${username} failed (${res.status}): ${JSON.stringify(res.body)}`)
-  }
-  return res.setCookie.split(';')[0]
+  const cookie = await signIn(API, username, password)
+  if (!cookie) throw new Error(`login ${username} failed`)
+  return cookie
 }
 
 // --- RFC 8291 receiver side (what the browser's push service + SW do) ---

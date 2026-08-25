@@ -1,6 +1,7 @@
 // REST client for the GoodChat Worker (phases 2–3 shapes, see plan.md
 // handoffs). Cookie-based session: every call rides `credentials: include`.
 
+import type { KdfParams } from './kdf'
 import type { WireMessage } from './protocol'
 import type { Mode } from './themes'
 
@@ -62,6 +63,12 @@ export interface SessionUser extends PublicUser {
   /** Guest account: it and its data are deleted at `expires_at`. */
   is_temp: boolean
   expires_at: number | null
+  /**
+   * The worker still holds a hash of a password it was told (migration 0013).
+   * The app refuses to show anything else until a new one is set — see
+   * screens/RotatePasswordScreen.tsx.
+   */
+  must_rotate: boolean
 }
 
 export interface ConversationListItem {
@@ -125,8 +132,53 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-export function login(username: string, password: string): Promise<{ user: SessionUser }> {
-  return call('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+/**
+ * The salt and cost this account's password has to be run through, before
+ * anything can be sent (lib/kdf.ts). Answers for every username — a name with
+ * no rotated account behind it gets a deterministic decoy — so nothing here
+ * says whether an account exists.
+ */
+export function kdfParams(username: string): Promise<KdfParams> {
+  return call('/api/auth/kdf', { method: 'POST', body: JSON.stringify({ username }) })
+}
+
+/** Sign in with the derived token. The password itself never goes. */
+export function login(username: string, authToken: string): Promise<{ user: SessionUser }> {
+  return call('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, auth_token: authToken }),
+  })
+}
+
+/**
+ * Sign in with the password itself, for an account that has not rotated
+ * (migration 0013). Only ever called after `login` above was refused, which
+ * means this password is already known not to open the account the new way —
+ * see the note on the worker's login route for why that ordering is the whole
+ * of what keeps this endpoint from enumerating accounts.
+ */
+export function loginLegacy(
+  username: string,
+  password: string,
+): Promise<{ user: SessionUser }> {
+  return call('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+}
+
+/**
+ * The one-time move off a password the server knows. Takes the current one in
+ * the clear — the worker still holds a hash of it and has no other way to
+ * check — plus everything derived from the new one.
+ */
+export function rotatePassword(body: {
+  current_password: string
+  auth_token: string
+  kdf_salt: string
+  kdf_iterations: number
+}): Promise<{ ok: boolean }> {
+  return call('/api/auth/rotate', { method: 'POST', body: JSON.stringify(body) })
 }
 
 export interface TempAccountResult {
@@ -159,17 +211,17 @@ export function logout(): Promise<{ ok: boolean }> {
 }
 
 /**
- * Own password. Requires the current one, and signs every *other* device out —
- * the worker hands this tab a fresh cookie so it stays where it is.
+ * Own password. Neither the old nor the new one travels: both are derived here
+ * (lib/kdf.ts) and only the tokens go. Signs every *other* device out — the
+ * worker hands this tab a fresh cookie so it stays where it is.
  */
-export function changePassword(
-  currentPassword: string,
-  newPassword: string,
-): Promise<{ ok: boolean }> {
-  return call('/api/auth/password', {
-    method: 'PATCH',
-    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
-  })
+export function changePassword(body: {
+  current_auth_token: string
+  auth_token: string
+  kdf_salt: string
+  kdf_iterations: number
+}): Promise<{ ok: boolean }> {
+  return call('/api/auth/password', { method: 'PATCH', body: JSON.stringify(body) })
 }
 
 export function me(): Promise<{ user: SessionUser }> {

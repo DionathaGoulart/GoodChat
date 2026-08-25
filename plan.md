@@ -219,7 +219,59 @@ tamanho é nos dois lados.
 **Entrega:** ninguém consegue derivar `wrapKey` a partir do que o servidor
 guarda ou vê passar.
 
-**Handoff:** _(preencher ao concluir)_
+**Handoff:** feito, e verificado contra a stack local — `/kdf` devolve salt
+determinístico para nome inexistente, login derivado numa conta legada dá 401,
+o fallback legado devolve `must_rotate: true`, `/rotate` grava, e depois a senha
+antiga para de funcionar.
+
+**A decisão de desenho que o plano deixava em aberto: como o cliente descobre
+que a conta é legada.** Não descobre — ele tenta. `/kdf` responde com um salt
+para *qualquer* nome: real para conta rotacionada, decoy HMAC para
+inexistente **e para legada**, na mesma forma. O cliente deriva, tenta com
+`auth_token`, e só depois de `invalid_credentials` manda a senha. Isso é o que
+mantém o par de requisições idêntico entre "conta não existe" e "senha errada"
+— qualquer desenho em que `/kdf` dissesse o formato responderia "essa conta
+existe" de graça. O custo é que uma tentativa derivada que falha é seguida da
+senha em claro; aceitável exatamente porque falhou (uma senha que não abre a
+conta não diz nada sobre ela). O caso em que custa algo — digitar a senha de
+*outra* conta da mesma instância — está escrito na rota.
+
+Outra consequência do mesmo ordenamento, também anotada em `login`: um sign-in
+legado gasta um slot de falha antes de acertar. Zera no sucesso; só morde uma
+conta já em quatro falhas, e acaba quando ela rotaciona.
+
+**Além do que a tabela previa:**
+
+- `changePassword` **também** virou derivada nesta fase, não na 4. Não dava pra
+  adiar: ela grava `password_hash` e, se continuasse gravando hash de texto
+  claro, deixaria a conta com `kdf_salt` descrevendo um hash que não é mais o
+  dela — uma conta em que ninguém entra. A fase 4 acrescenta o reembrulho da
+  chave por cima da mesma chamada.
+- `POST /api/admin/users` e o reset do dono gravam
+  `kdf_salt = NULL, kdf_iterations = NULL, must_rotate = 1` junto com o hash. É
+  o invariante: senha que o servidor escolheu é senha que o servidor sabe.
+  Achei um bug ao fazer isso — os placeholders do `UPDATE` eram numerados por
+  `sets.length`, e três atribuições literais (`= NULL`, `= 1`) desalinhariam o
+  `WHERE`. Passou a numerar por `bindings.length`.
+- `worker/scripts/lib.ts` importa `app/src/lib/kdf.ts` atravessando a fronteira
+  do workspace (Node 24 resolve `.ts` direto; `smoke-phase16.ts` já fazia isso
+  com `e2ee.ts`). Tem que ser **uma** implementação: um CLI que hasheasse do
+  jeito antigo criaria uma conta em que o navegador não entra. `user:create`
+  agora nasce já em v2, sem tela de rotação.
+- Todas as smokes que logavam com senha passaram a usar `signIn` do `lib.ts`,
+  que faz o mesmo par de requisições do app, **incluindo o fallback legado** —
+  senão o teste estaria exercitando um caminho que o app não usa.
+- `KDF_DECOY_SALT` novo (cai em `RATE_LIMIT_SALT`, e depois numa constante),
+  declarado em `.dev.vars`, `.env.example` e `worker-configuration.d.ts`.
+- O mínimo de 12 no servidor só vale onde o servidor ainda vê senha: console do
+  dono e CLI. Nos caminhos derivados ele recebe um token de tamanho fixo e não
+  tem o que medir — `MIN_PASSWORD_LENGTH` em `app/src/lib/kdf.ts` é a regra
+  inteira ali, e isso está escrito nos dois arquivos.
+
+Fixtures de dev rotacionadas para v2 com as mesmas senhas documentadas
+(`alice-goodchat`, `bob-goodchat`, `good-goodchat`). Smokes 4, 6, 7, 8, 9, 10,
+11, 12, 13, 14, 15 e 16 verdes. A 3 falha em `exists=false` por estado
+acumulado no D1 local — o mesmo aviso que a fase 6 dá.
 
 ---
 

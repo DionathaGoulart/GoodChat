@@ -16,6 +16,7 @@ import WebSocket from 'ws'
 import { STICKER_ID_RE } from '../src/protocol.ts'
 import { startMediaDevServer } from './media-dev-server.ts'
 import { publishStickers } from './publish-stickers.ts'
+import { signIn } from './lib.ts'
 
 const API = process.env.API_URL ?? 'http://localhost:8000'
 const WS_API = API.replace(/^http/, 'ws')
@@ -45,15 +46,13 @@ async function api(
   return { status: res.status, body }
 }
 
+// Signing in goes through `signIn` (scripts/lib.ts) rather than posting the
+// password: since migration 0013 the stored hash is of a token the *client*
+// derives, so a plaintext login is refused. ~600ms of PBKDF2 per call.
 async function login(username: string, password: string): Promise<string> {
-  const res = await fetch(`${API}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  })
-  const setCookie = res.headers.get('Set-Cookie')
-  if (res.status !== 200 || !setCookie) throw new Error(`login ${username} failed (${res.status})`)
-  return setCookie.split(';')[0]
+  const cookie = await signIn(API, username, password)
+  if (!cookie) throw new Error(`login ${username} failed`)
+  return cookie
 }
 
 /** WS client: buffers frames, lets the test await a matching one. */
