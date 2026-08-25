@@ -275,7 +275,13 @@ function LiveThread({
     if (!myId || readonly) return
     let cancelled = false
     void (async () => {
-      const key = await getAccountKey(otherUser.id)
+      // Forced, for the same reason the safety-number dialog forces it: the
+      // question here is "did this change", and the directory cache is five
+      // minutes of "it did not" (lib/keyDirectory.ts). Reading it meant that a
+      // key replaced *since the last look* — which is the whole window a
+      // targeted swap lives in — produced no banner at all, while the messages
+      // below quietly stopped opening. One request per thread open.
+      const key = await getAccountKey(otherUser.id, true)
       if (cancelled || !key) return
       const fingerprint = await keyFingerprint(key)
       if (cancelled) return
