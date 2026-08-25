@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "lint": "oxlint",
+    "check:expiry": "node scripts/check-expiry.ts",
     "preview": "vite preview"
   },
   "dependencies": {
