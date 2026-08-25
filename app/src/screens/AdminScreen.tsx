@@ -18,6 +18,7 @@ import * as api from '../lib/api'
 import type { AdminConversation, AdminOverview, AdminUser, AuditEntry } from '../lib/api'
 import { ApiError } from '../lib/api'
 import { useSession } from '../hooks/useSession'
+import { MIN_PASSWORD_LENGTH } from '../lib/kdf'
 import { Modal } from '../components/Modal'
 import { Panel } from '../components/Panel'
 import { RetroIconButton } from '../components/RetroIconButton'
@@ -523,7 +524,7 @@ function ConversationsPanel({
 const AUDIT_LABELS: Record<string, string> = {
   'user.create': 'criou a conta',
   'user.update': 'editou a conta',
-  'user.password_reset': 'redefiniu a senha de',
+  'user.password_reset': 'redefiniu a senha (e descartou a chave) de',
   'user.delete': 'apagou a conta',
   'user.purge_history': 'apagou o histórico de',
   'conversation.purge': 'apagou a conversa',
@@ -697,7 +698,9 @@ function CreateUserDialog({
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const valid = /^[a-z0-9_]{3,20}$/.test(username.trim().toLowerCase()) && password.length >= 8
+  const valid =
+    /^[a-z0-9_]{3,20}$/.test(username.trim().toLowerCase()) &&
+    password.length >= MIN_PASSWORD_LENGTH
 
   return (
     <Modal onCancel={onCancel}>
@@ -712,7 +715,7 @@ function CreateUserDialog({
           onChange={(event) => setUsername(event.target.value.toLowerCase())}
         />
       </Field>
-      <Field label="senha" hint="mínimo 8 caracteres">
+      <Field label="senha" hint={`mínimo ${MIN_PASSWORD_LENGTH} caracteres`}>
         <input
           className="input input-bordered w-full font-mono"
           type="password"
@@ -768,7 +771,19 @@ function PasswordDialog({
       <p className="text-sm opacity-70">
         Todas as sessões dessa conta caem imediatamente.
       </p>
-      <Field label="senha" hint="mínimo 8 caracteres">
+      {/* The cost, before the click and not after it. The owner cannot unwrap
+          this account's key — that is the property the whole product is built
+          on — so it cannot be carried across a reset, and every message sealed
+          to it goes with it. Saying it here is the difference between a choice
+          and a surprise. */}
+      <p className="retro-border bg-error/10 p-3 font-mono text-[10px] uppercase leading-relaxed tracking-[0.15em] text-error">
+        isto apaga a chave de @{username}.
+        <span className="block opacity-80">
+          todo o histórico dessa conta some, inclusive o que a outra pessoa mandou.
+          você não consegue reembrulhar a chave porque não consegue abri-la.
+        </span>
+      </p>
+      <Field label="senha" hint={`mínimo ${MIN_PASSWORD_LENGTH} caracteres`}>
         <input
           className="input input-bordered w-full font-mono"
           type="password"
@@ -779,8 +794,11 @@ function PasswordDialog({
       </Field>
       <div className="flex justify-end gap-2">
         <RetroIconButton onClick={onCancel}>cancelar</RetroIconButton>
-        <RetroIconButton disabled={password.length < 8 || busy} onClick={() => onSubmit(password)}>
-          definir
+        <RetroIconButton
+          disabled={password.length < MIN_PASSWORD_LENGTH || busy}
+          onClick={() => onSubmit(password)}
+        >
+          definir e apagar a chave
         </RetroIconButton>
       </div>
     </Modal>

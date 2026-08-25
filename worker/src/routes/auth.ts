@@ -414,6 +414,81 @@ export async function rotatePassword(request: Request, env: Env): Promise<Respon
   return json({ ok: true }, 200, { 'Set-Cookie': cookie })
 }
 
+const PasswordChallengeSchema = z.object({
+  current_auth_token: z.string().min(1).max(128),
+})
+
+/**
+ * POST /api/auth/password/challenge — hands back this account's wrapped key,
+ * to whoever can prove they know the password.
+ *
+ * It exists because changing a password means rewrapping the account key, and
+ * only the browser can do that: it has to unwrap under the old `wrapKey` and
+ * seal under the new one, and neither of those ever reaches the server. So the
+ * browser needs the stored blob, and this is where it gets it.
+ *
+ * A plain `GET /api/account/key` would have been one line and a real
+ * weakening. The blob is a ciphertext whose key is derived from the password,
+ * so handing it to any session turns a stolen cookie — which today reads
+ * nothing, because the account key is not in that browser — into an offline
+ * password attack with no rate limit in front of it. Requiring
+ * `current_auth_token` keeps it available exactly to the person who could have
+ * derived it anyway, at the cost of one round trip on an operation nobody
+ * performs twice a day.
+ *
+ * Rate-limited on the login counters for the same reason `changePassword` is:
+ * verifying a credential here is the same oracle the login form is.
+ */
+export async function passwordChallenge(request: Request, env: Env): Promise<Response> {
+  const auth = await requireSession(request, env.DB)
+  if (auth instanceof Response) return auth
+
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return apiError('invalid_request', 400, 'body must be JSON')
+  }
+  const parsed = PasswordChallengeSchema.safeParse(body)
+  if (!parsed.success) {
+    return apiError('invalid_request', 400, 'current_auth_token is required')
+  }
+
+  const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
+  const rate = await checkLoginAllowed(env.DB, ip, auth.user.username, env)
+  if (rate.blocked) {
+    return apiError('rate_limited', 429, 'too many attempts, try again later', {
+      'Retry-After': String(rate.retryAfterSeconds),
+    })
+  }
+
+  const row = await env.DB.prepare(
+    `SELECT password_hash, must_rotate, account_public_key, account_key_wrapped, account_key_iv
+     FROM users WHERE id = ?`,
+  )
+    .bind(auth.user.id)
+    .first<{
+      password_hash: string | null
+      must_rotate: number
+      account_public_key: string | null
+      account_key_wrapped: string | null
+      account_key_iv: string | null
+    }>()
+  if (row?.must_rotate === 1) {
+    return apiError('rotation_required', 409, 'esta conta precisa migrar a senha primeiro')
+  }
+  const valid = row?.password_hash
+    ? await verifyPassword(parsed.data.current_auth_token, row.password_hash)
+    : false
+  if (!valid) {
+    await recordLoginFailure(env.DB, ip, auth.user.username, env)
+    return apiError('invalid_credentials', 401, 'senha atual incorreta')
+  }
+  await clearLoginFailures(env.DB, auth.user.username, env, ip)
+
+  return json({ account_key: row ? readAccountKey(row) : null }, 200, sessionHeaders(auth))
+}
+
 const ChangePasswordSchema = z.object({
   /** Derived from the current password against the account's stored salt. */
   current_auth_token: z.string().min(1).max(128),
@@ -421,6 +496,11 @@ const ChangePasswordSchema = z.object({
   auth_token: z.string().min(1).max(128),
   kdf_salt: z.string().min(16).max(64),
   kdf_iterations: z.number().int().min(100_000).max(5_000_000),
+  /**
+   * The same account key, sealed under the new `wrapKey`. Null only for an
+   * account that has none to rewrap — a guest, or one that never published.
+   */
+  account_key: AccountKeySchema.nullable(),
 })
 
 /**
@@ -497,14 +577,24 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
   // A new password is a new `wrapKey`, and the account key is wrapped under the
   // old one. Writing the hash without the rewrap would leave a blob nobody can
   // open — the history gone, silently, as a side effect of a routine password
-  // change. Refused until the client sends it (see the rewrap change).
-  if (row?.account_public_key) {
-    return apiError(
-      'rewrap_required',
-      409,
-      'este build ainda não reembrulha a chave da conta ao trocar a senha',
-    )
+  // change. The client fetches the blob from the challenge above, unwraps it
+  // with the old key and seals it under the new one; refusing here is what
+  // makes that not optional.
+  if (row?.account_public_key && parsed.data.account_key === null) {
+    return apiError('rewrap_required', 409, 'a chave da conta precisa ser reembrulhada')
   }
+  // The same key, not a different one. A rewrap that changed the public half
+  // would be a silent history wipe wearing a password change's clothes — every
+  // stored message is sealed to the old one and nothing can re-seal them.
+  if (
+    row?.account_public_key &&
+    parsed.data.account_key &&
+    parsed.data.account_key.public_key !== row.account_public_key
+  ) {
+    return apiError('invalid_request', 400, 'a chave da conta não pode mudar aqui')
+  }
+  const shape = parsed.data.account_key && accountKeyShapeError(parsed.data.account_key)
+  if (shape) return apiError('invalid_request', 400, shape)
   const valid = row?.password_hash
     ? await verifyPassword(parsed.data.current_auth_token, row.password_hash)
     : false
@@ -513,13 +603,21 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
     return apiError('invalid_credentials', 401, 'senha atual incorreta')
   }
 
+  // One statement: the hash, the salt it was derived against, and the key
+  // sealed under what that salt produces. Any two of the three without the
+  // third is an account that cannot be opened by anybody, including its owner.
   await env.DB.prepare(
-    'UPDATE users SET password_hash = ?1, kdf_salt = ?2, kdf_iterations = ?3 WHERE id = ?4',
+    `UPDATE users SET password_hash = ?1, kdf_salt = ?2, kdf_iterations = ?3,
+                      account_key_wrapped = COALESCE(?4, account_key_wrapped),
+                      account_key_iv = COALESCE(?5, account_key_iv)
+     WHERE id = ?6`,
   )
     .bind(
       await hashPassword(parsed.data.auth_token),
       parsed.data.kdf_salt,
       parsed.data.kdf_iterations,
+      parsed.data.account_key?.wrapped ?? null,
+      parsed.data.account_key?.iv ?? null,
       auth.user.id,
     )
     .run()

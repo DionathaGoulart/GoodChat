@@ -18,6 +18,7 @@ import { tempAccountConfig } from './lib/accounts'
 import { publishAccountKey } from './routes/accountKey'
 import {
   changePassword,
+  passwordChallenge,
   createTempSession,
   kdfParams,
   login,
@@ -100,6 +101,9 @@ async function route(
   if (pathname === '/api/account/key' && method === 'PUT') return publishAccountKey(request, env)
   if (pathname === '/api/auth/kdf' && method === 'POST') return kdfParams(request, env)
   if (pathname === '/api/auth/rotate' && method === 'POST') return rotatePassword(request, env)
+  if (pathname === '/api/auth/password/challenge' && method === 'POST') {
+    return passwordChallenge(request, env)
+  }
   if (pathname === '/api/auth/temp' && method === 'POST') return createTempSession(request, env)
   if (pathname === '/api/auth/password' && method === 'PATCH') {
     return changePassword(request, env)

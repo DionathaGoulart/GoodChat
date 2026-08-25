@@ -236,11 +236,27 @@ export function logout(): Promise<{ ok: boolean }> {
  * (lib/kdf.ts) and only the tokens go. Signs every *other* device out — the
  * worker hands this tab a fresh cookie so it stays where it is.
  */
+/**
+ * The stored account key, in exchange for proof of the password. The one way
+ * to reach the wrapped blob outside of signing in — see the worker's route for
+ * why it is not a plain GET.
+ */
+export function passwordChallenge(
+  currentAuthToken: string,
+): Promise<{ account_key: WrappedAccountKey | null }> {
+  return call('/api/auth/password/challenge', {
+    method: 'POST',
+    body: JSON.stringify({ current_auth_token: currentAuthToken }),
+  })
+}
+
 export function changePassword(body: {
   current_auth_token: string
   auth_token: string
   kdf_salt: string
   kdf_iterations: number
+  /** The same key, sealed under the new `wrapKey`. Null when there is none. */
+  account_key: WrappedAccountKey | null
 }): Promise<{ ok: boolean }> {
   return call('/api/auth/password', { method: 'PATCH', body: JSON.stringify(body) })
 }

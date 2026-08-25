@@ -372,6 +372,26 @@ export async function updateAccount(
     // stored salt no longer describes its stored hash, which is an account
     // nobody can sign in to.
     sets.push('kdf_salt = NULL', 'kdf_iterations = NULL', 'must_rotate = 1')
+    // And the account key goes with it, because it cannot be brought along.
+    //
+    // The key is sealed under a `wrapKey` derived from the password the person
+    // chose; the owner does not have that password, cannot unwrap the key, and
+    // therefore cannot reseal it under the new one. There is no version of this
+    // where the history survives a reset — which is the same sentence as "the
+    // owner cannot read a reset account's messages", said from the other side.
+    //
+    // All three columns, not just the wrapped half. Leaving `account_public_key`
+    // behind would leave peers encrypting to a key nobody can open: messages
+    // that arrive, look delivered, and are unreadable forever. With it gone the
+    // peer's client finds no key and sends in the clear, which an instance with
+    // E2EE_REQUIRED refuses out loud — a visible failure instead of a silent
+    // one, until the person signs in and publishes a new key (routes/auth.ts,
+    // `rotatePassword`).
+    sets.push(
+      'account_public_key = NULL',
+      'account_key_wrapped = NULL',
+      'account_key_iv = NULL',
+    )
   }
   if (parsed.disabled !== undefined) {
     sets.push(`disabled_at = ${placeholder()}`)
@@ -404,6 +424,10 @@ export async function updateAccount(
       fields: Object.keys(parsed).sort(),
       ...(parsed.disabled !== undefined ? { disabled: parsed.disabled } : {}),
       ...(parsed.role !== undefined ? { role: parsed.role } : {}),
+      // What the reset destroyed, recorded where it cannot be argued about
+      // later. The owner was told before clicking (screens/AdminScreen.tsx);
+      // this is the same fact, in the record.
+      ...(parsed.password !== undefined ? { account_key_discarded: true } : {}),
     },
   })
 
@@ -413,7 +437,7 @@ export async function updateAccount(
   if (parsed.password !== undefined && target.id !== owner.auth.user.id) {
     await notifyUser(env, target.id, {
       title: 'GoodChat',
-      body: `a senha da sua conta foi redefinida por @${owner.auth.user.username}`,
+      body: `@${owner.auth.user.username} redefiniu sua senha — o histórico foi perdido`,
       url: '/#/config',
       tag: 'account-security',
     })
