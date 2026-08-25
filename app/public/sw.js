@@ -1,8 +1,9 @@
 // GoodChat service worker (phase 8).
 //
 // Caching: deliberately minimal (plan: "cache estático mínimo, sem cache de
-// API"). Same-origin GETs only; the API lives on another origin and is never
-// touched here — and /api/ is skipped anyway as defense in depth.
+// API"). Same-origin GETs only; nothing under /api/ is ever cached or
+// intercepted here. The one place this worker talks to the API is the push
+// preview below, which reads a message back — see API_ORIGIN for where.
 //   - /assets/*  → cache-first (Vite content-hashed, immutable)
 //   - navigations → network-first, cached app shell as offline fallback
 //   - everything else (icons, manifest) → network, no caching
@@ -27,6 +28,16 @@
 // (app/src/lib/push.ts → 'close-notifications').
 
 const CACHE = 'goodchat-v1'
+/**
+ * Where the API answers. Empty in production, where the Worker serves this file
+ * and the API is the same origin; in development it is the other port, handed
+ * over in the registration URL (src/main.tsx) because that is the one channel
+ * that survives a worker restart with no page open — which is exactly the state
+ * a push arrives in. Without it `fetch('/api/...')` from here reaches the Vite
+ * dev server, gets the app shell back with a 200, and every preview goes
+ * generic for a reason nothing reports.
+ */
+const API_ORIGIN = new URL(self.location.href).searchParams.get('api') ?? ''
 // Valid JS either way: the build swaps this expression for the array literal,
 // and in dev — where public/sw.js is served untouched and the worker is still
 // registered (src/main.tsx) — it is undefined and the shell is simply empty.
@@ -352,7 +363,7 @@ function previewAad(conversationId, message) {
  * right.
  */
 async function fetchConversation(conversationId) {
-  const response = await fetch('/api/conversations', { credentials: 'include' })
+  const response = await fetch(`${API_ORIGIN}/api/conversations`, { credentials: 'include' })
   if (!response.ok) return null
   const { conversations } = await response.json()
   return (conversations ?? []).find((item) => item.id === conversationId) ?? null
