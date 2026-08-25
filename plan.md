@@ -1,235 +1,359 @@
-# GoodChat — Plano de verificação do cliente criptográfico
+# GoodChat — Plano: a conta como unidade de leitura
 
-Retomada do `plan.md` original, mesmo protocolo: fases autocontidas, feitas para
-rodar com **contexto limpo**, cada uma declarando o que ler ao começar e
-terminando com um handoff aqui dentro.
+Mesmo protocolo dos planos anteriores: **fases autocontidas**, feitas para rodar
+com contexto limpo. Cada uma declara o que ler ao começar, o que entrega, e
+termina com um handoff preenchido aqui dentro.
 
-Duas fases, uma pergunta cada. Ambas precisam de navegador — é por isso que
-existem separadas, e não como mais um `smoke:phaseN`.
+As fases são sequenciais a partir da 1 — a 0 é independente e pode ir primeiro
+ou em paralelo.
 
 ---
 
-## Contexto
+## Por que
 
-O E2EE foi implementado e verificado até onde dá sem navegador:
+Hoje a unidade de leitura é o **dispositivo**. Cada navegador gera um par ECDH
+próprio, a chave de conteúdo é embrulhada uma vez por aparelho, e um navegador
+novo começa cego no histórico — aparece como
+`[mensagem de antes deste dispositivo]`. Existe um repasse
+(`request_keys`/`share_keys`), mas ele só funciona com outro aparelho **online e
+na mesma conversa aberta**.
 
-| Camada | Como está coberta |
+A decisão: a unidade de leitura passa a ser a **conta**. Uma pessoa loga em
+qualquer lugar e vê as conversas dela, sem vincular nada, sem QR, sem repasse.
+
+O que **não** muda, e é a razão de o plano ser este e não outro:
+
+| quem | lê? |
 | --- | --- |
-| Worker, envelope, mídia, diretório de chaves | `smoke:phase15` — uma **segunda implementação** do formato, escrita a partir do `docs/architecture.md`, conversando com o Worker de verdade |
-| `app/src/lib/e2ee.ts` | `smoke:phase16` — o módulo real, cruzado com a implementação da phase 15 **nos dois sentidos** (o app abre o que a referência selou, e vice-versa) |
-| `app/public/sw.js` | `smoke:phase16` — o arquivo avaliado num sandbox com os globais de worker, decifrando algo que o app selou |
+| o dono da instância | **não** |
+| a Cloudflare | **não** |
+| a Cloudflare sob intimação | **não** |
+| as contas na conversa | **sim** |
 
-Sobrou o que não roda em Node:
+Isso só se sustenta se a senha **nunca chegar ao servidor de forma utilizável**.
+É o que a fase 1 resolve, e é por isso que ela vem antes da criptografia.
 
-1. **`app/src/lib/deviceKeys.ts`** — o IndexedDB. Uma pergunta binária: uma
-   `CryptoKey` não-extraível sobrevive ao structured clone? Se não, o app
-   funciona perfeitamente e **não criptografa nada**.
-2. **A fiação React** — `useConversation` (selar no envio, abrir na recepção, a
-   fila serializada de frames), `MessageBubble` (fetch → decifra → object URL),
-   `ConversationsScreen` (previews da lista).
+### O que isso custa, explicitamente
 
-O modo de falha silencioso que ligava as duas — mandar em texto claro sem avisar
-— já foi fechado: `useConversation` reporta `encryption: 'unknown' | 'on' | 'off'`
-calculado com exatamente as condições que o `seal` checa, e a thread mostra 🔓 e
-a faixa "esta conversa não está criptografada". Então o que resta aqui é
-**medir**, não blindar.
+1. **Senha fraca + dump do D1 = legível.** Sem HSM, a entropia da senha é o que
+   segura brute force offline. Daí o mínimo de 12 e o medidor na fase 1.
+2. **Perdeu a senha, perdeu o histórico.** Não existe recuperação, por
+   construção. É o preço de não haver nada no servidor.
+3. **Some o escopo de comprometimento.** Hoje um aparelho roubado vaza só o que
+   ele endereçava; depois vaza a conta. Trade aceito.
+4. **O servidor entrega o JS.** Um build malicioso poderia vazar a senha. Mesmo
+   teto do Bitwarden e do Proton. Não invalida o desenho; está aqui para não ser
+   descoberto depois como se fosse surpresa.
+
+### Dependência não resolvida
+
+`plan-e2ee-verification.md` fase 1 continua em aberto: **uma `CryptoKey`
+não-extraível sobrevive ao structured clone do IndexedDB?** Era importante; agora
+é bloqueante. `accountKeys.ts` (fase 2) usa exatamente essa técnica, e se a
+resposta for não, a chave de conta não pode ficar não-extraível e o desenho muda.
+**Responder antes de começar a fase 2.**
 
 ---
 
-## Estado global
+## Fase 0 — contas guest sem senha
 
-| Fase | Nome | Status |
-| --- | --- | --- |
-| 17 | A chave neste navegador | ✅ feita |
-| 18 | A conversa de ponta a ponta | ⬜ pendente |
+Independente do resto. Pode ir primeiro; simplifica a fase 1, porque remove o
+único caso em que o servidor conhece uma senha.
 
-Pré-requisito das duas (subir a stack):
+**Ler antes:** `worker/src/lib/accounts.ts`, `worker/src/routes/auth.ts`
+(`createTempSession`, `logout`), `app/src/components/TempAccount.tsx`,
+`app/src/components/PasswordCard.tsx`.
 
-```bash
-cd worker && npm run db:migrate && npm run db:seed
-node scripts/create-user.ts --owner good good-goodchat Good
-npm run dev            # :8000
-npm run media:dev      # :9000  (outro terminal)
-npm run stickers:publish
-cd ../app && npm run dev   # :5173
+### O que muda
+
+Guest hoje: TTL de 5h, senha gerada no servidor e mostrada uma vez, dá pra
+relogar com ela. Guest depois:
+
+- **3 horas** de TTL (`TEMP_ACCOUNT_TTL_HOURS`, `wrangler.jsonc:105`)
+- **sem senha nenhuma.** `password_hash` fica NULL. Não há o que mostrar, não há
+  o que guardar, não há relogin
+- **logout apaga a conta na hora.** A rota `logout` passa a chamar
+  `deleteAccountKeepingPeers` quando `is_temp`
+- fechou a aba sem deslogar: o TTL de 3h pega, como hoje
+
+### Por que isso deixa o desenho melhor, não pior
+
+É a única exceção do plano inteiro. Sem senha, não existe segredo derivável pelo
+servidor — então a chave da conta guest é gerada no navegador e **nunca sai
+dele**, sem embrulho, sem linha no D1.
+
+Guest volta a ser exatamente o modelo por-dispositivo, e ali ele está certo: um
+guest tem um dispositivo só, por definição. Some da fase 4 a ressalva "guest é
+estruturalmente mais fraco".
+
+### Arquivos
+
+| arquivo | o quê |
+| --- | --- |
+| `worker/wrangler.jsonc` | `TEMP_ACCOUNT_TTL_HOURS: "3"` |
+| `worker/src/lib/accounts.ts` | `DEFAULT_TTL_HOURS = 3`; `createTempAccount` para de gerar senha |
+| `worker/src/routes/auth.ts` | `createTempSession` não devolve `password`; `logout` apaga se `is_temp` |
+| `app/src/components/PasswordCard.tsx` | some (só existia pro guest) |
+| `app/src/components/TempAccount.tsx` | tira o cartão de credenciais, mantém o contador |
+| `app/src/hooks/useSession.tsx` | logout de guest limpa IndexedDB também |
+
+### Cuidados
+
+- **Logout tem que apagar a chave local.** Senão sobra `CryptoKey` órfã no
+  IndexedDB de uma conta que não existe mais. `wipeDeviceKey` já existe.
+- **A conversa do peer sobrevive.** `deleteAccountKeepingPeers` já mantém o
+  thread com lápide (`readonly`) quando o outro lado ainda existe. Nada a fazer,
+  mas confirmar no smoke.
+- **`smoke:phase10`** cobre guest hoje e vai quebrar: ele espera senha na
+  resposta. Reescrever junto.
+
+**Entrega:** guest de 3h, sem senha, apagado no logout.
+
+**Handoff:** _(preencher ao concluir)_
+
+---
+
+## Fase 1 — a senha para de chegar no servidor
+
+O alicerce. Nada de criptografia muda aqui; é só a autenticação.
+
+**Ler antes:** `worker/src/lib/password.ts`, `worker/src/routes/auth.ts`,
+`worker/src/lib/users.ts`, `app/src/hooks/useSession.tsx`,
+`app/src/screens/LoginScreen.tsx`.
+
+### O desenho
+
+```
+masterKey = PBKDF2-SHA256(senha, kdf_salt, 600_000)    ← só no navegador
+authToken = PBKDF2-SHA256(masterKey, senha, 1)         ← vai pro servidor
+wrapKey   = HKDF(masterKey, "goodchat/wrap/v1")        ← só no navegador (fase 2)
 ```
 
-O D1 local acumula estado entre execuções. Antes de afirmar qualquer coisa da
-forma "ainda não existe", apague `worker/.wrangler/state` e refaça o seed — foi
-o que fez a `smoke:phase3` falhar três vezes por motivo nenhum.
+O servidor guarda `hashPassword(authToken)` — `lib/password.ts` intocado, só com
+outra entrada. De `authToken` não se volta pra `masterKey`.
+
+O cap de 100k iterações do Workers (documentado no `password.ts` como abaixo do
+recomendado pela OWASP) **deixa de importar**: a derivação cara roda no
+navegador, que não tem esse teto. 600k de verdade.
+
+### `POST /api/auth/kdf`
+
+O cliente precisa de `{salt, iterations}` **antes** de logar.
+
+**Username desconhecido tem que devolver salt determinístico e falso** —
+`HMAC(segredo_da_instância, username)`. Sem isso vira oráculo de enumeração de
+contas, e o `burnPasswordTime` do login já toma exatamente esse cuidado pelo
+motivo equivalente.
+
+### Rotação forçada
+
+O servidor não consegue calcular o novo hash sem o texto claro, então conta
+existente não migra sozinha:
+
+1. último login pelo caminho legado (texto claro, uma última vez)
+2. sessão volta com `must_rotate: true`
+3. cliente pede senha nova na hora, deriva tudo local
+4. manda `auth_token` + salt; servidor grava e limpa a flag
+
+A senha em claro passa pelo servidor **uma última vez por conta**. É inevitável e
+está registrado aqui de propósito.
+
+### Mínimo de senha
+
+12 caracteres e um medidor de força, no cadastro e na troca.
+`MIN_PASSWORD_LENGTH` em `lib/users.ts:19`. O medidor é cliente; a checagem de
+tamanho é nos dois lados.
+
+### Arquivos
+
+| arquivo | o quê |
+| --- | --- |
+| `worker/migrations/0013_client_kdf.sql` | `kdf_salt`, `kdf_iterations`, `must_rotate` em `users` |
+| `worker/src/routes/auth.ts` | `/kdf`, login por `auth_token`, rotação |
+| `worker/src/lib/users.ts` | mínimo 12 |
+| `worker/scripts/create-user.ts`, `seed.ts` | derivam do lado deles |
+| `app/src/lib/kdf.ts` | **novo** — as três derivações |
+| `app/src/hooks/useSession.tsx` | deriva antes de postar |
+| `app/src/screens/LoginScreen.tsx` | medidor, tela de rotação |
+
+**Entrega:** ninguém consegue derivar `wrapKey` a partir do que o servidor
+guarda ou vê passar.
+
+**Handoff:** _(preencher ao concluir)_
 
 ---
 
-## Fase 17 — A chave neste navegador
+## Fase 2 — a chave de conta
 
-**Objetivo:** responder a única pergunta que nenhum teste em Node responde, e
-verificar o ciclo de vida da identidade: criação, registro, reuso, apagamento.
+**Ler antes:** `app/src/lib/deviceKeys.ts`, `app/src/lib/e2ee.ts`,
+`plan-e2ee-verification.md` fase 1 (a dependência acima).
 
-**Ler antes:** `app/src/lib/deviceKeys.ts` (inteiro), o efeito de registro e o
-`forgetLocalState()` em `app/src/hooks/useSession.tsx`,
-`worker/src/routes/devices.ts`, `worker/migrations/0012_devices.sql`.
+Par ECDH P-256 por conta. Privada embrulhada em AES-GCM sob a `wrapKey`.
 
-**Tarefas:**
+```sql
+-- migration 0014
+ALTER TABLE users ADD COLUMN account_public_key  TEXT;
+ALTER TABLE users ADD COLUMN account_key_wrapped TEXT;
+ALTER TABLE users ADD COLUMN account_key_iv      TEXT;
+```
 
-1. Subir a stack, abrir `http://localhost:5173`, entrar como `alice`.
-2. DevTools → Application → IndexedDB → `goodchat-keys` → `identity`: deve haver
-   **uma** linha, com a chave do registro sendo o id da conta.
-3. **A pergunta que importa.** No console, ler a linha de volta pelo próprio
-   módulo e checar os quatro predicados:
-   ```js
-   const id = await (await import('/src/lib/deviceKeys.ts')).readDeviceKey('<user id>')
-   id.privateKey instanceof CryptoKey   // true
-   id.privateKey.extractable            // false
-   id.privateKey.type                   // 'private'
-   id.privateKey.algorithm.name         // 'ECDH'
-   ```
-4. Confirmar que exportar **falha**: `crypto.subtle.exportKey('raw', id.privateKey)`
-   tem que rejeitar. Se exportar, a chave não é o que o código afirma ser e a
-   fase para aqui — é uma decisão de arquitetura, não um bug para corrigir na
-   hora.
-5. Confirmar que o uso real ainda funciona com a chave **lida de volta** (não a
-   recém-gerada): um `deriveBits` de ECDH contra qualquer chave pública. É isso
-   que o `sealMessage` faz em toda mensagem.
-6. Recarregar a página: mesmo `id`, nenhuma linha nova em `devices` no D1 —
-   só `last_seen_at` avança.
-7. Conferir no D1 que o id da linha bate com o digest da chave pública
-   (`SHA-256(public_key)` truncado a 32 hex), que é o que sustenta o safety
-   number e o aviso de troca de chave.
-8. Logout: a object store fica vazia. Entrar como `bob` no mesmo navegador: id
-   novo, e nada da alice sobrou.
-9. Janela anônima: entrar, abrir uma conversa e confirmar que aparece 🔓 e a
-   faixa "esta conversa não está criptografada" — degradação visível, não
+Gerada no cliente, no cadastro ou na rotação. O worker recebe os três campos
+prontos e nunca vê a privada.
+
+ECDH e **não** ECDSA: a chave embrulha chave de conteúdo. Não precisa assinar
+nada, porque deixa de existir lista de dispositivos pra envenenar.
+
+`deviceKeys.ts` → `accountKeys.ts`. Quase a mesma forma: `CryptoKey`
+não-extraível em IndexedDB, escrita no login depois de desembrulhar. Mesmo
+modelo de ameaça de hoje — o que muda é de onde ela vem.
+
+**Entrega:** login em navegador zerado devolve a chave da conta.
+
+**Handoff:** _(preencher ao concluir)_
+
+---
+
+## Fase 3 — o envelope encolhe
+
+**Ler antes:** `worker/src/protocol.ts`, `worker/src/agent.ts`,
+`app/src/lib/e2ee.ts`, `app/src/hooks/useConversation.ts`.
+
+`v: 3` no `EncEnvelopeSchema`: `keys` passa de `{[device_id]: {iv, ct, via?}}`
+para `{[user_id]: {iv, ct}}`. Duas entradas, sempre.
+
+`sender_device` sai — o ECDH roda contra a chave pública da **conta** do
+remetente, e o `messageAad` já amarra conversa + conta + client_id.
+
+`v:1` e `v:2` aceitos por 7 dias, e o `protocol.ts` já tem esse precedente
+escrito para o `v:2`. Depois some.
+
+### O que isso apaga
+
+| onde | o quê |
+| --- | --- |
+| `protocol.ts` | `request_keys`, `share_keys`, `keys_requested`, `keys_shared` |
+| `agent.ts` | `handleRequestKeys`, `handleShareKeys`, `deviceBelongsTo`, `unaddressedDevices`, erro `stale_directory` |
+| `e2ee.ts` | `rewrapFor`, `unwrapsVia`, `isAddressedTo`, `devicesFingerprint` |
+| `useConversation.ts` | `askedForKeysRef`, `shareKeysWith`, `dismissKeyRequest`, todo o `resealPending` |
+| `ThreadScreen.tsx` | banner "um aparelho novo da sua conta pediu esta conversa" |
+| `lib/deviceDirectory.ts` | vira diretório de chave de conta, bem menor |
+| `routes/devices.ts` + migration 0012 | reduzido a assinatura de push |
+
+Apaga mais do que adiciona.
+
+### Número de segurança
+
+`safetyNumber(minhaContaPub, contaDelaPub)`. **Estável para sempre** — confere
+uma vez na vida. A distinção `new-device` / `since-verified` do `ThreadScreen`
+colapsa num alarme só, que passa a ser raro e a significar de verdade "a chave
+mudou".
+
+### Push
+
+`sw.js:261` lê a chave do IndexedDB — passa a ler a da conta, mesmo caminho.
+`push_subscriptions.device_id` vira id de assinatura, não de identidade.
+
+**Entrega:** `[mensagem de antes deste dispositivo]` deixa de existir.
+
+**Handoff:** _(preencher ao concluir)_
+
+---
+
+## Fase 4 — troca de senha e reset pelo dono
+
+**Ler antes:** `worker/src/routes/auth.ts` (`changePassword`),
+`worker/src/routes/admin.ts:321-395`.
+
+### Troca pela própria pessoa
+
+Cliente desembrulha com a `wrapKey` velha, reembrulha com a nova, manda
+`{auth_token_novo, wrapped_novo, iv_novo, salt_novo}` mais o `auth_token` velho
+para verificação. Servidor troca atomicamente. **Histórico preservado.**
+
+### Reset pelo dono
+
+O dono **não consegue** reembrulhar — não desembrulha. Então
+`account_key_wrapped = NULL`, e a pessoa gera par novo no próximo login.
+
+Consequência: **perde todo o histórico**, inclusive o que o peer mandou (estava
+embrulhado para a chave antiga). A retenção limpa o resto em ≤7 dias.
+
+Isso precisa aparecer:
+- no diálogo de confirmação do console, antes de o dono clicar
+- na trilha de auditoria — `user.password_reset` já existe, o texto muda
+
+**Entrega:** trocar senha não perde nada; reset pelo dono perde tudo e avisa
+antes.
+
+**Handoff:** _(preencher ao concluir)_
+
+---
+
+## Fase 5 — provas e documentação
+
+### `smoke:phase17` (novo)
+
+O que precisa ser provado, e não dá para provar em nenhuma fase anterior:
+
+1. o worker nunca recebe nada de que a `wrapKey` derive — inspeciona o corpo de
+   toda requisição de login e troca de senha
+2. um dump do D1 mais o `auth_token` **não** desembrulha a chave da conta
+3. "segundo dispositivo" — store de chaves zerado, loga com a senha, lê o
+   histórico inteiro
+4. `/api/auth/kdf` devolve salt para username inexistente, e o mesmo salt duas
+   vezes (determinístico, não aleatório)
+
+### Reescritos
+
+- `smoke:phase15` e `16` — envelope por conta. As duas implementações
+  independentes continuam sendo o que garante o formato, e é o único lugar onde
+  isso é verificado de fora
+- `smoke:phase10` — guest sem senha (já tocado na fase 0)
+
+### Docs
+
+`.harness/prd.md`, `docs/architecture.md`, `README.md`. O README **promete
+E2EE ao usuário**; o texto muda de "por dispositivo" para "por conta", e as três
+consequências do topo deste arquivo entram em algum lugar visível.
+
+**Handoff:** _(preencher ao concluir)_
+
+---
+
+## Ordem de commits
+
+```
+feat(worker)!: let a guest account live three hours without a password
+feat(worker)!: derive the login secret on the client, never on the server
+feat(app)!: hold one key per account, wrapped under the password
+feat(worker)!: address envelopes to accounts instead of devices
+refactor: delete the device handover the account key replaced
+feat(app): re-wrap on password change, and say what an owner reset costs
+test: prove the server cannot unwrap what it stores
+docs(e2ee): the account is the unit of read access now
+```
+
+---
+
+## Riscos
+
+1. **Dia da virada.** Toda conta existente é forçada a rotacionar. Instância
+   pequena e fechada, então é gerenciável — mas é um corte, não uma migração
    silenciosa.
+2. **Perdeu a senha, perdeu o histórico.** Sem caminho de recuperação, por
+   construção.
+3. **`/kdf` é oráculo de enumeração** se feito ingênuo. O salt falso
+   determinístico é obrigatório, não opcional.
+4. **Perde-se o escopo de comprometimento.** Aparelho roubado passa a vazar a
+   conta, não só o que aquele aparelho endereçava.
+5. **A dependência do IndexedDB** (`plan-e2ee-verification.md` fase 1) bloqueia
+   a fase 2 e ninguém respondeu ainda.
 
-**Critérios de aceite:** os quatro predicados do passo 3; export rejeitado;
-`deriveBits` funcionando com a chave lida do IndexedDB; id estável entre reloads;
-store vazia após logout; modo anônimo degradando visivelmente.
+## Fora de escopo
 
-**Não fazer:** não mexer em `deviceKeys.ts` para "consertar" nada antes de medir.
-Se o clone não preservar a chave, a saída é trocar a estratégia de armazenamento
-(chave derivada de senha, ou não-persistente por sessão) — decisão do usuário,
-com tradeoffs próprios, não uma correção óbvia.
-
-**Handoff:** Executada em 2026-08-20, Chrome 151.0.0.0 em macOS, contra a stack
-local (worker `:8000`, media `:9000`, vite `:5173`), conta `alice`
-(`ab1f5878-cbc3-41c5-9d0f-bede668f7aa4`).
-
-- **Passo 2.** Uma linha em `goodchat-keys` → `identity`, com a chave do
-  registro sendo o id da conta.
-- **Passo 3 — a pergunta que importa.** Lida de volta pelo próprio módulo
-  (`readDeviceKey`), os quatro predicados: `privateKey instanceof CryptoKey`
-  → `true`; `.extractable` → `false`; `.type` → `'private'`;
-  `.algorithm.name` → `'ECDH'` (com `namedCurve: 'P-256'` e
-  `usages: ['deriveBits']`). **O structured clone preserva a chave
-  não-extraível** — que era a única coisa que nenhum teste em Node responde, e
-  a resposta é sim.
-- **Passo 4.** `exportKey` rejeita nos três formatos (`raw`, `pkcs8`, `jwk`)
-  com `InvalidAccessError: key is not extractable`.
-- **Passo 5.** `deriveBits` com a chave **lida do IndexedDB** (não a
-  recém-gerada) devolve 32 bytes e é estável entre chamadas; e o segredo bate
-  com o derivado no sentido inverso — privada do par × pública publicada — o
-  que prova que a chave guardada é a que o diretório anuncia, e não outra.
-- **Passo 6.** Reload mantém o id `d7dab0ced04845e31cf0d922ec199345`, `devices`
-  continua com as mesmas 7 linhas, `created_at` intacto e `last_seen_at`
-  avançou 95s. (As outras 6 linhas são resíduo das smokes 15/16 no D1 local,
-  não devices deste navegador — vale limpar antes da fase 18.)
-- **Passo 7.** Os 7 ids da tabela batem com `SHA-256(chave pública crua)`
-  truncado a 32 hex, incluindo o deste navegador.
-- **Passo 8.** Logout esvazia a object store (0 linhas). `bob` no mesmo
-  navegador gera `d46fea992c47ec39d711c64a27b4cd76` e a store fica só com a
-  chave dele — nada da alice sobrou.
-- **Passo 9 — com uma ressalva.** Foi medido **negando o IndexedDB**
-  (`indexedDB.open` lançando `SecurityError`), não em janela anônima: a
-  extensão que dirige o navegador não alcança o modo anônimo. A degradação é
-  visível como o plano exige — 🔓 com
-  `aria-label="esta conversa não está criptografada"` e a faixa amarela — e ao
-  restaurar o banco volta para 🔒 "número de segurança desta conversa" sem
-  faixa, ou seja, o indicador acompanha exatamente a presença da identidade.
-  Fica registrado que **a premissa do passo está desatualizada**: o Chrome
-  atual *dá* IndexedDB em janela anônima (em memória, morre com a janela), então
-  o esperado ali é 🔒 com uma identidade efêmera registrando um device novo a
-  cada janela. Quem dispara o caminho `!identity` não é o modo anônimo e sim um
-  navegador que recusa o banco — que é o que foi exercitado.
-- Nenhum erro no console do navegador.
-
----
-
-## Fase 18 — A conversa de ponta a ponta
-
-**Objetivo:** executar a fiação React que hoje só compila.
-
-**Ler antes:** `app/src/hooks/useConversation.ts` (`toThread`, `seal`,
-`sendEvent`, a fila `frameQueue`), `app/src/components/MessageBubble.tsx`
-(`useMediaSource`), `app/src/screens/ConversationsScreen.tsx` (`openPreviews`),
-`app/src/screens/ThreadScreen.tsx` (faixa e safety number),
-`app/src/components/SafetyNumber.tsx`.
-
-**Tarefas:** dois perfis do navegador (ou um normal + um anônimo), `alice` e
-`bob`, conversando.
-
-1. **Texto.** Mandar dos dois lados. Cadeado fechado 🔒 no cabeçalho, sem faixa
-   de aviso, texto legível nas duas telas.
-2. **Não confiar na tela.** Confirmar no servidor que o que foi guardado é
-   ciphertext — a `smoke:phase15` já faz isso por HTTP, mas aqui é o texto que
-   *este cliente* produziu:
-   ```bash
-   npx wrangler d1 execute goodchat --local --json \
-     --command "SELECT id, user_a, user_b FROM conversations;"
-   ```
-   e ler o histórico pelo socket, ou conferir `body` no frame `history` no
-   DevTools → Network → WS. Nenhum trecho do que foi digitado pode aparecer.
-3. **Emoji e sticker.** Sticker precisa renderizar a arte, não o placeholder
-   `[sticker]` — é o caminho onde o id sai do ciphertext e passa pelo
-   `STICKER_ID_RE` no destinatário.
-4. **Imagem.** Bolha renderiza; e `GET /api/media/<key>` com o cookie de sessão,
-   fora do app, tem que devolver bytes ilegíveis.
-5. **Vídeo.** Confirmar que toca — e que a espera é o download inteiro, que é a
-   regressão conhecida e documentada (AES-GCM autentica o objeto todo).
-6. **Previews da lista.** Voltar para `#/`: o tile mostra o texto da última
-   mensagem, não `[mensagem cifrada]` nem base64.
-7. **Recarregar dentro da thread.** O cache local não serializa `CryptoKey`, então
-   a mídia deve mostrar esqueleto e resolver quando o `history` chegar — nunca
-   "[mídia indisponível]".
-8. **Segundo aparelho.** Entrar como `alice` num terceiro perfil: mensagens
-   novas abrem nos dois; as antigas mostram
-   `[mensagem de antes deste dispositivo]`. Isso é o desenho funcionando, não
-   falha.
-9. **Safety number.** Abrir o 🔒 nos dois lados e comparar: têm que ser
-   idênticos, 12 grupos de 5 dígitos.
-10. **Aviso de troca de chave.** Apagar o IndexedDB de um dos lados, recarregar
-    (gera identidade nova), e reabrir a thread do outro lado: a faixa "os
-    aparelhos de @fulano mudaram" tem que aparecer.
-11. **Push com preview.** Ativar notificações, pôr `push_preview` em "mostrar
-    trecho", mandar mensagem com a aba fechada: a notificação mostra o texto — e
-    o log do worker (`/tmp/wrangler-dev.log`) não contém nenhum trecho dele.
-12. **Fechar a transição.** `E2EE_REQUIRED=true` no `.dev.vars`, reiniciar o
-    worker, mandar de um navegador sem chave (anônimo): tem que ser recusado com
-    `encryption_required` visível, não engolido.
-
-**Critérios de aceite:** todos os doze; nenhum erro no console do navegador; e o
-passo 2 e o 4 — que são os únicos que provam a propriedade, o resto prova a
-usabilidade.
-
-**Não fazer:** não automatizar com Playwright dentro desta fase. Vale a pena, e é
-o que tornaria isto repetível em CI, mas hoje o projeto não tem nenhuma
-infraestrutura de teste de navegador e adicionar uma é uma decisão de escopo
-própria (dependência nova, tempo de CI, um segundo lugar onde a criptografia é
-descrita). Anotar no handoff o que doeu manualmente, que é a evidência para
-decidir depois.
-
-**Handoff:** _(preencher ao concluir: navegadores e versões usados, o que
-apareceu no passo 2 e no 4, e qualquer passo que precisou de retentativa)_
-
----
-
-## Depois destas duas
-
-Nada mais fica sem execução no caminho criptográfico. O que continua em aberto é
-de produto, não de verificação, e está registrado em `docs/architecture.md`:
-
-- sem forward secrecy (ECDH estático; a janela de 7 dias é o que limita uma
-  chave vazada);
-- vídeo baixa inteiro antes de tocar — AES-CTR + MAC do objeto inteiro via Media
-  Source Extensions seria a saída;
-- avatares, nomes e presença seguem em texto claro, porque são renderizados para
-  contas com quem você nunca falou.
+- vinculação por QR, transferência de histórico entre aparelhos — a chave de
+  conta torna as duas desnecessárias
+- chave de conta que **assina** dispositivos — foi considerada e descartada:
+  sem lista de dispositivos, não há o que assinar
+- backup/escrow no servidor em qualquer forma — é exatamente o que este plano
+  existe para não ter
