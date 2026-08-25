@@ -625,8 +625,39 @@ Dois perfis do navegador, `alice` e `bob`, conversando.
 **Critérios de aceite:** os doze; nenhum erro no console; e os passos 2, 4, 8 e 9
 são os que provam o que este plano inteiro existe para entregar.
 
-**Handoff:** _(preencher ao concluir: navegadores e versões, o que apareceu nos
-passos 2, 4, 8 e 9, e qualquer passo que precisou de retentativa)_
+**Handoff:** _não executada._ Fases 0–5 entregues e verificadas; esta ficou
+aberta por decisão, com a extensão de navegador indisponível na sessão em que o
+resto foi feito.
+
+O que já está coberto sem navegador, e que encurta a passada manual: os passos
+**2, 4, 8 e 9** — os quatro que este plano chama de "os que provam o que ele
+existe para entregar" — são asserções em `smoke:phase15` e `smoke:phase17`,
+contra a stack local:
+
+| passo | onde está provado |
+| --- | --- |
+| 2 · o guardado é ciphertext | `phase15`: "and the stored body is still ciphertext" |
+| 4 · `/api/media/<key>` devolve bytes ilegíveis | `phase15`: "what the proxy serves is the ciphertext, not the picture" |
+| 8 · navegador zerado lê o histórico inteiro | `phase17`: "a browser with an empty key store reads the whole history" |
+| 9 · número de segurança estável entre navegadores | `phase15` + `phase16`: "and the same account elsewhere computes the same number" |
+
+O que **continua precisando de navegador**, e é o motivo desta fase existir
+separada: a fiação React (`useConversation`), o IndexedDB de verdade (o
+`structured clone` preservando `extractable: false` foi medido uma vez, em
+2026-08-20, mas não é regressão automatizada), e tudo que só se vê com olho —
+sticker renderizando arte em vez de `[sticker]`, vídeo tocando, previews da
+lista, reload dentro da thread, e push com a aba fechada.
+
+Uma correção ao passo 8 antes de alguém executá-lo: o placeholder
+`[mensagem de antes deste dispositivo]` não existe mais em lugar nenhum, mas
+`[mensagem de antes desta mudança]` **pode** aparecer, para mensagens `v:1`/`v:2`
+seladas antes da virada e só naquele navegador. Não é regressão; é o que a fase 3
+explica no handoff, e some quando a retenção limpar as últimas.
+
+Uma nota prática: a stack precisa dos três processos (worker `:8000`, media
+`:9000`, app `:5173`) mais `npm run stickers:publish`, e as fixtures de dev
+estão em `alice-goodchat` / `bob-goodchat` / `good-goodchat`, já em v2 com chave
+de conta publicada.
 
 ---
 
