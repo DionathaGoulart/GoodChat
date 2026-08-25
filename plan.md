@@ -381,7 +381,58 @@ mudou".
 
 **Entrega:** `[mensagem de antes deste dispositivo]` deixa de existir.
 
-**Handoff:** _(preencher ao concluir)_
+**Handoff:** feito, e verificado contra a stack local com o crypto real do app:
+envelope `v: 3` com duas entradas e sem `sender_device`, chaves são ids de
+conta, os dois lados abrem, envelope movido de conversa não abre, e o corpo
+guardado não contém o texto. Terceiro navegador zerado abriu **2/2** do
+histórico. Número de segurança idêntico nos dois lados **e no terceiro
+navegador**.
+
+**Um commit, não dois.** O plano pedia `feat(worker)!: address envelopes…` e
+`refactor: delete the device handover…` separados. Não dá pra separar: o
+repasse existia *porque* o envelope era por dispositivo, e um commit que
+trocasse o envelope mantendo `request_keys`/`share_keys` não compila (as duas
+metades tocam o mesmo `switch`, o mesmo `ClientEventSchema` e o mesmo
+`useConversation`). Ficou um commit que faz as duas coisas e diz isso.
+
+**A tensão que o plano tinha, e como resolvi.** A entrega diz que o placeholder
+"deixa de existir", e o passo 8 da fase 6 diz que ele "não pode aparecer em
+lugar nenhum" — mas o plano *também* manda aceitar `v:1`/`v:2` por 7 dias. As
+duas coisas não cabem juntas: uma mensagem selada para uma chave de
+**dispositivo** não abre num navegador que nunca teve aquela chave, e nenhum
+desenho conserta isso (a chave de conteúdo só existe embrulhada). Então:
+
+- o placeholder antigo sumiu — nenhuma mensagem `v:3` cai nele;
+- no lugar entrou `predates-account-key`, com texto novo
+  (`[mensagem de antes desta mudança]` + `só abre no navegador que a recebeu`),
+  que é a frase honesta e que some sozinha quando a retenção limpar as últimas
+  `v:2`;
+- todo o caminho de leitura `v1/v2` foi para **um arquivo**,
+  `app/src/lib/legacyEnvelope.ts`, junto com o `deviceKeys.ts` reduzido a
+  leitura e o `deviceDirectory.ts` reduzido à busca por id. Apagar em uma semana
+  é `rm` mais três call sites.
+
+**Outras decisões:**
+
+- `push_subscriptions.device_id` foi **dropado** (migration 0015), não
+  repropositado como "id de assinatura" como o plano sugeria: `endpoint` já é a
+  chave primária e já identifica a assinatura: um segundo id seria coluna sem
+  leitor. Consequência boa: o preview de push vai para *todas* as assinaturas da
+  conta, porque todas conseguem abrir.
+- A tabela `devices` **não** foi dropada, e `GET /api/users/:id/devices` virou
+  read-only. É o que o caminho legado precisa. `POST /api/devices` sumiu, então
+  a tabela só drena. Vai junto com o `legacyEnvelope.ts`.
+- `unaddressedDevices`/`stale_directory` sumiram como o plano manda, e vale
+  registrar *por quê* a checagem equivalente por conta não substituiu: seria
+  vazia. Um cliente que não acha a chave do peer não manda envelope
+  meio-endereçado, manda texto claro — que é o que o `E2EE_REQUIRED` responde.
+- `importPublicKey` foi parar no `e2ee.ts`, não no `accountKeys.ts`. Import de
+  valor de lá arrastaria IndexedDB para dentro do `e2ee.ts`, que é exatamente a
+  propriedade que o cabeçalho dele promete não ter (e da qual a
+  `smoke-phase16` depende para rodar em Node).
+- `AccountIdentity` carrega `accountId` dentro do registro, além de ser a chave
+  sob a qual ele é gravado. O service worker lê a store com `getAll()`, que
+  devolve valores sem as chaves — ele é justamente o leitor que não enxerga.
 
 ---
 
@@ -411,7 +462,31 @@ Isso precisa aparecer:
 **Entrega:** trocar senha não perde nada; reset pelo dono perde tudo e avisa
 antes.
 
-**Handoff:** _(preencher ao concluir)_
+**Handoff:** feito e verificado: troca sem reembrulho é recusada
+(`rewrap_required`), o challenge devolve o blob, sessão sozinha não devolve
+(401), a troca com reembrulho passa, a senha nova abre **a mesma** chave, e o
+histórico continua legível (1/1). Reset do dono: conta volta a `must_rotate`,
+`account_key` vem `null` no login, o peer não acha chave nenhuma para cifrar, e
+a auditoria grava `account_key_discarded: true`.
+
+**A decisão que o plano não fixava: como o navegador pega o blob para
+reembrulhar.** Um `GET /api/account/key` seria uma linha e um enfraquecimento
+real — o blob é ciphertext com chave derivada da senha, então entregá-lo a
+qualquer sessão transforma cookie roubado (que hoje não lê nada, porque a chave
+da conta não está naquele navegador) em ataque offline à senha, sem rate limit
+na frente. Virou `POST /api/auth/password/challenge`, que exige
+`current_auth_token` — o mesmo token com que a troca já se autentica. Custa um
+round trip numa operação que ninguém faz duas vezes por dia.
+
+**Reset apaga as três colunas, não só `account_key_wrapped`.** O plano dizia só
+a embrulhada. Deixar `account_public_key` para trás deixaria os peers cifrando
+para uma chave que ninguém abre: mensagens que chegam, parecem entregues, e são
+ilegíveis para sempre. Com ela fora, o cliente do peer não acha chave, manda em
+claro, e a instância recusa em voz alta — falha visível em vez de silenciosa,
+até a pessoa entrar e publicar chave nova.
+
+`changePassword` também recusa um reembrulho que mude a chave pública: seria
+apagar o histórico vestido de troca de senha.
 
 ---
 
@@ -442,7 +517,41 @@ O que precisa ser provado, e não dá para provar em nenhuma fase anterior:
 E2EE ao usuário**; o texto muda de "por dispositivo" para "por conta", e as três
 consequências do topo deste arquivo entram em algum lugar visível.
 
-**Handoff:** _(preencher ao concluir)_
+**Handoff:** feito. `smoke:phase17` novo, com as quatro provas do plano, e
+reimplementando o KDF a partir da descrição (mesmo princípio da 15: um teste que
+chama o código que está checando prova que o código concorda consigo mesmo).
+A prova 1 grava **todo** corpo de requisição que o teste manda e procura a
+senha, a masterKey e os bytes da wrapKey em três codificações cada — mais o
+controle positivo (o authToken, que *deve* aparecer), sem o qual as três
+negativas passariam num cliente que não mandou nada. A prova 2 tenta abrir o
+blob com o token direto, com HKDF sobre o token usando o mesmo `info`, e com o
+salt da própria linha — depois com a wrapKey real, para que as recusas sejam a
+derivação ser one-way e não o ciphertext ser inerte.
+
+15 e 16 reescritas. As duas perderam o repasse (`share_keys` na 15,
+`rewrapFor`/`via` na 16): testavam mecanismo que não existe mais. A 16 ganhou o
+que o substituiu — a mesma conta num segundo navegador abre o que o primeiro
+recebeu, sem o envelope nomear esse navegador — e as duas passaram a checar que
+o número de segurança **não** se move quando alguém abre outro navegador.
+
+A 15 cria contas próprias por execução em vez de usar alice/bob: `PUT
+/api/account/key` é create-only, então ela não consegue publicar uma chave cuja
+metade privada ela tem para uma conta que já tem chave. Faz o teardown pelo
+console do dono, não por `DELETE FROM users` — as contas passam a ter conversa e
+objeto no bucket, e as foreign keys dizem isso.
+
+`smoke:phase9` e `10` passaram a limpar `login_attempts` nas duas pontas: o
+`signIn` gasta dois slots por login que falha de propósito (tenta derivado, cai
+para texto claro, como o app), e no localhost a suíte inteira divide um IP.
+
+Docs: README (as três consequências viraram uma sub-lista visível na primeira
+feature), `docs/architecture.md` (seção de E2EE reescrita em torno de *de onde
+vem a chave*, mais as rotas novas e as colunas novas no data model),
+`.harness/prd.md` (o E2EE era stretch goal esboçado como X25519 por conversa com
+chave no dispositivo — as duas metades mudaram; a pergunta aberta 4,
+multi-device, foi riscada porque a chave de conta a eliminou em vez de
+respondê-la) e `docs/deployment.md` (a query de quem não está pronto agora olha
+`account_public_key IS NULL`, e ganhou a nota do dia da virada).
 
 ---
 
