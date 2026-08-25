@@ -202,14 +202,12 @@ Wire protocol (Zod-validated in both directions):
 | --------- | ---------------- | -------------------------------------------------- |
 | client    | `send_message`   | `client_id` (UUID), `msg_type`, `body`, `media_key` |
 | client    | `typing`         | Ephemeral, never persisted                          |
-| client    | `read_receipt`   | `up_to_message_id`, marks everything up to it       |
-| client    | `set_retention`  | Retunes the message window; either side may         |
+| client    | `read_receipt`   | Named message ids — reading is what starts a message's last three hours, so it is never a watermark |
 | server    | `history`        | On connect: last 50 plus anything undelivered       |
 | server    | `message`        | Full message; your own echo is the "sent" ack       |
 | server    | `message_status` | `sent -> delivered -> read` transitions             |
 | server    | `typing`         | Forwarded to the peer only (not your own tabs)      |
-| server    | `read_receipt`   | Broadcast of the peer's read position               |
-| server    | `retention`      | The window: on connect, and on every change         |
+| server    | `read_receipt`   | Which messages were read, and the new deadline each one now carries. Sent to every connection, the reader's own tabs included |
 | server    | `messages_expired` | Ids just deleted by the retention sweep           |
 | server    | `error`          | Validation errors; the socket stays open            |
 
@@ -221,31 +219,48 @@ Messages are kept in the DO's internal SQLite, one table per PRD 4.4.
 
 ### Message retention
 
-Every message deletes itself `retention_ms` after it was written — the row in
-the DO and the bucket object it referenced. The window belongs to the
-conversation (3h, 5h, 12h, 1d, 3d, 5d, 7d; 7 days is the default and the
-ceiling), is shared by both participants, and either of them can change it
-from inside the thread. PRD §3.9 is the product spec; this is the mechanism.
+Every message carries its own deadline:
 
-Source of truth is the DO's `settings` table, because that is where the
-messages are. D1's `conversations.retention_ms` mirrors it for the two things
-that happen outside the object: the resolve endpoint, which labels the thread
-before a socket exists, and the scheduled cleanup.
+```
+expires_at = min(created_at + 7 days, read_at + 3 hours)
+```
+
+Seven days for a message nobody opens, three hours from the moment the
+recipient reads it. Both numbers are fixed for the instance — there is no
+per-conversation window anymore, and `conversations.retention_ms` in D1 is a
+tombstone. PRD §3.9 is the product spec; this is the mechanism.
+
+Source of truth is `messages.expires_at` in the DO, because that is where the
+messages are. D1's `conversations.next_expiry_at` mirrors the earliest of them,
+which is what lets the cron backstop find a conversation with something to
+delete without waking every conversation in the instance.
+
+Reading is therefore a write, and the only client frame in this protocol that
+destroys something. Three refusals are what make that safe:
+
+- **only the recipient's read counts.** A sender able to report its own message
+  read could delete it out of the other side's thread;
+- **only a message not already read counts.** A second report cannot restart a
+  clock that is already running;
+- **the new deadline is a `min`, never an assignment.** A message with two
+  hours left does not get three back because a second device rendered it, and a
+  message read on day seven has already spent its ceiling.
+
+What the *client* is allowed to call a read is the other half, and it lives in
+`app/src/lib/readObserver.ts`: decrypted plaintext on screen, at least half the
+bubble in the viewport, the window focused, held for a second. A watermark was
+fine when reading only moved a tick; it is not fine now that arriving from a
+notification would condemn a screenful nobody scrolled to.
 
 Three layers, so the promise does not depend on anyone being connected:
 
 | Layer | When it runs | What it covers |
 | ----- | ------------ | -------------- |
-| Alarm (`expireTick`, one schedule at a time) | The moment the oldest message ages out | The normal case, including conversations nobody has open |
-| Sweep on wake (`onStart`) and on connect | Every time the object runs code | Any request being served — no answer may contain a message past the window |
-| Cron backstop (`lib/cleanup.ts`) | Every scheduled tick, bounded | Conversations holding *any* expired message (a lost alarm), and bucket objects whose delete failed. It scans `conversations.next_expiry_at` — the DO's mirror of when its oldest surviving message ages out — so a busy thread does not keep its old messages until the newest one expires; `swept_at` keeps idle threads from being poked twice |
+| Alarm (`expireTick`, one schedule at a time) | The moment the next message is due | The normal case, including conversations nobody has open. Re-armed only when the earliest deadline actually moves — otherwise every read receipt would rewrite a schedule |
+| Sweep on wake (`onStart`), on connect, and on every read | Every time the object runs code | Any request being served — no answer may contain a message past its deadline. The read case is not theoretical: three hours is a grant, not a floor, so a message with minutes left keeps them and can fall due in the same second it is reported |
+| Cron backstop (`lib/cleanup.ts`) | Every scheduled tick, bounded | Conversations holding *any* expired message (a lost alarm), and bucket objects whose delete failed. It scans `conversations.next_expiry_at`; `swept_at` keeps idle threads from being poked twice. The media half is sized against the seven-day ceiling, since the real deadline lives inside the DO |
 
-Shortening is applied immediately, not only at the next deadline: the DO
-sweeps the history the moment a shorter window lands, which is the entire
-point of choosing one. Both sockets get `messages_expired` with the ids, so
-an open thread drops them without a reload.
-
-One thing the window does not reach on its own: a `DELETE` inside the Durable
+One thing the clock does not reach on its own: a `DELETE` inside the Durable
 Object frees the SQLite page, it does not overwrite it, so the bytes stay in the
 database file until the space is reused. Both SQLite answers are closed to a DO
 — `VACUUM` fails because its SQL already runs inside a transaction, and
@@ -254,19 +269,23 @@ section below: those bytes are ciphertext, and the key to them never existed on
 this side. Deleting the row is then the only copy that mattered.
 
 Clients enforce it too, since a tab can be offline while a message expires:
-the thread filters what it paints against the window, and the local copies
+the thread drops what it paints the moment a deadline passes — waking for the
+nearest one rather than on a fixed interval — and the local copies
 (`threadCache`, the conversation-list previews) drop anything past it on both
-read and write — plus one pass over every cached thread at boot, since read
-and write only ever reach the conversation being opened.
+read and write, plus one pass over every cached thread at boot, since read and
+write only ever reach the conversation being opened. A cached message with no
+`expires_at` (written by a build that predates the per-message clock) is
+dropped rather than given one: a missing deadline must never read as no
+deadline.
 
 Caches are the interesting part, because a cache is a copy with a clock of its
 own. Four of them, all bounded:
 
 | Copy | Bounded by |
 | ---- | ---------- |
-| `caches.default` (edge, shared) | `max-age` capped at the shortest window (3h) for `media/` keys, plus explicit eviction on every delete path (`lib/mediaGc.ts`) |
+| `caches.default` (edge, shared) | `max-age` capped at the shortest life any message can have — three hours, since a message cannot be read before it is sent — for `media/` keys, plus explicit eviction on every delete path (`lib/mediaGc.ts`) |
 | Browser HTTP cache | The same ceiling on the `private` copy |
-| `localStorage` (`threadCache`) | Window filter on read, on write, and once per boot |
+| `localStorage` (`threadCache`) | Each message's own `expires_at`, on read, on write, and once per boot |
 | The device's notification centre | The push preview is generic by default, and the service worker closes a thread's notifications when `messages_expired` arrives |
 
 ### End-to-end encryption
@@ -673,7 +692,7 @@ D1 (metadata):
 | -------------------- | --------------------------------------------------- |
 | `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `skin`, `push_preview`, `last_seen_at`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
-| `conversations`      | Deterministic id, ordered pair, last_message_at, `retention_ms` (mirror of the DO's window), `next_expiry_at` (mirror of its oldest message's deadline), `swept_at` |
+| `conversations`      | Deterministic id, ordered pair, last_message_at, `next_expiry_at` (mirror of the DO's earliest deadline), `swept_at`, and `retention_ms` — a tombstone of the per-conversation window |
 | `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads), plus the hashed "this address has signed in to this account" rows that exempt a known address from the account lockout |
 | `push_subscriptions` | Endpoint (PK), user, p256dh, auth                   |
 | `media_objects`      | Every presigned object: uploader, conversation, mime, size, claim timestamp |
@@ -685,7 +704,7 @@ Durable Object SQLite (per conversation):
 | -------------- | -------------------------------------------------------- |
 | `messages`     | id, client_id, sender, type, body, media_key, status     |
 | `participants` | The pinned user pair, defense in depth for connections   |
-| `settings`     | The retention window, the id of the expiry alarm, and what the D1 mirrors were last known to hold |
+| `settings`     | The id of the expiry alarm and the moment it is armed for, plus what the D1 mirror was last known to hold |
 
 ## Roles
 

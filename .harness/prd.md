@@ -31,7 +31,7 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
 2. Support rich conversational features: text, emoji, stickers, images, video, and file attachments.
 3. Keep the entire stack inside free infrastructure tiers for as long as technically feasible (target: $0/month at the group's expected scale of ~5–50 users, low-hundreds of conversations).
 4. Provide strong, simple privacy guarantees: no public profile discovery beyond exact `@username` lookup, secure session handling, and an optional end-to-end encryption (E2EE) path for message bodies.
-5. **Keep nothing longer than it has to be kept:** every message — text, image, video, audio, file — deletes itself from the database and the object store within the window its conversation chose, at most seven days (§3.9).
+5. **Keep nothing longer than it has to be kept:** every message — text, image, video, audio, file — deletes itself from the database and the object store three hours after it is read, and in at most seven days if it never is (§3.9).
 6. Ship a functional MVP quickly, then iterate.
 
 ### 1.4 Non-Goals (Out of Scope for v1)
@@ -123,8 +123,8 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
   - Per-conversation symmetric key derived via an X25519 key exchange (Signal-style double ratchet is the gold standard but heavy to implement solo; a simpler static/rotating shared-secret model via `libsodium`/`tweetnacl` can be a pragmatic v1.5).
   - If implemented, the server (Durable Object/D1) only ever stores ciphertext for message bodies; media files are optionally encrypted client-side before upload with the key stored only on participant devices.
   - This is explicitly called out as **not required for v1 launch** but strongly recommended as the defining "actually private" feature — flagged as high value, high effort.
-- **Retention as the primary privacy mechanism (§3.9):** messages delete themselves within at most 7 days, and a conversation can choose as little as 3 hours. This is the guarantee that holds without any cryptography: what is not stored cannot be breached, subpoenaed or read by the operator. E2EE, if it ships, narrows *who* can read a live message; retention narrows *how long anyone* can.
-- **Admin/operator transparency:** since this is a small trusted-operator deployment, the PRD assumes the operator (you) has infrastructure-level access to the database regardless of E2EE status for operational reasons (backups, debugging) — E2EE protects against external breach/subpoena/third-party exposure, not against the operator themselves, and this should be disclosed to users. Retention is what bounds that access in time: the operator can read what exists, and within a week nothing does. The owner console can see a conversation's window and when its next message expires, but cannot extend it.
+- **Retention as the primary privacy mechanism (§3.9):** a message lives three hours past being read, and seven days at the outside. This is the guarantee that holds without any cryptography: what is not stored cannot be breached, subpoenaed or read by the operator. E2EE, if it ships, narrows *who* can read a live message; retention narrows *how long anyone* can. Tying the clock to the read rather than to the send is what makes the usual case hours instead of days — the week is the fallback for a message that never found its reader, not the normal life of one.
+- **Admin/operator transparency:** since this is a small trusted-operator deployment, the PRD assumes the operator (you) has infrastructure-level access to the database regardless of E2EE status for operational reasons (backups, debugging) — E2EE protects against external breach/subpoena/third-party exposure, not against the operator themselves, and this should be disclosed to users. Retention is what bounds that access in time: the operator can read what exists, and within a week nothing does — usually within hours. The owner console can see when a conversation's next message expires and how much of it is still unread, but cannot extend either.
 
 ### 3.7 UI/UX
 - **Frontend framework:** React (Vite or Next.js) styled with **Tailwind CSS + DaisyUI** component classes for rapid, consistent, themeable UI (DaisyUI ships light/dark themes out of the box, which is a good fit for a chat app).
@@ -139,21 +139,25 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
 - No dependency on a paid push service required — Web Push works over VAPID keys directly from the Worker.
 
 ### 3.9 Message Retention (Disappearing Messages)
-The defining privacy behavior of the product. Every message carries its own clock and deletes itself when it runs out — permanently, from the Durable Object's storage and from the B2 bucket.
+The defining privacy behavior of the product. Every message carries its own clock and deletes itself when it runs out — permanently, from the Durable Object's storage and from the B2 bucket. **Reading a message is what winds that clock down.**
 
-- **Per message, not per conversation.** The window is counted from each message's own `created_at`, so a conversation empties continuously from its oldest end rather than being wiped all at once. Nothing about the conversation itself expires: the pair, the thread and the settings survive; only what was said in it goes.
-- **Windows offered:** 3 hours, 5 hours, 12 hours, 1 day, 3 days, 5 days, 7 days.
-- **7 days is both the default and the maximum.** A conversation nobody has configured deletes after a week; no option, request or setting can extend anything beyond it.
-- **One setting per conversation, shared by both participants.** Either side can change it, from a settings control inside that conversation, and the change applies to both immediately — there is no "my copy" and "their copy" of a window. Both are told who changed it and to what; the change is announced in the thread rather than applied silently.
-- **Shortening applies to the history at once.** Choosing 3 hours on a week-old thread deletes everything already older than 3 hours in that moment, on both sides. That is the point of the control, and the UI says so before the choice is made.
+- **The rule, whole:** `expires_at = min(created_at + 7 days, read_at + 3 hours)`. A message nobody opens is gone in a week. A message the recipient reads is gone three hours later. Both numbers are fixed for the instance; there is no window to choose, and nothing can ask for more.
+- **`min`, not "whichever came last."** A message read on day seven has already spent its ceiling; the read does not hand it three more hours.
+- **Per message, not per conversation.** Each row has its own deadline, so a conversation empties continuously rather than being wiped all at once. Nothing about the conversation itself expires: the pair, the thread and the settings survive; only what was said in it goes.
+- **One row, one clock, both sides.** The message exists once on the server, so the two participants watch the same countdown and lose it in the same second. Neither holds a private copy that outlives the other's.
+- **Only the recipient's read starts it.** Seeing your own message back has never meant anything, and a sender able to start the other side's clock could delete a message before it was read. The server refuses a receipt naming the reader's own message.
+- **What counts as read** is a deliberate, per-message judgement made by the client that painted it, not a watermark: the plaintext is on screen (a device that cannot decrypt never reports), at least half the bubble is in the viewport, the window has focus, and all of it held for a second. Video and other content a thumbnail does not show report on being opened instead. Reads are named by id; "everything above this" is not a thing a client may say.
+- **A read is never taken back and never restarts.** Reporting the same message twice does not grant it three more hours, and a deadline only ever moves earlier.
 - **What "deleted" means:** the message row in the conversation's Durable Object, and the object in the bucket for any media it carried. Not a tombstone, not a "deleted message" placeholder, not an entry in a log. A failed bucket delete leaves the index row behind so the scheduled cleanup retries it; the row is only forgotten once the object is actually gone.
 - **Enforcement (three layers, since a promise about deletion cannot depend on someone being connected):**
-  1. an alarm inside the conversation's Durable Object, armed for the moment its oldest message ages out;
-  2. a sweep on every wake of that object and on every connect, so no request can be served a message that should already be gone;
-  3. a scheduled backstop (the cron cleanup) that pokes conversations whose whole history is already past its window, and sweeps bucket objects the DO could not delete.
-- **Client side:** the window is applied locally as well — the thread filters what it paints, and the local copies (thread cache, conversation-list previews) drop anything past it. A device that was offline while a message expired must not be the one place it survives.
-- **Profile pictures are not messages** and are not subject to this window; they are account data, replaced when the account replaces them.
-- **Out of scope for the window:** a per-message "delete for both" action, and pinning/saving a message past it. The second is a deliberate refusal — an exception to retention is a hole in the promise.
+  1. an alarm inside the conversation's Durable Object, armed for the earliest `expires_at` it holds;
+  2. a sweep on every wake of that object, on every connect, and on every read — a read can make a message due within the same second it was reported;
+  3. a scheduled backstop (the cron cleanup) that pokes conversations holding at least one expired message, and sweeps bucket objects the DO could not delete.
+- **Client side:** the deadlines are applied locally as well — the thread drops what it paints the moment it is due, and the local copies (thread cache, conversation-list previews) drop anything past it. A device that was offline while a message expired must not be the one place it survives.
+- **What the person sees.** The clock is stated, not hidden, but it is not allowed to become the thread's main subject: a read message counts down in its meta line, fades over its last five minutes and then collapses out of the column. Only the newest read message counts down while hours remain — under fifteen minutes every message does. An unread message speaks only to its sender, and only in its last two days.
+- **What is not promised.** The browser cannot stop the other person screenshotting, retyping or remembering, and the product must not imply otherwise. The promise is about what the server keeps.
+- **Profile pictures are not messages** and are not subject to this clock; they are account data, replaced when the account replaces them.
+- **Out of scope:** a per-message "delete for both" action, and pinning/saving a message past its deadline. The second is a deliberate refusal — an exception to retention is a hole in the promise.
 
 ---
 
@@ -217,7 +221,8 @@ conversations
   user_b        TEXT FK -> users.id
   created_at    INTEGER
   last_message_at INTEGER
-  retention_ms  INTEGER           -- §3.9 window; mirror of the DO's value
+  next_expiry_at INTEGER NULL     -- §3.9; mirror of the DO's earliest deadline
+  retention_ms  INTEGER           -- tombstone: the per-conversation window, gone
   swept_at      INTEGER NULL      -- last time the cleanup backstop ran on it
 ```
 
@@ -232,6 +237,8 @@ messages
   media_key         TEXT NULL    -- B2 object key, if applicable
   created_at        INTEGER
   status            TEXT         -- sent | delivered | read
+  read_at           INTEGER NULL -- §3.9; when the recipient read it
+  expires_at        INTEGER      -- §3.9; min(created+7d, read+3h)
   edited_at         INTEGER NULL
   deleted_at        INTEGER NULL
 
@@ -239,27 +246,25 @@ participants
   user_id           TEXT PK      -- the pinned pair; outsiders are refused
 
 settings
-  key               TEXT PK      -- 'retention_ms' (§3.9), and the bookkeeping
-  value             TEXT         -- the expiry alarm's id, the mirror flag
+  key               TEXT PK      -- bookkeeping only
+  value             TEXT         -- the expiry alarm's id and the moment it is
+                                 -- armed for, and the D1 mirror flag
 ```
 
-The retention window lives here rather than in D1 because this is where the messages are: the object that deletes them is the object that owns the clock. D1 keeps a mirror so the REST layer and the scheduled cleanup can read it without waking anything.
+The clock lives here rather than in D1 because this is where the messages are: the object that deletes them is the object that owns their deadlines. D1 mirrors one number — the earliest of them — so the scheduled cleanup can find a conversation with something to delete without waking every conversation in the instance.
 
 ### 4.5 Real-Time Protocol (WebSocket message shapes — illustrative)
 ```jsonc
 // Client -> Server
 { "type": "send_message", "client_id": "uuid", "msg_type": "text", "body": "oi!" }
 { "type": "typing" }
-{ "type": "read_receipt", "up_to_message_id": "..." }
-{ "type": "set_retention", "retention_ms": 10800000 }              // §3.9, either side
+{ "type": "read_receipt", "ids": ["...", "..."] }                  // §3.9, named, never a watermark
 
 // Server -> Client
 { "type": "message", "id": "...", "sender_id": "...", "msg_type": "text", "body": "oi!", "created_at": 172839... }
 { "type": "message_status", "client_id": "uuid", "status": "delivered" }
 { "type": "typing", "user_id": "..." }
-{ "type": "read_receipt", "up_to_message_id": "...", "user_id": "..." }
-{ "type": "retention", "retention_ms": 604800000, "changed_by": null }   // on connect
-{ "type": "retention", "retention_ms": 10800000, "changed_by": "..." }   // on change
+{ "type": "read_receipt", "user_id": "...", "reads": [{ "id": "...", "read_at": 172839..., "expires_at": 172840... }] }
 { "type": "messages_expired", "ids": ["...", "..."] }                    // just deleted
 ```
 

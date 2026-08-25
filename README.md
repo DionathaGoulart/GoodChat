@@ -16,7 +16,7 @@ end-to-end encrypted: the server routes and expires what it cannot read.
   and holds no key that opens it. Attachments are sealed before they reach the
   bucket, push previews are decrypted by the service worker, and a safety number
   in the thread is what catches a swapped key. No forward secrecy — the
-  seven-day window is what bounds a leaked device key
+  seven-day ceiling is what bounds a leaked device key
 - Real-time 1:1 messaging over WebSockets, with offline delivery and
   at-least-once semantics (client-side dedup by message id)
 - Delivery states (sent, delivered, read) and a typing indicator
@@ -38,14 +38,18 @@ end-to-end encrypted: the server routes and expires what it cannot read.
   with no timing oracle, case-insensitive usernames, and a self-service
   password change that signs every other device out — the counters store a
   salted digest of the caller's address, never the address
-- Disappearing messages: every message deletes itself — from the database, the
-  bucket and every cache that copied it — within the window its conversation
-  chose (3h, 5h, 12h, 1d, 3d, 5d or 7d; 7 days is the default and the
-  maximum). One shared setting per conversation, changed by either side from
-  inside the thread, applied to the history the moment it is shortened
+- Disappearing messages, on a clock the reader starts: every message deletes
+  itself — from the database, the bucket and every cache that copied it —
+  three hours after the recipient reads it, and in seven days if they never
+  do. One rule, the same in every conversation, and one row on the server, so
+  both sides watch the same countdown and lose it in the same second. The
+  thread says so: a read message counts down, fades over its last five minutes
+  and then folds out of the column. What "read" means is deliberately
+  expensive to earn — decrypted text on screen, half the bubble visible, the
+  window focused, held for a second — because a read is what deletes
 - Notifications that do not outlive the message: the push preview is generic
   by default ("@alice te mandou uma mensagem"), because a notification lands
-  in a place the retention window cannot reach
+  in a place the expiry clock cannot reach
 - Guest accounts: a throwaway account that lives 5 hours and then deletes
   itself with its data — while keeping the conversations whose other side is
   a permanent account, and taking a guest-to-guest thread with the last of
@@ -162,6 +166,7 @@ App (`cd app`):
 | `npm run build`     | Production build           |
 | `npm run typecheck` | TypeScript check           |
 | `npm run lint`      | Oxlint                     |
+| `npm run check:expiry` | The expiry display rules (§3.9), against a fixed clock — no server, no browser |
 
 ## Testing
 
@@ -178,7 +183,7 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase10` | Guest accounts: quotas, expiry, deletion keeping the peer's history |
 | `smoke:phase11` | Profile: display name, avatar upload rules, adoption, read access, replacement |
 | `smoke:phase12` | Presence: heartbeat, online window, presence on the listing endpoints, skin preference |
-| `smoke:phase13` | Retention: the window on connect, either side changing it, the D1 mirror, the refusal of an unknown window, the deadline the alarm is armed for |
+| `smoke:phase13` | Retention: the deadline a new message carries, the read that pulls it in to three hours, both sides being told the same moment, the D1 mirror, and the three refusals that make reading safe to be destructive |
 | `smoke:phase14` | The copies of a message: cache ceilings per prefix, a key whose index row is gone, deletion taking bucket and index together, the deadline the cron scans by, `media_key` validation, the WebSocket Origin check, the push preview preference, the owner audit trail, the login lockout exemption |
 | `smoke:phase15` | End-to-end encryption, against a second implementation of the wire format written from the docs rather than imported: the key directory, a message two of one account's devices open and a later one cannot, ciphertext in the Durable Object and in the bucket, the content key that opens both a message and its attachment, the push preview the service worker decrypts, the safety number, and both sides of `E2EE_REQUIRED` |
 | `smoke:phase16` | The app's own crypto, executed: `app/src/lib/e2ee.ts` and the service worker's copy of the key derivation, cross-checked against phase 15's independent implementation in both directions — the app opens what the reference sealed and the reference opens what the app sealed |
