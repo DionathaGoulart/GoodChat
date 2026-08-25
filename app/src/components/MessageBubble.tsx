@@ -12,9 +12,17 @@
 // retro lightbox (native <dialog> + daisyUI modal). Stickers skip the bubble
 // chrome entirely — the asset carries its own baked plate. Own messages show
 // the delivery state (sent/delivered/read) in the mono meta line.
+//
+// The meta line also carries the clock (PRD §3.9). A read message has three
+// hours left and says so; in its last five minutes the whole bubble fades, so
+// the disappearance arrives as something continuous rather than as a row that
+// blinks out. What it does *not* do is put a countdown on every bubble — the
+// rules for that are in lib/expiry.ts, and they exist because a wall of running
+// clocks is a thread nobody wants to sit in.
 
 import { useEffect, useRef, useState } from 'react'
 import type { ThreadMessage } from '../hooks/useConversation'
+import { fadeFor, readCountdown, unreadCountdown } from '../lib/expiry'
 import {
   CHUNK_PREFIX_BYTES,
   MEDIA_CHUNK_BYTES,
@@ -38,12 +46,36 @@ const STATUS_LABEL: Record<'sent' | 'delivered' | 'read', string> = {
   read: 'lido',
 }
 
-/** Mono meta line: time, plus the delivery state on own messages. */
-function MetaLine({ message, mine, className = '' }: {
+/**
+ * The clock, as one phrase or none.
+ *
+ * A read message counts down for both of them — the row is one row on the
+ * server, so the deadline is shared and neither side is watching a private
+ * copy. An unread one speaks only to its sender, and only near the seven-day
+ * ceiling: "they still have not opened this" is the sender's problem, and
+ * telling the recipient how long they have left to open it would be the app
+ * nagging on the other person's behalf.
+ */
+function clockLine(
+  message: ThreadMessage,
+  mine: boolean,
+  now: number,
+  prominent: boolean,
+): string | null {
+  if (message.status === 'sending') return null
+  if (message.read_at !== null) return readCountdown(message.expires_at, now, prominent)
+  return mine ? unreadCountdown(message.expires_at, now) : null
+}
+
+/** Mono meta line: time, the delivery state on own messages, and the clock. */
+function MetaLine({ message, mine, now, prominent, className = '' }: {
   message: ThreadMessage
   mine: boolean
+  now: number
+  prominent: boolean
   className?: string
 }) {
+  const clock = clockLine(message, mine, now, prominent)
   return (
     <p className={`msg-meta mt-1 font-mono text-[10px] uppercase tracking-[0.2em] ${className}`}>
       {message.status === 'sending' && message.rejected ? (
@@ -63,6 +95,12 @@ function MetaLine({ message, mine, className = '' }: {
               <span className={message.status === 'read' ? 'font-black' : ''}>
                 {STATUS_LABEL[message.status]}
               </span>
+            </>
+          )}
+          {clock && (
+            <>
+              {' · '}
+              <span className="msg-clock whitespace-nowrap">{clock}</span>
             </>
           )}
         </>
@@ -189,7 +227,16 @@ function useMediaSource(message: ThreadMessage): { src: string | null; failed: b
   return { src: plainSrc, failed }
 }
 
-function MediaContent({ message }: { message: ThreadMessage }) {
+function MediaContent({ message, onOpened }: {
+  message: ThreadMessage
+  /**
+   * The person actually opened this attachment (PRD §3.9). Only a video calls
+   * it — an image's thumbnail *is* the image, so it is read the moment it is on
+   * screen like any other bubble, while a video scrolled past is a poster frame
+   * nobody watched.
+   */
+  onOpened?: () => void
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   // The object can be gone for good: media retention deleted it, or the owner
   // purged the thread. The message row survives either way, so the bubble has
@@ -217,6 +264,7 @@ function MediaContent({ message }: { message: ThreadMessage }) {
         playsInline
         preload="metadata"
         src={src}
+        onPlay={onOpened}
         onError={() => setGone(true)}
         className="max-h-64 w-full min-w-48 bg-base-300/20"
       />
@@ -303,17 +351,43 @@ export function MessageBubble({
   message,
   mine,
   sender,
+  now,
+  prominent = false,
+  watch,
+  onOpened,
 }: {
   message: ThreadMessage
   mine: boolean
   /** Handle of whoever wrote it, without the `@` — the log line's nick. */
   sender: string
+  /** The thread's clock — one for all of its bubbles (hooks/useExpiryClock.ts). */
+  now: number
+  /** The newest read message in its run: the one allowed to count down early. */
+  prominent?: boolean
+  /**
+   * Ref callback that puts this bubble under the read observer, or undefined
+   * when it must not be watched — my own message, one already read, or one this
+   * device could not decrypt. Passing it is the caller's statement that what is
+   * on screen is the real thing (lib/readObserver.ts).
+   */
+  watch?: (element: HTMLElement | null) => void
+  /** Reports this message read on an explicit open — see `MediaContent`. */
+  onOpened?: () => void
 }) {
   const data = {
     'data-mine': mine ? 'true' : 'false',
     'data-sender': sender,
     'data-time': formatTime(message.created_at),
     'data-status': message.status,
+  }
+  // Only in the last five minutes, and only then: an inline opacity on every
+  // bubble would fight the entrance animation for the other 99% of a message's
+  // life, and there is nothing to say while three hours are left.
+  const fade = fadeFor(message.expires_at, now)
+  const fading = fade < 1
+  const clockProps = {
+    style: fading ? { opacity: fade } : undefined,
+    'data-expiring': fading ? 'true' : undefined,
   }
 
   // Encrypted and unopened. Expected rather than broken in three of the four
@@ -326,9 +400,10 @@ export function MessageBubble({
     return (
       <div
         {...data}
+        {...clockProps}
         className={`msg animate-enter max-w-[85%] p-3 retro-border retro-shadow-sm sm:max-w-[70%] ${
-          mine ? 'self-end bg-accent/40' : 'self-start bg-base-200'
-        }`}
+          fading ? 'msg-fading ' : ''
+        }${mine ? 'self-end bg-accent/40' : 'self-start bg-base-200'}`}
       >
         <p
           className={`msg-body font-mono text-[10px] uppercase tracking-[0.2em] ${
@@ -340,7 +415,7 @@ export function MessageBubble({
         {hint && (
           <p className="font-mono text-[9px] uppercase tracking-[0.15em] opacity-40">{hint}</p>
         )}
-        <MetaLine message={message} mine={mine} className="opacity-40" />
+        <MetaLine message={message} mine={mine} now={now} prominent={prominent} className="opacity-40" />
       </div>
     )
   }
@@ -349,12 +424,14 @@ export function MessageBubble({
     return (
       <div
         {...data}
+        {...clockProps}
+        ref={watch}
         className={`msg msg-sticker animate-enter flex max-w-[85%] flex-col sm:max-w-[80%] ${
-          mine ? 'items-end self-end' : 'items-start self-start'
-        }`}
+          fading ? 'msg-fading ' : ''
+        }${mine ? 'items-end self-end' : 'items-start self-start'}`}
       >
         <StickerContent stickerId={message.body} />
-        <MetaLine message={message} mine={mine} className="opacity-40" />
+        <MetaLine message={message} mine={mine} now={now} prominent={prominent} className="opacity-40" />
       </div>
     )
   }
@@ -363,15 +440,23 @@ export function MessageBubble({
   return (
     <div
       {...data}
+      {...clockProps}
+      ref={watch}
       className={`msg animate-enter max-w-[85%] p-3 retro-border retro-shadow-sm sm:max-w-[70%] ${
-        mine ? 'self-end bg-accent text-accent-content' : 'self-start bg-base-200'
-      }`}
+        fading ? 'msg-fading ' : ''
+      }${mine ? 'self-end bg-accent text-accent-content' : 'self-start bg-base-200'}`}
     >
-      {isMedia && <MediaContent message={message} />}
+      {isMedia && <MediaContent message={message} onOpened={onOpened} />}
       {message.body.length > 0 && (
         <p className="msg-body whitespace-pre-wrap break-words text-sm">{message.body}</p>
       )}
-      <MetaLine message={message} mine={mine} className={mine ? 'opacity-60' : 'opacity-40'} />
+      <MetaLine
+        message={message}
+        mine={mine}
+        now={now}
+        prominent={prominent}
+        className={mine ? 'opacity-60' : 'opacity-40'}
+      />
     </div>
   )
 }

@@ -91,6 +91,53 @@
   }
 }
 
+/* Expiry (PRD §3.9). Two motions, and they are one continuous thing: a read
+   message dims over its last five minutes (the opacity is set inline, from
+   lib/expiry.ts), and then the row itself collapses out of the column. The
+   collapse takes its height and the flex gap under it with it, so the thread
+   closes over the message instead of jumping by a bubble.
+
+   Same rule as every other motion here: ease-out, no overshoot. Nothing about
+   a message being deleted should feel playful. */
+@utility msg-fading {
+  transition: opacity 1s linear;
+}
+
+/* A grid of one row, animated to zero: the modern way to collapse an element
+   of unknown height. `max-height` would need a number nobody has, and every
+   guess is either a clipped bubble or a collapse that does nothing for most of
+   its duration. */
+.msg-leaving {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: goodchat-vanish 0.22s cubic-bezier(0.33, 1, 0.68, 1) forwards;
+  pointer-events: none;
+}
+
+.msg-leaving > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@keyframes goodchat-vanish {
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    /* The column's own `gap-3`, taken back so the rows above and below meet. */
+    margin-bottom: calc(var(--spacing) * -3);
+  }
+}
+
+/* Prefers-reduced-motion: the message still goes, it just goes at once. */
+@media (prefers-reduced-motion: reduce) {
+  .msg-leaving {
+    animation-duration: 0.01ms;
+  }
+  .msg-fading {
+    transition: none;
+  }
+}
+
 /* --- Screen edges ---
    Every screen's <main> spends this instead of `p-4 sm:p-8`: the same rhythm,
    plus whatever the device reserves for a notch, a rounded corner or a home

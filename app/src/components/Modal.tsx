@@ -1,9 +1,9 @@
 // Native <dialog>, so Escape and a backdrop click close it without extra
 // wiring, and focus is trapped by the platform instead of by us.
 //
-// Shared: the owner console's confirmations and the thread's retention picker
-// are the same box (styleguides/retro.md §6 — panel geometry, `dialog-box` is
-// the hook the terminal skin repaints).
+// Shared: the owner console's confirmations and the thread's safety-number
+// dialog are the same box (styleguides/retro.md §6 — panel geometry,
+// `dialog-box` is the hook the terminal skin repaints).
 
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'

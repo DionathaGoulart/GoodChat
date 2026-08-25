@@ -156,8 +156,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [adopt, cached])
 
-  // The retention window applies to the local copies too, and the read/write
-  // pruning in lib/threadCache.ts only ever reaches the thread being opened.
+  // Expiry applies to the local copies too, and the read/write pruning in
+  // lib/threadCache.ts only ever reaches the thread being opened.
   // One pass over every bucket per boot covers the threads nobody opens again.
   useEffect(() => {
     if (status !== 'authenticated' || !user) return

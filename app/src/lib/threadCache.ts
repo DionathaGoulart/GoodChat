@@ -23,20 +23,29 @@
 // out, and capped so it is a tail rather than an archive.
 //
 // ...and a fourth term, from the retention promise (PRD §3.9): a copy never
-// outlives the message it copies. Both the read and the write drop anything
-// already past the conversation's window, so a message the server deleted
-// cannot come back from localStorage — not on the next open, and not on a
-// device that was offline when it expired.
+// outlives the message it copies. Every message carries its own `expires_at`,
+// so both the read and the write simply drop what is already past it — a
+// message the server deleted cannot come back from localStorage, not on the
+// next open and not on a device that was offline when it expired.
+//
+// A copy written before the per-message clock has no `expires_at` at all, and
+// is dropped rather than given one: a missing deadline must never be read as
+// "no deadline", and the cost of guessing wrong here is a deleted message back
+// on screen. The cost of dropping it is one connect of skeleton, once.
 //
 // Read and write only reach the thread being used, though, and the promise is
 // not about the thread being used: a conversation nobody opens again would keep
 // its text here forever. So `pruneCachedMessages` runs once per app boot over
 // every bucket (useSession.tsx). It is cheap — ten threads of fifty messages is
-// the whole store — and it is what makes the window true for the copies too.
+// the whole store — and it is what makes the promise true for the copies too.
 
 import type { PublicUser } from './api'
-import { DEFAULT_RETENTION_MS, retentionOr } from './protocol'
 import type { ThreadMessage } from '../hooks/useConversation'
+
+/** Whether a cached message may still be painted. */
+function alive(message: ThreadMessage, now: number): boolean {
+  return typeof message?.expires_at === 'number' && message.expires_at > now
+}
 
 const RESOLVE_KEY = 'goodchat-threads'
 const MESSAGES_KEY = 'goodchat-thread-messages'
@@ -51,12 +60,6 @@ export interface CachedThread {
   conversationId: string
   otherUser: PublicUser
   readonly: boolean
-  /**
-   * The conversation's message window. Cached with the thread because it is
-   * what prunes the cached messages before they are ever painted; a copy from
-   * a build that predates retention reads as the 7-day default.
-   */
-  retentionMs: number
   /**
    * Whether the conversation has ever held a message. It decides between a
    * loading state and nothing at all while `history` is in flight, so a copy
@@ -140,11 +143,7 @@ export function readCachedThread(ownerId: string, userId: string): CachedThread 
   if (typeof entry?.conversationId !== 'string' || typeof entry.otherUser?.id !== 'string') {
     return null
   }
-  return {
-    ...entry,
-    exists: entry.exists !== false,
-    retentionMs: retentionOr(entry.retentionMs),
-  }
+  return { ...entry, exists: entry.exists !== false }
 }
 
 export function writeCachedThread(ownerId: string, userId: string, thread: CachedThread): void {
@@ -159,24 +158,21 @@ export function writeCachedThread(ownerId: string, userId: string, thread: Cache
 }
 
 /**
- * The tail of a thread, minus whatever has aged out since it was written.
- * `retentionMs` is the window the caller knows about (the cached thread, or
- * the live one); the default only applies to a call that has none yet, and it
- * is the longest window, so it can never keep something too long by mistake —
- * the server's `history` frame replaces all of this a connect later anyway.
+ * The tail of a thread, minus whatever has expired since it was written. The
+ * server's `history` frame replaces all of this a connect later anyway; this
+ * only has to be true for the second or so before it lands.
  */
 export function readCachedMessages(
   ownerId: string,
   conversationId: string,
-  retentionMs: number = DEFAULT_RETENTION_MS,
 ): ThreadMessage[] | null {
   const entry = readBucket<ThreadMessage[]>(MESSAGES_KEY, ownerId)?.[conversationId]
   if (!Array.isArray(entry) || entry.length === 0) return null
   for (const message of entry) {
     if (typeof message?.client_id !== 'string' || typeof message?.sender_id !== 'string') return null
   }
-  const cutoff = Date.now() - retentionOr(retentionMs)
-  const live = entry.filter((message) => message.created_at > cutoff)
+  const now = Date.now()
+  const live = entry.filter((message) => alive(message, now))
   return live.length > 0 ? live : null
 }
 
@@ -184,17 +180,16 @@ export function writeCachedMessages(
   ownerId: string,
   conversationId: string,
   messages: readonly ThreadMessage[],
-  retentionMs: number = DEFAULT_RETENTION_MS,
 ): void {
   // Only what the server has acknowledged. An optimistic message is still owned
   // by the socket that is trying to send it — restoring one from storage would
   // resurrect a send nobody is retrying and show it as forever "sending".
   //
-  // ...and only what is still inside the window: writing an expired message
-  // back would be this cache re-creating what the retention sweep just deleted.
-  const cutoff = Date.now() - retentionOr(retentionMs)
+  // ...and only what has not expired: writing a dead message back would be this
+  // cache re-creating what the retention sweep just deleted.
+  const now = Date.now()
   const acked = messages
-    .filter((message) => message.status !== 'sending' && message.created_at > cutoff)
+    .filter((message) => message.status !== 'sending' && alive(message, now))
     // `contentKey` is a CryptoKey, which JSON.stringify flattens to `{}` — a
     // shape that looks usable and is not. It is runtime-only by nature: the key
     // came out of the message envelope, which is not cached either, so a media
@@ -209,24 +204,14 @@ export function writeCachedMessages(
 }
 
 /**
- * Boot-time sweep of every cached thread, not just the one being opened.
- *
- * Each thread's window comes from the cached resolve entry (they share an
- * owner and are written together); a conversation with no entry falls back to
- * the longest window, which is also the one the server would enforce. A bucket
+ * Boot-time sweep of every cached thread, not just the one being opened. Each
+ * message carries its own deadline, so this needs nothing but a clock. A bucket
  * that empties out is written back empty rather than removed — same reasoning
  * as `writeCachedMessages`: "nothing left" is a real state.
  */
 export function pruneCachedMessages(ownerId: string): void {
   const messages = readBucket<ThreadMessage[]>(MESSAGES_KEY, ownerId)
   if (!messages) return
-
-  const windows = new Map<string, number>()
-  for (const thread of Object.values(readBucket<CachedThread>(RESOLVE_KEY, ownerId) ?? {})) {
-    if (typeof thread?.conversationId === 'string') {
-      windows.set(thread.conversationId, retentionOr(thread.retentionMs))
-    }
-  }
 
   const now = Date.now()
   let changed = false
@@ -236,8 +221,7 @@ export function pruneCachedMessages(ownerId: string): void {
       changed = true
       continue
     }
-    const cutoff = now - (windows.get(conversationId) ?? DEFAULT_RETENTION_MS)
-    const live = entry.filter((message) => message?.created_at > cutoff)
+    const live = entry.filter((message) => alive(message, now))
     if (live.length !== entry.length) changed = true
     pruned[conversationId] = live
   }

@@ -4,12 +4,14 @@
 //   resending optimistic messages the server never acked (dedup by client_id
 //   is server-side, so resending is safe — at-least-once)
 // - optimistic send: local status 'sending' until the echo frame arrives
-// - read receipts sent when the thread reports visibility (unread badge
-//   source of truth); typing is throttled out / expiry-timed in
-// - retention (PRD §3.9): the conversation's message window arrives on connect
-//   and on every change, `messages_expired` drops what the server just deleted,
-//   and the list is filtered against the window locally as well — a message may
-//   age out while the tab is offline, and it must not be on screen when it does
+// - read receipts name the ids the thread actually showed somebody
+//   (lib/readObserver.ts), because reading is what starts a message's last
+//   three hours; typing is throttled out / expiry-timed in
+// - retention (PRD §3.9): every message carries its own `expires_at`, a read
+//   receipt moves it, `messages_expired` drops what the server just deleted,
+//   and the list is filtered against those deadlines locally as well — a
+//   message may expire while the tab is offline, and it must not be on screen
+//   when it does
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { wsUrl } from '../lib/api'
@@ -27,11 +29,11 @@ import type { MediaSealing } from '../lib/media'
 import { dismissNotifications } from '../lib/push'
 import { readCachedMessages, writeCachedMessages } from '../lib/threadCache'
 import {
+  MAX_READ_IDS,
   MAX_SHARED_KEYS,
   ServerEventSchema,
-  retentionOr,
+  UNREAD_TTL_MS,
   type MessageStatus,
-  type RetentionMs,
   type SendMessageEvent,
   type ServerEvent,
   type WireMessage,
@@ -66,6 +68,13 @@ export interface ThreadMessage {
   body: string
   media_key: string | null
   created_at: number
+  /**
+   * When the recipient read it, and the moment it is deleted (PRD §3.9). An
+   * optimistic bubble carries the deadline it is *about* to get — the server
+   * stamps its own a moment later, and the echo replaces this one.
+   */
+  read_at: number | null
+  expires_at: number
   status: MessageStatus | 'sending'
   /**
    * This message was encrypted and this device could not open it. Expected,
@@ -114,10 +123,13 @@ export interface ThreadMessage {
 }
 
 /**
- * How often the thread re-checks its own list against the window. Coarse on
- * purpose: expiry is a privacy promise measured in hours, and the server frame
- * is what makes it immediate when the tab is connected. This tick is for the
- * tab that is not.
+ * The longest this thread will go without re-checking its own list against the
+ * clock. Anything sooner is scheduled from the nearest deadline, so a message
+ * leaves the screen the second it is due rather than up to a tick late; this is
+ * only the ceiling for a thread whose next expiry is hours away.
+ *
+ * The server's `messages_expired` frame is what makes it immediate on a
+ * connected tab. This is for the tab that is not.
  */
 const EXPIRY_TICK_MS = 30_000
 
@@ -133,7 +145,7 @@ type Action =
   | { type: 'history'; messages: ThreadMessage[] }
   | { type: 'message'; frame: ThreadMessage }
   | { type: 'status'; id: string; client_id: string; status: MessageStatus; myId: string }
-  | { type: 'peer_read'; upToMessageId: string; myId: string }
+  | { type: 'peer_read'; reads: { id: string; read_at: number; expires_at: number }[] }
   | { type: 'optimistic'; message: ThreadMessage }
   | { type: 'expired'; ids: string[] }
   | { type: 'send_rejected'; myId: string }
@@ -253,11 +265,18 @@ function reduce(messages: ThreadMessage[], action: Action): ThreadMessage[] {
           : m,
       )
     case 'peer_read': {
-      const index = messages.findIndex((m) => m.id === action.upToMessageId)
-      if (index < 0) return messages
-      return messages.map((m, i) =>
-        i <= index && m.sender_id === action.myId ? upgrade(m, 'read') : m,
-      )
+      // Named ids, and each one brings the deadline it just earned. The status
+      // is raised here too rather than waiting for the `message_status` frame
+      // behind it — they describe the same event, and the tick and the
+      // countdown appearing a beat apart would read as two separate things
+      // happening.
+      const byId = new Map(action.reads.map((read) => [read.id, read]))
+      if (!messages.some((m) => m.id !== null && byId.has(m.id))) return messages
+      return messages.map((m) => {
+        const read = m.id === null ? undefined : byId.get(m.id)
+        if (!read) return m
+        return upgrade({ ...m, read_at: read.read_at, expires_at: read.expires_at }, 'read')
+      })
     }
     case 'optimistic':
       return [...messages, action.message]
@@ -288,8 +307,6 @@ export function useConversation(
   conversationId: string,
   otherUserId: string,
   myId: string,
-  /** The window the caller already knows about (resolve, or the local copy). */
-  initialRetentionMs: number,
 ): {
   messages: ThreadMessage[]
   /** The server has said what this thread holds — see the state below. */
@@ -312,44 +329,30 @@ export function useConversation(
   /** Why the server refused the last send, or null when it refused nothing. */
   sendRejected: string | null
   peerTyping: boolean
-  /** How long a message in this conversation lives (PRD §3.9). */
-  retentionMs: RetentionMs
-  /** The last change either side made, for the thread to announce. */
-  retentionChange: { retentionMs: RetentionMs; changedBy: string } | null
   send: (body: string) => void
   sendMedia: (msgType: 'image' | 'video', mediaKey: string, sealing?: MediaSealing) => void
   sendSticker: (stickerId: string) => void
   sendTyping: () => void
-  markRead: (upToMessageId: string) => void
-  /** Retunes the window for both participants. False when the socket is down. */
-  setRetention: (retentionMs: RetentionMs) => boolean
+  /**
+   * Reports messages as read, which is what starts their last three hours
+   * (PRD §3.9). Ids only — never a watermark, and never a message this device
+   * did not actually paint (lib/readObserver.ts).
+   *
+   * False means the socket was not up and nothing went out, which is the
+   * caller's cue to offer the same ids again shortly.
+   */
+  markRead: (ids: string[]) => boolean
+  /** When the next message in this thread expires; null when it holds none. */
+  nextExpiryAt: number | null
 } {
   // Seeded from the local copy: a thread opened before paints its tail at once
   // and the `history` frame replaces it a connect later. `history` is a full
   // resync, not a merge, so a stale copy cannot survive into the live state —
   // the worst it can do is show the last screenful for the length of a connect.
-  // The window is state and a ref: the render needs it, and so do the socket
-  // effect's callbacks, which must not be torn down and rebuilt every time it
-  // changes.
-  const [retentionMs, setRetentionMs] = useState<RetentionMs>(() =>
-    retentionOr(initialRetentionMs),
-  )
-  const retentionRef = useRef(retentionMs)
-  retentionRef.current = retentionMs
-  // The caller's value, for the socket effect to start each conversation from
-  // — the screen switches threads without remounting, so the window has to be
-  // re-seeded rather than carried over from the thread that was open before.
-  const initialRetentionRef = useRef(initialRetentionMs)
-  initialRetentionRef.current = initialRetentionMs
-  const [retentionChange, setRetentionChange] = useState<{
-    retentionMs: RetentionMs
-    changedBy: string
-  } | null>(null)
-
   const [messages, dispatch] = useReducer(
     reduce,
     null,
-    () => readCachedMessages(myId, conversationId, retentionOr(initialRetentionMs)) ?? [],
+    () => readCachedMessages(myId, conversationId) ?? [],
   )
   /**
    * The reducer's output, readable from a callback that must not re-run when it
@@ -393,7 +396,13 @@ export function useConversation(
       }
     >(),
   )
-  const lastReadSentRef = useRef<string | null>(null)
+  /**
+   * Ids already reported on this connection. `ReadObserver` never names one
+   * twice either, but it is rebuilt whenever the thread's message list changes
+   * shape, and a receipt sent on a dying socket has to be offered again — so
+   * the guard against double-reporting lives on both sides of the call.
+   */
+  const readSentRef = useRef(new Set<string>())
   /**
    * Whether this device has already asked the account's other devices for the
    * history it cannot open. Once per thread per session: the answer is a person
@@ -460,16 +469,13 @@ export function useConversation(
     let attempt = 0
     let timer: number | undefined
     let flushTimer: number | undefined
-    const startRetention = retentionOr(initialRetentionRef.current)
-    setRetentionMs(startRetention)
-    setRetentionChange(null)
     dispatch({
       type: 'reset',
-      messages: readCachedMessages(myId, conversationId, startRetention) ?? [],
+      messages: readCachedMessages(myId, conversationId) ?? [],
     })
     pendingRef.current.clear()
     unsealedRef.current.clear()
-    lastReadSentRef.current = null
+    readSentRef.current = new Set()
     askedForKeysRef.current = false
     setPeerTyping(false)
     setSynced(false)
@@ -540,21 +546,12 @@ export function useConversation(
           })
           return
         case 'read_receipt':
-          dispatch({ type: 'peer_read', upToMessageId: event.up_to_message_id, myId })
+          // Sent to every connection, this device's own included: a second tab
+          // of mine did not witness the read that started these clocks.
+          dispatch({ type: 'peer_read', reads: event.reads })
           return
         case 'typing':
           showPeerTyping()
-          return
-        case 'retention':
-          setRetentionMs(retentionOr(event.retention_ms))
-          // A frame that only states the window (connect) is not an event;
-          // only a real change is worth telling the person about.
-          if (event.changed_by !== null) {
-            setRetentionChange({
-              retentionMs: retentionOr(event.retention_ms),
-              changedBy: event.changed_by,
-            })
-          }
           return
         case 'policy':
           setE2eeRequired(event.e2ee_required)
@@ -719,8 +716,9 @@ export function useConversation(
       ws.onopen = () => {
         attempt = 0
         queueKeys()
-        // A receipt sent on a dying socket may be lost — resend after reconnect.
-        lastReadSentRef.current = null
+        // A receipt sent on a dying socket may be lost — the thread reports
+        // what is on screen again once this one is up.
+        readSentRef.current = new Set()
         setConnection('online')
         window.clearTimeout(flushTimer)
         flushTimer = undefined
@@ -843,6 +841,11 @@ export function useConversation(
           body,
           media_key: mediaKey,
           created_at: Date.now(),
+          // What the server is about to stamp. Carried so the local list has
+          // one rule for every bubble instead of a special case for the one
+          // that has not been acked yet; the echo replaces it either way.
+          read_at: null,
+          expires_at: Date.now() + UNREAD_TTL_MS,
           status: 'sending',
           // The sender's own bubble decrypts through the same path as everyone
           // else's, so it needs the same three values rather than a shortcut
@@ -952,54 +955,76 @@ export function useConversation(
   }, [])
 
   /**
-   * Both participants share one window, so this is a request to the server
-   * rather than local state: the `retention` frame it broadcasts is what moves
-   * the UI, on this device and on theirs.
+   * Reports read messages, in frames of at most `MAX_READ_IDS`.
+   *
+   * Refused rather than queued when the socket is down — the caller holds the
+   * ids and offers them again (lib/readObserver.ts), which keeps the retry
+   * beside the thing that knows what is still on screen.
    */
-  const setRetention = useCallback((next: RetentionMs) => {
+  const markRead = useCallback((ids: string[]) => {
     const ws = wsRef.current
     if (ws?.readyState !== WebSocket.OPEN) return false
-    ws.send(JSON.stringify({ type: 'set_retention', retention_ms: next }))
+    const fresh = ids.filter((id) => !readSentRef.current.has(id))
+    if (fresh.length === 0) return true
+    for (const id of fresh) readSentRef.current.add(id)
+    for (let i = 0; i < fresh.length; i += MAX_READ_IDS) {
+      ws.send(JSON.stringify({ type: 'read_receipt', ids: fresh.slice(i, i + MAX_READ_IDS) }))
+    }
     return true
-  }, [])
-
-  const markRead = useCallback((upToMessageId: string) => {
-    if (lastReadSentRef.current === upToMessageId) return
-    const ws = wsRef.current
-    if (ws?.readyState !== WebSocket.OPEN) return
-    lastReadSentRef.current = upToMessageId
-    ws.send(JSON.stringify({ type: 'read_receipt', up_to_message_id: upToMessageId }))
   }, [])
 
   // Keeping the local copy fresh. A ref holds the latest list so the debounce
   // can collapse a burst — an echo, its status upgrade and the peer's typing
   // all land within a second of each other — into one JSON.stringify instead of
   // one per frame.
-  // A message can age out while the thread is open, and it can age out while
-  // the tab is offline — where no `messages_expired` frame can reach it. So the
-  // window is also applied here, on every render, against a clock that ticks
-  // slowly on its own so nothing lingers on screen just because the
-  // conversation went quiet.
+  // A message can expire while the thread is open, and it can expire while the
+  // tab is offline — where no `messages_expired` frame can reach it. So the
+  // deadlines are applied here too, against a clock that wakes for the nearest
+  // one rather than on a fixed interval: an expiry is a moment somebody is
+  // watching for, and "up to thirty seconds late" is exactly the kind of late
+  // that makes a promise look approximate.
   const [clock, setClock] = useState(() => Date.now())
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), EXPIRY_TICK_MS)
-    return () => window.clearInterval(timer)
-  }, [])
+  const live = useMemo(
+    () =>
+      messages.some((m) => m.expires_at <= clock)
+        ? messages.filter((m) => m.expires_at > clock)
+        : messages,
+    [messages, clock],
+  )
 
-  const live = useMemo(() => {
-    const cutoff = clock - retentionMs
-    return messages.some((m) => m.created_at <= cutoff)
-      ? messages.filter((m) => m.created_at > cutoff)
-      : messages
-  }, [messages, clock, retentionMs])
+  // Taken from what is still on screen, not from `messages`.
+  //
+  // The reducer only drops a message when the server says so, so between an
+  // expiry and the frame that reports it the raw list still holds a deadline
+  // that has already passed — and a timer armed for a moment in the past fires
+  // at its floor, over and over. On a tab with no socket to deliver that frame
+  // there is nothing to end it: the thread would re-render four times a second
+  // for as long as it stayed open.
+  const nextExpiryAt = useMemo(
+    () =>
+      live.reduce<number | null>(
+        (soonest, m) => (soonest === null || m.expires_at < soonest ? m.expires_at : soonest),
+        null,
+      ),
+    [live],
+  )
+
+  useEffect(() => {
+    const delay =
+      nextExpiryAt === null
+        ? EXPIRY_TICK_MS
+        : Math.min(EXPIRY_TICK_MS, Math.max(250, nextExpiryAt - Date.now()))
+    const timer = window.setTimeout(() => setClock(Date.now()), delay)
+    return () => window.clearTimeout(timer)
+  }, [nextExpiryAt, clock])
 
   const latestRef = useRef(live)
   latestRef.current = live
 
   useEffect(() => {
     const timer = window.setTimeout(
-      () => writeCachedMessages(myId, conversationId, latestRef.current, retentionRef.current),
+      () => writeCachedMessages(myId, conversationId, latestRef.current),
       500,
     )
     return () => window.clearTimeout(timer)
@@ -1010,8 +1035,7 @@ export function useConversation(
   // conversation, not on the messages, so it runs on unmount and not on every
   // frame.
   useEffect(() => {
-    return () =>
-      writeCachedMessages(myId, conversationId, latestRef.current, retentionRef.current)
+    return () => writeCachedMessages(myId, conversationId, latestRef.current)
   }, [myId, conversationId])
 
   return {
@@ -1025,13 +1049,12 @@ export function useConversation(
     dismissKeyRequest: () => setKeysRequestedBy(null),
     sendRejected,
     peerTyping,
-    retentionMs,
-    retentionChange,
     send,
     sendMedia,
     sendSticker,
     sendTyping,
     markRead,
-    setRetention,
+    /** The moment the next message here dies, for the thread's own clock. */
+    nextExpiryAt,
   }
 }

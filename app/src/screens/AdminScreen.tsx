@@ -22,8 +22,6 @@ import { Modal } from '../components/Modal'
 import { Panel } from '../components/Panel'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { CardListSkeleton, StatTilesSkeleton } from '../components/Skeleton'
-import { retentionOr } from '../lib/protocol'
-import { retentionShort } from '../lib/retention'
 import { navigate } from '../lib/router'
 import { formatRemaining } from '../lib/time'
 
@@ -489,13 +487,15 @@ function ConversationsPanel({
                   {conversation.media_objects} mídias · {formatDate(conversation.last_message_at)}
                   {conversation.unreachable && ' · indisponível'}
                 </p>
-                {/* The window the pair chose, and when it next bites. Read-only
-                    here on purpose: retention belongs to the two people in the
-                    conversation, not to whoever runs the instance. */}
+                {/* When the clock next bites, and how much of this thread is
+                    still waiting to be opened. Read-only on purpose, and there
+                    is nothing to change anymore: the window belongs to the rule
+                    now, not to whoever runs the instance (PRD §3.9). */}
                 <p className="font-mono text-[10px] uppercase tracking-[0.2em] opacity-50">
-                  prazo {retentionShort(retentionOr(conversation.retention_ms))}
-                  {conversation.next_expiry_at !== null &&
-                    ` · próxima expiração ${formatDate(conversation.next_expiry_at)}`}
+                  {conversation.next_expiry_at === null
+                    ? 'nada a expirar'
+                    : `próxima expiração ${formatDate(conversation.next_expiry_at)}`}
+                  {conversation.unread > 0 && ` · ${conversation.unread} não lida(s)`}
                 </p>
               </div>
               <RetroIconButton

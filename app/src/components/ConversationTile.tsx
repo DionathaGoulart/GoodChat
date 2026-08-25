@@ -22,6 +22,10 @@ const MEDIA_PREVIEW: Record<string, string> = {
 
 function preview(item: ConversationListItem): string {
   const last = item.last_message
+  // Two ways to have no preview and they read the same on purpose: a thread
+  // nobody has written in yet, and one whose last message already expired
+  // (PRD §3.9). Neither is a state worth explaining on a list tile — opening
+  // the thread is what says which it was.
   if (!last) return '— sem mensagens —'
   // A media preview never depended on the body, so it survives encryption
   // untouched. A textual one that still carries an envelope is one this device

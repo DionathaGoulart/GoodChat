@@ -1,6 +1,11 @@
 // Thread: resolve the deterministic conversation id for the peer, then run
-// the live WebSocket. Read receipts fire when the tab is visible so unread
-// badges stay truthful.
+// the live WebSocket.
+//
+// It also owns the two halves of the disappearing-message rule (PRD §3.9) that
+// only a screen can own: deciding what this device actually *showed* somebody,
+// which is what a read receipt now means and what starts a message's last three
+// hours (lib/readObserver.ts), and one clock for every countdown in the thread
+// (hooks/useExpiryClock.ts) instead of a timer per bubble.
 //
 // The header used to report my own socket ("link: online"), which said nothing
 // about the person being written to. It now reports *their* presence
@@ -11,10 +16,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, resolveConversation } from '../lib/api'
 import { readCachedThread, writeCachedThread } from '../lib/threadCache'
 import type { PublicUser } from '../lib/api'
-import type { RetentionMs } from '../lib/protocol'
-import { retentionLabel, retentionShort } from '../lib/retention'
+import { READ_TTL_MS } from '../lib/protocol'
+import { URGENT_MS, remainingLabel, remainingMs } from '../lib/expiry'
+import { ReadObserver } from '../lib/readObserver'
 import { useConversation } from '../hooks/useConversation'
-import type { ConnectionState } from '../hooks/useConversation'
+import type { ConnectionState, ThreadMessage } from '../hooks/useConversation'
+import { useExpiryClock } from '../hooks/useExpiryClock'
 import { usePresence } from '../hooks/usePresence'
 import { useSession } from '../hooks/useSession'
 import { presenceText, resolvePresence } from '../lib/presence'
@@ -22,7 +29,6 @@ import { Avatar } from '../components/Avatar'
 import { Composer } from '../components/Composer'
 import { MessageBubble } from '../components/MessageBubble'
 import { PresenceMarker } from '../components/Presence'
-import { RetentionDialog } from '../components/RetentionDialog'
 import { SafetyNumberDialog } from '../components/SafetyNumber'
 import { devicesFingerprint } from '../lib/e2ee'
 import { getDevices } from '../lib/deviceDirectory'
@@ -35,6 +41,84 @@ import { navigate } from '../lib/router'
 const LINK_LABEL: Record<Exclude<ConnectionState, 'online'>, { text: string; className: string }> = {
   connecting: { text: 'link: connecting', className: 'text-warning' },
   offline: { text: 'link: offline', className: 'text-error' },
+}
+
+/** The rule, in the one sentence it fits in. */
+const EXPIRY_RULE = 'mensagens somem 3h depois de lidas — e em 7 dias se ninguém abrir'
+
+/** Somebody has been told the rule on this device. */
+const RULE_SEEN_KEY = 'goodchat-expiry-rule-seen'
+
+/** How long the collapse-out runs — must match `.msg-leaving` in index.css. */
+const VANISH_MS = 220
+
+function ruleSeen(): boolean {
+  try {
+    return localStorage.getItem(RULE_SEEN_KEY) === '1'
+  } catch {
+    // Private mode: the line shows every session, which is the harmless side.
+    return false
+  }
+}
+
+function markRuleSeen(): void {
+  try {
+    localStorage.setItem(RULE_SEEN_KEY, '1')
+  } catch {
+    // Nothing to do — the line is a courtesy, not state.
+  }
+}
+
+/**
+ * The list to paint, which for a fifth of a second is longer than the list that
+ * exists: a message the server just deleted stays on screen while it collapses
+ * out of the column (`.msg-leaving`).
+ *
+ * Deliberately not a "keep it a moment longer" for anything else. The message
+ * is gone from state the instant it expires — this holds a corpse for the
+ * length of an animation and nothing reads from it.
+ */
+function useVanishing(
+  conversationId: string,
+  messages: ThreadMessage[],
+): { message: ThreadMessage; leaving: boolean }[] {
+  const previousRef = useRef(messages)
+  const [leaving, setLeaving] = useState<ThreadMessage[]>([])
+  const timersRef = useRef<number[]>([])
+
+  // Switching threads is not fifty messages expiring at once. Without this the
+  // whole previous conversation would collapse out on top of the new one.
+  useEffect(() => {
+    previousRef.current = []
+    setLeaving([])
+  }, [conversationId])
+
+  useEffect(() => {
+    const present = new Set(messages.map((m) => m.client_id))
+    const gone = previousRef.current.filter((m) => !present.has(m.client_id))
+    previousRef.current = messages
+    if (gone.length === 0) return
+    setLeaving((current) => [...current, ...gone])
+    // Not cleaned up when this effect re-runs: the next message to arrive would
+    // otherwise cancel the removal of the one still collapsing, and leave it on
+    // screen for good. Only unmount clears them, below.
+    const timer = window.setTimeout(() => {
+      const ids = new Set(gone.map((m) => m.client_id))
+      setLeaving((current) => current.filter((m) => !ids.has(m.client_id)))
+      timersRef.current = timersRef.current.filter((t) => t !== timer)
+    }, VANISH_MS)
+    timersRef.current.push(timer)
+  }, [messages])
+
+  useEffect(() => () => timersRef.current.forEach((timer) => window.clearTimeout(timer)), [])
+
+  return useMemo(() => {
+    if (leaving.length === 0) return messages.map((message) => ({ message, leaving: false }))
+    return [
+      ...messages.map((message) => ({ message, leaving: false })),
+      ...leaving.map((message) => ({ message, leaving: true })),
+    ].sort((a, b) => a.message.created_at - b.message.created_at)
+  }, [messages, leaving])
 }
 
 export function ThreadScreen({ userId }: { userId: string }) {
@@ -51,7 +135,6 @@ export function ThreadScreen({ userId }: { userId: string }) {
     otherUser: PublicUser
     readonly: boolean
     exists: boolean
-    retentionMs: number
   } | null>(() => (myId ? readCachedThread(myId, userId) : null))
   const [error, setError] = useState<string | null>(null)
 
@@ -71,9 +154,6 @@ export function ThreadScreen({ userId }: { userId: string }) {
           // "does this thread hold anything" — known a whole socket connect
           // before `history` could say so.
           exists: result.exists,
-          // D1's mirror of the message window. It labels the header and prunes
-          // the cached tail; the socket's `retention` frame confirms it.
-          retentionMs: result.retention_ms,
         }
         setResolved(next)
         if (myId) writeCachedThread(myId, userId, next)
@@ -120,7 +200,6 @@ export function ThreadScreen({ userId }: { userId: string }) {
       myName={user.username}
       readonly={resolved.readonly}
       hasHistory={resolved.exists}
-      initialRetentionMs={resolved.retentionMs}
     />
   )
 }
@@ -132,7 +211,6 @@ function LiveThread({
   myName,
   readonly,
   hasHistory,
-  initialRetentionMs,
 }: {
   conversationId: string
   otherUser: PublicUser
@@ -142,16 +220,13 @@ function LiveThread({
   readonly: boolean
   /** The conversation has held a message before, so `history` has one to bring. */
   hasHistory: boolean
-  /** The message window as resolve reported it, until the socket confirms. */
-  initialRetentionMs: number
 }) {
   const {
     messages,
     synced,
     connection,
     peerTyping,
-    retentionMs,
-    retentionChange,
+    nextExpiryAt,
     encryption,
     e2eeRequired,
     keysRequestedBy,
@@ -163,9 +238,7 @@ function LiveThread({
     sendSticker,
     sendTyping,
     markRead,
-    setRetention,
-  } = useConversation(conversationId, otherUser.id, myId, initialRetentionMs)
-  const [pickerOpen, setPickerOpen] = useState(false)
+  } = useConversation(conversationId, otherUser.id, myId)
   const [safetyOpen, setSafetyOpen] = useState(false)
   /**
    * The peer's device set changed since this device last opened the thread.
@@ -182,7 +255,13 @@ function LiveThread({
   const [keysChanged, setKeysChanged] = useState<'new-device' | 'since-verified' | null>(null)
   /** The peer's current device set is the one somebody compared out loud. */
   const [verified, setVerified] = useState(false)
-  const [retentionNotice, setRetentionNotice] = useState<string | null>(null)
+  /**
+   * Whether the rule is on screen. Once per device by default — it is a fact
+   * about the product, not an event, and a banner that reappears on every open
+   * is a banner people learn to look past. The header's ⏳ brings it back for
+   * anyone who wants it again.
+   */
+  const [ruleShown, setRuleShown] = useState(() => !ruleSeen())
   const presence = usePresence(useMemo(() => [otherUser.id], [otherUser.id]))
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
@@ -244,38 +323,88 @@ function LiveThread({
     setKeysChanged(null)
   }, [myId, otherUser.id])
 
-  const lastPeerMessageId = useMemo(() => {
+  // One observer per open thread, and one clock for every countdown in it.
+  const observerRef = useRef<ReadObserver | null>(null)
+  const markReadRef = useRef(markRead)
+  markReadRef.current = markRead
+  /**
+   * One ref callback per message id, kept for as long as the thread is open.
+   *
+   * Not an inline arrow. React calls a changed ref callback with null and then
+   * with the element again, which through `ReadObserver.watch` is a dwell reset
+   * — so a fresh closure per render would mean the countdown to "read" restarts
+   * on every re-render, and this component re-renders on a clock. A message
+   * would then never be reported at exactly the moments the clock ticks
+   * fastest.
+   */
+  const watchRefs = useRef(new Map<string, (element: HTMLElement | null) => void>())
+  const watchRef = useCallback((id: string) => {
+    let ref = watchRefs.current.get(id)
+    if (!ref) {
+      ref = (element: HTMLElement | null) => observerRef.current?.watch(id, element)
+      watchRefs.current.set(id, ref)
+    }
+    return ref
+  }, [])
+
+  useEffect(() => {
+    const observer = new ReadObserver((ids) => markReadRef.current(ids))
+    observerRef.current = observer
+    watchRefs.current = new Map()
+    return () => {
+      observer.dispose()
+      observerRef.current = null
+    }
+    // Rebuilt per conversation, not per frame: it carries the set of ids it has
+    // already reported, and throwing that away on every new message would let a
+    // message be named twice.
+  }, [conversationId])
+
+  const now = useExpiryClock(nextExpiryAt)
+
+  /**
+   * Whether this bubble is one the observer may watch.
+   *
+   * Everything here is a reason it must not be. My own message is not mine to
+   * read. One already read has a clock running and nothing left to start. And a
+   * sealed one is a placeholder — reporting it would delete a message on the
+   * strength of a bubble that said "[mensagem de antes deste dispositivo]".
+   */
+  const watchable = useCallback(
+    (message: ThreadMessage) =>
+      message.id !== null &&
+      message.sender_id !== myId &&
+      message.read_at === null &&
+      !message.sealed &&
+      // A video scrolled past is a poster frame; it reports itself on play.
+      message.msg_type !== 'video',
+    [myId],
+  )
+
+  /**
+   * The one message allowed to count down while it still has hours left: the
+   * newest one that has been read. Everything under fifteen minutes speaks for
+   * itself (lib/expiry.ts) — this is about the thread having a single visible
+   * clock the rest of the time instead of forty.
+   */
+  const prominentId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.sender_id !== myId && m.id !== null) return m.id
+      if (messages[i].read_at !== null) return messages[i].client_id
     }
     return null
-  }, [messages, myId])
+  }, [messages])
 
-  // Read receipt whenever the newest peer message is (or becomes) visible.
-  useEffect(() => {
-    if (lastPeerMessageId === null) return
-    const fire = () => {
-      if (document.visibilityState === 'visible') markRead(lastPeerMessageId)
-    }
-    fire()
-    document.addEventListener('visibilitychange', fire)
-    return () => document.removeEventListener('visibilitychange', fire)
-  }, [lastPeerMessageId, markRead])
+  const rows = useVanishing(conversationId, messages)
 
-  // Either side can retune the window, so a change is announced rather than
-  // just applied — a thread that silently starts deleting faster would be the
-  // one surprise this feature must not spring on anyone. The line clears
-  // itself; it is news, not state.
+  // The rule is worth one look, not one per open. Dismissed on a timer rather
+  // than with an ✕: it is a sentence, and asking somebody to close a sentence
+  // is more work than reading it.
   useEffect(() => {
-    if (retentionChange === null) return
-    const who = retentionChange.changedBy === myId ? 'você' : `@${otherUser.username}`
-    setRetentionNotice(
-      `${who} definiu o prazo em ${retentionLabel(retentionChange.retentionMs)}`,
-    )
-    const timer = window.setTimeout(() => setRetentionNotice(null), 8000)
+    if (!ruleShown) return
+    markRuleSeen()
+    const timer = window.setTimeout(() => setRuleShown(false), 9000)
     return () => window.clearTimeout(timer)
-  }, [retentionChange, myId, otherUser.username])
+  }, [ruleShown])
 
   // Auto-scroll: follow the tail unless the user scrolled up to read history.
   useEffect(() => {
@@ -299,7 +428,7 @@ function LiveThread({
       {/* Six things wanted this row and a phone fits four: the window dots are
           decoration and go, and the status moves under the handle instead of
           claiming a column of its own — at 360px it was being pushed off the
-          right edge and taking the retention button with it. */}
+          right edge and taking the expiry chip with it. */}
       <header className="thread-bar retro-border flex items-center gap-2 bg-base-200 p-2 retro-shadow-sm sm:gap-3 sm:p-3">
         <WindowDots className="hidden sm:flex" />
         <RetroIconButton
@@ -344,12 +473,22 @@ function LiveThread({
         >
           {encryption === 'off' ? '🔓' : verified ? '🔐' : '🔒'}
         </RetroIconButton>
+        {/* The thread's own clock. It reads "3h" — the rule — until something
+            is actually about to go, and then it reads that instead: with a
+            message inside its last fifteen minutes, "how long do I have" has
+            stopped being a rule and become a number. */}
         <RetroIconButton
           className="shrink-0"
-          onClick={() => setPickerOpen(true)}
-          aria-label={`prazo das mensagens: ${retentionLabel(retentionMs)}`}
+          onClick={() => setRuleShown(true)}
+          aria-label={EXPIRY_RULE}
         >
-          ⏳<span className="hidden xs:inline"> {retentionShort(retentionMs)}</span>
+          ⏳
+          <span className="hidden xs:inline">
+            {' '}
+            {nextExpiryAt !== null && remainingMs(nextExpiryAt, now) <= URGENT_MS
+              ? remainingLabel(remainingMs(nextExpiryAt, now))
+              : remainingLabel(READ_TTL_MS)}
+          </span>
         </RetroIconButton>
         <p
           className={`hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] sm:block ${status.className}`}
@@ -358,9 +497,13 @@ function LiveThread({
         </p>
       </header>
 
-      {retentionNotice && (
-        <p className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-accent">
-          {retentionNotice}
+      {ruleShown && (
+        <p className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center font-mono text-[10px] font-bold uppercase leading-relaxed tracking-[0.2em] text-accent">
+          {EXPIRY_RULE}
+          {/* Said out loud because the browser cannot enforce it and the app
+              must not imply otherwise: this is a promise about what the server
+              keeps, not about what the other person remembers. */}
+          <span className="block opacity-60">o servidor não guarda — a outra pessoa ainda lembra</span>
         </p>
       )}
 
@@ -466,13 +609,43 @@ function LiveThread({
             wait: the conversation is known to hold messages and `history` has
             not arrived yet, which is a socket connect plus a round trip. */}
         {messages.length === 0 && !synced && hasHistory && <MessagesSkeleton />}
-        {messages.map((message) => (
-          <MessageBubble
+        {/* An emptied thread is the normal end state of this product, not a
+            failure, and an empty column reads as one. Only once the server has
+            said so: before `history` lands, "nothing here" is not known. */}
+        {messages.length === 0 && synced && hasHistory && (
+          <p className="animate-enter m-auto max-w-xs text-center font-mono text-[10px] uppercase leading-relaxed tracking-[0.2em] opacity-40">
+            nada aqui — o que foi dito já passou
+          </p>
+        )}
+        {rows.map(({ message, leaving }) => (
+          // The wrapper is always here, and is a box only while the message is
+          // collapsing out. Rendering it conditionally would change the element
+          // under a stable key, which remounts the bubble — and a remount
+          // replays `animate-enter`, so the message would fade *in* while the
+          // row it sits in was folding shut.
+          <div
             key={message.client_id}
-            message={message}
-            mine={message.sender_id === myId}
-            sender={message.sender_id === myId ? myName : otherUser.username}
-          />
+            aria-hidden={leaving || undefined}
+            className={
+              leaving
+                ? `msg-leaving ${message.sender_id === myId ? 'self-end' : 'self-start'}`
+                : 'contents'
+            }
+          >
+            <MessageBubble
+              message={message}
+              mine={message.sender_id === myId}
+              sender={message.sender_id === myId ? myName : otherUser.username}
+              now={now}
+              prominent={message.client_id === prominentId}
+              watch={watchable(message) && message.id ? watchRef(message.id) : undefined}
+              onOpened={
+                message.id !== null && message.sender_id !== myId && message.read_at === null
+                  ? () => observerRef.current?.report(message.id!)
+                  : undefined
+              }
+            />
+          </div>
         ))}
       </div>
 
@@ -513,19 +686,6 @@ function LiveThread({
         />
       )}
 
-      {pickerOpen && (
-        <RetentionDialog
-          current={retentionMs}
-          peerName={otherUser.username}
-          // The window is shared state on the server: with no socket there is
-          // nothing to agree with, so the grid is read-only until it is back.
-          disabled={connection !== 'online'}
-          onSelect={(next: RetentionMs) => {
-            if (setRetention(next)) setPickerOpen(false)
-          }}
-          onClose={() => setPickerOpen(false)}
-        />
-      )}
     </main>
   )
 }

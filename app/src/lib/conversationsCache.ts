@@ -14,8 +14,8 @@
 //     something the next account on that browser may paint, even for a frame.
 //     A mismatched owner is discarded, and logout drops the row entirely;
 //   - a preview never outlives the message it previews. Each tile quotes the
-//     conversation's last message, and messages expire (PRD §3.9), so both the
-//     read and the write drop a preview already past its conversation's window
+//     conversation's last message, and every message carries the moment it dies
+//     (PRD §3.9), so both the read and the write drop a preview already past it
 //     — otherwise the one place a deleted message could still be read would be
 //     this cache;
 //   - presence is not stored. resolvePresence (lib/presence.ts) trusts the
@@ -28,7 +28,6 @@
 // anything unreadable is treated as absent.
 
 import type { ConversationListItem } from './api'
-import { retentionOr } from './protocol'
 
 const STORAGE_KEY = 'goodchat-conversations'
 
@@ -41,14 +40,18 @@ const MAX_ENTRIES = 50
 
 /**
  * The same item with its preview removed when that message would already be
- * gone from the server. The tile falls back to "— sem mensagens —", which is
- * what the fresh list is about to say anyway.
+ * gone from the server. The tile falls back to its empty line, which is what
+ * the fresh list is about to say anyway.
+ *
+ * A preview written by a build that predates the per-message clock has no
+ * `expires_at`, and is dropped rather than guessed at: a missing deadline must
+ * never read as "no deadline".
  */
-function withinWindow(item: ConversationListItem): ConversationListItem {
+function stillAlive(item: ConversationListItem): ConversationListItem {
   const last = item.last_message
   if (!last) return item
-  const cutoff = Date.now() - retentionOr(item.retention_ms)
-  return last.created_at > cutoff ? item : { ...item, last_message: null }
+  const alive = typeof last.expires_at === 'number' && last.expires_at > Date.now()
+  return alive ? item : { ...item, last_message: null }
 }
 
 interface StoredList {
@@ -77,7 +80,7 @@ export function readCachedConversations(ownerId: string): ConversationListItem[]
     for (const item of parsed.items) {
       if (typeof item?.id !== 'string' || typeof item?.other_user?.id !== 'string') return null
     }
-    return parsed.items.map(withinWindow)
+    return parsed.items.map(stillAlive)
   } catch {
     return null
   }
@@ -90,7 +93,7 @@ export function writeCachedConversations(
   const stored: StoredList = {
     owner: ownerId,
     items: items.slice(0, MAX_ENTRIES).map((item) => ({
-      ...withinWindow(item),
+      ...stillAlive(item),
       // See the note at the top: the flag is dropped, the timestamp is not.
       other_user: { ...item.other_user, online: false },
     })),
