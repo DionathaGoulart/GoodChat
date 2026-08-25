@@ -1,103 +1,37 @@
-// The device key directory (migration 0012) — the one server-side piece of
-// end-to-end encryption.
+// The key directory — the one server-side piece of end-to-end encryption.
 //
-// The server's entire job here is to hand out public keys. It never sees a
+// The server's entire job here is to hand out a public key. It never sees a
 // private key, never sees a content key, and never sees a plaintext message.
-// What it can still do is lie: it serves the directory, so it could add a
-// device of its own to somebody's list and receive a copy of everything sent
-// to them. That is not closed by anything on this side — it is closed by the
+// What it can still do is lie: it serves the directory, so it could hand out a
+// key of its own in somebody's place and receive a copy of everything sent to
+// them. That is not closed by anything on this side — it is closed by the
 // safety number the two clients compare (app/src/lib/e2ee.ts), which is
-// derived from exactly the list this route returns. Which is why the list is
-// returned whole and sorted, rather than filtered or paginated: the clients
-// have to be able to agree on it byte for byte.
+// derived from exactly the two keys this route returns.
 //
-// Reads are scoped the same way presence is (lib/presence.ts): you may look up
-// the devices of somebody you already have a conversation with. Starting a new
-// thread needs the peer's keys before any message exists, so a caller may also
-// read the directory of an account it could legitimately open a thread with —
-// which is any live, non-tombstoned account, exactly what
-// /api/conversations/resolve already answers for.
+// It used to return a *list*: identity was per browser (migration 0012), so a
+// message had to be encrypted once per device and both sides had to agree on
+// the list byte for byte to compute the same safety number. Migration 0014
+// made the account the unit, and the list collapsed to one key — which is why
+// registration is gone from this file. Nothing publishes a device key anymore;
+// `PUT /api/account/key` and the password routes are the only writers, and
+// they write to `users`.
+//
+// Reads are scoped the way presence is (lib/presence.ts): you may look up the
+// key of somebody you already have a conversation with. Starting a new thread
+// needs their key before any message exists, so a caller may also read the key
+// of an account it could legitimately open a thread with — which is any live,
+// non-tombstoned account, exactly what /api/conversations/resolve answers for.
 
-import { z } from 'zod'
 import { apiError, json } from '../lib/http'
 import { requireSession, sessionHeaders } from '../lib/session'
 
-/** SHA-256 of the raw public key, truncated — see migration 0012. */
-const DEVICE_ID_RE = /^[0-9a-f]{32}$/
-
 /**
- * Raw P-256 public key, base64url. 65 bytes uncompressed encodes to 88
- * characters; the bound is generous rather than exact so a future curve does
- * not need a migration to be rejected here for the wrong reason.
+ * GET /api/users/:id/key — the public key a message to this account has to be
+ * encrypted for. Null when they have not published one, which is a live answer
+ * and not an error: a client that gets null sends plaintext, and the instance
+ * decides whether it will carry that.
  */
-const PUBLIC_KEY_MAX = 256
-
-const RegisterSchema = z.object({
-  id: z.string().regex(DEVICE_ID_RE, 'device id must be 32 hex chars'),
-  public_key: z.string().min(1).max(PUBLIC_KEY_MAX),
-})
-
-export interface DeviceRow {
-  id: string
-  public_key: string
-  created_at: number
-  last_seen_at: number
-}
-
-/**
- * POST /api/devices — register this browser's key, or say it is still here.
- *
- * Idempotent, and the id is what makes it safe: because the id is a digest of
- * the key, a conflicting id means the same key, so the upsert can only ever
- * refresh `last_seen_at`. A different key is a different row. The server does
- * not verify that the id matches the key — it does not have to, since a client
- * that lies only breaks its own ability to be found by the digest its peers
- * compute for the safety number.
- */
-export async function registerDevice(request: Request, env: Env): Promise<Response> {
-  const auth = await requireSession(request, env.DB)
-  if (auth instanceof Response) return auth
-
-  let body: unknown
-  try {
-    body = await request.json()
-  } catch {
-    return apiError('invalid_request', 400, 'body must be JSON')
-  }
-  const parsed = RegisterSchema.safeParse(body)
-  if (!parsed.success) {
-    return apiError('invalid_request', 400, parsed.error.issues[0]?.message ?? 'invalid body')
-  }
-
-  const now = Date.now()
-  // The WHERE guard is the whole security of this statement: without it,
-  // presenting an id that already belongs to somebody else would move their
-  // device row onto this account. It can only fire if two accounts hold the
-  // same keypair, which means one of them copied it — pathological, but the
-  // guard costs nothing and RETURNING is what keeps the answer honest instead
-  // of reporting success for a write that did not happen.
-  const row = await env.DB.prepare(
-    `INSERT INTO devices (id, user_id, public_key, created_at, last_seen_at)
-     VALUES (?1, ?2, ?3, ?4, ?4)
-     ON CONFLICT(id) DO UPDATE SET last_seen_at = ?4
-     WHERE devices.user_id = ?2
-     RETURNING id`,
-  )
-    .bind(parsed.data.id, auth.user.id, parsed.data.public_key, now)
-    .first<{ id: string }>()
-  if (!row) return apiError('device_taken', 409, 'this device id belongs to another account')
-
-  return json({ ok: true, id: row.id }, 200, sessionHeaders(auth))
-}
-
-/**
- * GET /api/users/:id/devices — the public keys a message to this account has
- * to be encrypted for.
- *
- * Sorted by id so both sides of a conversation hash the same list into the
- * same safety number without having to agree on an order first.
- */
-export async function listDevices(
+export async function readUserKey(
   request: Request,
   env: Env,
   userId: string,
@@ -105,9 +39,8 @@ export async function listDevices(
   const auth = await requireSession(request, env.DB)
   if (auth instanceof Response) return auth
 
-  // Your own devices are always readable: the sender wraps the content key for
-  // its own other devices too, or the desktop could not read what the phone
-  // sent.
+  // Your own key is always readable: the sender wraps the content key for its
+  // own account too, or a person could not read what they sent.
   if (userId !== auth.user.id) {
     const target = await env.DB.prepare(
       'SELECT id FROM users WHERE id = ?1 AND disabled_at IS NULL AND deleted_at IS NULL',
@@ -119,6 +52,40 @@ export async function listDevices(
     // endpoints that already refuse to be one.
     if (!target) return apiError('not_found', 404, 'user not found')
   }
+
+  const row = await env.DB.prepare('SELECT account_public_key FROM users WHERE id = ?')
+    .bind(userId)
+    .first<{ account_public_key: string | null }>()
+
+  return json({ public_key: row?.account_public_key ?? null }, 200, sessionHeaders(auth))
+}
+
+// --- the directory this replaced ------------------------------------------
+
+/** A device's published key, from before the account key (migration 0012). */
+export interface DeviceRow {
+  id: string
+  public_key: string
+  created_at: number
+  last_seen_at: number
+}
+
+/**
+ * GET /api/users/:id/devices — the old per-browser directory, read-only.
+ *
+ * Nothing registers a device anymore, so this list only shrinks: it exists so
+ * a browser that received messages before the account key can still find the
+ * public key that opens them (app/src/lib/legacyEnvelope.ts). Retention caps a
+ * message at seven days, so seven days after that shipped this route, the
+ * `devices` table and the cleanup sweep that drains it all go together.
+ */
+export async function listDevices(
+  request: Request,
+  env: Env,
+  userId: string,
+): Promise<Response> {
+  const auth = await requireSession(request, env.DB)
+  if (auth instanceof Response) return auth
 
   const { results } = await env.DB.prepare(
     `SELECT id, public_key, created_at, last_seen_at

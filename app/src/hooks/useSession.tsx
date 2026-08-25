@@ -29,7 +29,7 @@ import {
   readAccountKey,
   wipeAccountKeys,
 } from '../lib/accountKeys'
-import { ensureDeviceKey, wipeDeviceKeys } from '../lib/deviceKeys'
+import { wipeDeviceKeys } from '../lib/deviceKeys'
 import { clearCachedConversations } from '../lib/conversationsCache'
 import { clearDrafts } from '../lib/drafts'
 import { clearCachedThreads, pruneCachedMessages } from '../lib/threadCache'
@@ -223,31 +223,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     pruneCachedMessages(user.id)
   }, [status, user])
 
-  // This device's encryption identity, created on first sign-in and re-announced
-  // on every load. Announcing again is what keeps it out of the directory sweep
-  // (worker/src/lib/cleanup.ts) — a browser that stops coming back is a public
-  // key whose private half nobody holds, and senders should stop paying for it.
-  //
-  // Best effort by design: a browser with no IndexedDB (private mode, or one
-  // that refuses it) gets no identity, and the app keeps working unencrypted for
-  // the length of the transition rather than refusing to open.
-  useEffect(() => {
-    if (status !== 'authenticated' || !user) return
-    let cancelled = false
-    void (async () => {
-      const identity = await ensureDeviceKey(user.id)
-      if (!identity || cancelled) return
-      try {
-        await api.registerDevice(identity.id, identity.publicKey)
-      } catch {
-        // Offline, or the worker refused. The next load tries again; until it
-        // lands, peers simply do not encrypt to this device.
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [status, user])
+  // What used to sit here announced this browser's device key to the worker on
+  // every load, so peers would encrypt to it and the staleness sweep would
+  // leave it alone. There is no such key to announce: the account has one, it
+  // is installed at sign-in (`installAccountKey`), and it is the same one in
+  // every browser — so there is nothing per-load to keep alive.
 
   // Presence is a property of the session, not of any screen: while somebody is
   // signed in this tab beats (lib/presence.ts), which is what makes them show

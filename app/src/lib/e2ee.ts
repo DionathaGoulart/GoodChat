@@ -2,13 +2,21 @@
 //
 // The shape, in one paragraph. Each message gets a fresh random content key.
 // That key encrypts the payload (and, when there is one, the bucket object
-// under a second IV). The content key is then wrapped once per device allowed
-// to read the message — the peer's devices, plus this account's own others, or
-// the desktop could not read what the phone just sent. Wrapping uses ECDH
-// between the sender's device key and each recipient device key, run through
-// HKDF. The server stores the ciphertext and the wrapped keys and can open
-// none of it: it never sees a private key, and the content key only ever
-// exists wrapped.
+// under a second IV). The content key is then wrapped twice — once for the
+// recipient's account and once for the sender's own, so the person can read
+// what they sent. Wrapping uses ECDH between the two account keys
+// (lib/accountKeys.ts), run through HKDF. The server stores the ciphertext and
+// the two wrapped keys and can open neither: it never sees a private key, and
+// the content key only ever exists wrapped.
+//
+// Twice, and not once per browser. That is the whole of what `v: 3` changed.
+// Identity used to be per device, so a message was wrapped once per device a
+// person had, a browser they had just signed into held a key no envelope
+// named, and there was a handover protocol for passing history between two of
+// your own machines while both were online. An account has one key, in every
+// browser it signs into, so all of that is gone — and with it
+// `[mensagem de antes deste dispositivo]`, which was the visible shape of the
+// problem.
 //
 // The payload is a small JSON object rather than a bare string, so one
 // encrypted shape covers every message type: `{t}` for text and emoji, `{s}`
@@ -17,27 +25,32 @@
 // the size cap it has to apply, and nothing finer.
 //
 // What this does not do, stated plainly because the difference matters: there
-// is no forward secrecy. ECDH here is static, so a device key that leaks opens
-// the messages that device could read. Retention already bounds that to seven
-// days, which is why a ratchet is not worth its complexity here — but it is a
-// weaker property than Signal's, and docs/architecture.md says so too.
+// is no forward secrecy. ECDH here is static, so an account key that leaks
+// opens every message that account could read. Retention already bounds that
+// to seven days, which is why a ratchet is not worth its complexity here — but
+// it is a weaker property than Signal's, and docs/architecture.md says so too.
+// The account key made that trade wider, not different: what leaks with a
+// stolen browser is now the account rather than one device's share of it, and
+// the plan says so out loud.
 //
-// And the part no code can fix: the server publishes the device directory, so
-// it could add a device of its own to somebody's list. `safetyNumber` is what
-// closes that, by making the directory comparable out of band.
+// And the part no code can fix: the server publishes the key directory, so it
+// could hand out a key of its own in somebody's place. `safetyNumber` is what
+// closes that, by making the two keys comparable out of band — and now it is a
+// number that changes only when a key really changes, rather than every time
+// somebody opened a new browser.
 //
-// One more thing the ciphertext has to say, and the reason for `v: 2`. AES-GCM
-// authenticates what it encrypts and nothing else, so a v1 envelope was a
-// sealed box with no address on it: the server could take a message Alice sent
-// Bob and hand it back to Bob inside a different conversation, or attributed to
-// somebody else. Bob's client would unwrap it — the content key really is
-// wrapped for his device — and render it under whatever name the frame claimed.
-// No plaintext leaks that way, but forged context is its own kind of lie.
+// One more thing the ciphertext has to say. AES-GCM authenticates what it
+// encrypts and nothing else, so a v1 envelope was a sealed box with no address
+// on it: the server could take a message Alice sent Bob and hand it back to Bob
+// inside a different conversation, or attributed to somebody else. Bob's client
+// would unwrap it — the content key really is wrapped for him — and render it
+// under whatever name the frame claimed. No plaintext leaks that way, but
+// forged context is its own kind of lie.
 //
 // So the address goes into the AEAD's additional data (`messageAad`): the
-// conversation, the sending account, the sending device, and the client id of
-// this particular message. None of it is encrypted and none of it needs to be —
-// the server already knows all four. What it cannot do is change any of them,
+// version, the conversation, the sending account, and the client id of this
+// particular message. None of it is encrypted and none of it needs to be — the
+// server already knows all four. What it cannot do is change any of them,
 // because the tag stops verifying and `openMessage` returns null.
 //
 // The client id is the part that stops a replay. Without it the binding says
@@ -47,23 +60,36 @@
 // authenticates as exactly one message. The id is the sender's own random
 // UUID, already on the wire because the Durable Object dedups on it.
 //
-// A v1 envelope has no such binding and is opened without it, which is what
-// keeps the seven days of history sent before this shipped readable; after that
-// window nothing on the instance is v1 any more.
+// The sending *device* used to be in there too, and is not anymore, for the
+// same reason the envelope stopped naming devices: there is no such party.
+// Opening a v1/v2 message still needs the old binding, and that lives in
+// lib/legacyEnvelope.ts — one file, so the day retention makes it dead it is
+// one deletion.
 
 // Type-only, and deliberately: with no value import from `./api` this module
 // pulls in no `import.meta.env`, no `fetch` and no bundler, which is what lets
 // worker/scripts/smoke-phase16.ts run the real thing under Node and check it
 // against an independent implementation of the same format. The directory —
-// the part that does need the network — lives in ./deviceDirectory.
-import type { PublicDevice } from './api'
-import {
-  base64url,
-  fromBase64url,
-  importPublicKey,
-  type DeviceIdentity,
-} from './deviceKeys'
-import type { EncEnvelope } from './protocol'
+// the part that does need the network — lives in ./keyDirectory.
+import type { AccountIdentity } from './accountKeys'
+import { base64url, fromBase64url } from './kdf'
+import type { AccountEnvelope } from './protocol'
+
+/**
+ * Imports a published key for `deriveBits`. Here rather than in
+ * lib/accountKeys.ts because it is crypto and that module is storage — and
+ * because a value import from there would drag IndexedDB into this file, which
+ * is what the note above says it does not have.
+ */
+export function importPublicKey(publicKey: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    'raw',
+    fromBase64url(publicKey) as BufferSource,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    true,
+    [],
+  )
+}
 
 /** The decrypted contents of a message. Every field is optional by type. */
 export interface Payload {
@@ -101,26 +127,21 @@ const AES = { name: 'AES-GCM', length: 256 } as const
 const WRAP_INFO = new TextEncoder().encode('goodchat-v1-wrap')
 
 /** The envelope version this build seals. See the note at the top of the file. */
-export const ENVELOPE_VERSION = 2
+export const ENVELOPE_VERSION = 3
 
 /**
- * The additional data every v2 ciphertext is authenticated under.
+ * The additional data every v3 ciphertext is authenticated under.
  *
  * Joined with `|`, which is unambiguous here rather than by luck: a
- * conversation id is hex, account and message ids are UUIDs and a device id is
- * 32 hex characters, so none of the four can contain the separator or be
- * confused with its neighbour. The literal prefix carries the version, so a v1
- * envelope cannot be replayed as a v2 one or the reverse.
+ * conversation id is hex and account and message ids are UUIDs, so none of the
+ * three can contain the separator or be confused with its neighbour. The
+ * literal prefix carries the version, so an envelope of one version cannot be
+ * replayed as another — which is also what makes dropping the sending device
+ * from this list safe rather than merely tidy.
  */
-export function messageAad(context: MessageContext, senderDevice: string): Uint8Array {
+export function messageAad(context: MessageContext): Uint8Array {
   return new TextEncoder().encode(
-    [
-      'goodchat-v2',
-      context.conversationId,
-      context.senderId,
-      senderDevice,
-      context.clientId,
-    ].join('|'),
+    ['goodchat-v3', context.conversationId, context.senderId, context.clientId].join('|'),
   )
 }
 
@@ -171,18 +192,21 @@ export async function decryptBytes(
 }
 
 /**
- * The key that wraps a content key for one (sender device, recipient device)
+ * The key that wraps a content key for one (sender account, recipient account)
  * pair.
  *
- * The HKDF salt is both device ids, sorted, so the same ECDH secret produces a
+ * The HKDF salt is both account ids, sorted, so the same ECDH secret produces a
  * different wrapping key than it would in any other context — and so both
- * sides derive it identically without having to agree who is "first".
+ * sides derive it identically without having to agree who is "first". When the
+ * two ids are the same, which is the entry a sender writes for itself, the
+ * salt is that id twice and the ECDH is the key against its own public half:
+ * unusual to look at, correct, and the reason a person can read what they sent.
  */
-async function wrappingKey(
+export async function wrappingKey(
   privateKey: CryptoKey,
   peerPublicKey: CryptoKey,
-  aDeviceId: string,
-  bDeviceId: string,
+  aId: string,
+  bId: string,
 ): Promise<CryptoKey> {
   const shared = await crypto.subtle.deriveBits(
     { name: 'ECDH', public: peerPublicKey },
@@ -190,7 +214,7 @@ async function wrappingKey(
     256,
   )
   const material = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey'])
-  const salt = new TextEncoder().encode([aDeviceId, bDeviceId].sort().join(':'))
+  const salt = new TextEncoder().encode([aId, bId].sort().join(':'))
   return crypto.subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt: salt as BufferSource, info: WRAP_INFO as BufferSource },
     material,
@@ -201,50 +225,57 @@ async function wrappingKey(
 }
 
 /**
- * Encrypts `payload` under `contentKey` and wraps that key for every device in
- * `recipients`. Returns what goes on the wire.
+ * Encrypts `payload` under `contentKey` and wraps that key for the recipient's
+ * account and for this one. Returns what goes on the wire.
  *
- * `recipients` must already include this device — `sealMessage` adds it if the
- * caller forgot, because a message this device cannot read is never what
- * anybody meant, and the Durable Object rejects an envelope shaped that way.
+ * `peer` is the other account's published key, or null when it has not
+ * published one — a guest that has not finished signing up, or an account that
+ * has not rotated yet. Null is not an error and not a silent downgrade either:
+ * the caller checks for it and sends plaintext, which the instance may well
+ * refuse (`E2EE_REQUIRED`), and refusing is the honest answer.
  *
  * `context` is a required parameter rather than an optional one on purpose:
  * every call site had to be visited when it was added, and a future one cannot
  * quietly seal a message that is bound to nothing.
  */
 export async function sealMessage(
-  identity: DeviceIdentity,
+  identity: AccountIdentity,
   context: MessageContext,
-  recipients: readonly PublicDevice[],
+  peer: { accountId: string; publicKey: string },
   payload: Payload,
   contentKey: CryptoKey,
   mediaIv?: Uint8Array,
   /** Set for a chunked object; absent keeps the whole-object shape. */
   mediaChunk?: number,
-): Promise<{ body: string; enc: EncEnvelope }> {
+): Promise<{ body: string; enc: AccountEnvelope }> {
   const iv = randomIv()
   const plaintext = new TextEncoder().encode(JSON.stringify(payload))
-  const aad = messageAad(context, identity.id)
+  const aad = messageAad(context)
   const body = base64url(await encryptBytes(contentKey, iv, plaintext as BufferSource, aad))
 
   const raw = await crypto.subtle.exportKey('raw', contentKey)
-  const targets = recipients.some((device) => device.id === identity.id)
-    ? recipients
-    : [...recipients, { id: identity.id, public_key: identity.publicKey } as PublicDevice]
+  const keys: AccountEnvelope['keys'] = {}
 
-  const keys: EncEnvelope['keys'] = {}
-  for (const device of targets) {
-    try {
-      const peerKey = await importPublicKey(device.public_key)
-      const wrapKey = await wrappingKey(identity.privateKey, peerKey, identity.id, device.id)
-      const wrapIv = randomIv()
-      keys[device.id] = {
-        iv: base64url(wrapIv),
-        ct: base64url(await encryptBytes(wrapKey, wrapIv, raw)),
-      }
-    } catch {
-      // One unusable public key in the directory must not cost everybody else
-      // the message. That device simply cannot read this one.
+  // The recipient first and this account second, but both unconditionally: a
+  // message this account cannot read is never what anybody meant, and the
+  // Durable Object rejects an envelope shaped that way. When the peer is this
+  // account — which nothing in the product allows, but the loop does not know
+  // that — the second write is the same entry twice and costs nothing.
+  for (const target of [
+    { id: peer.accountId, publicKey: peer.publicKey },
+    { id: identity.accountId, publicKey: identity.publicKey },
+  ]) {
+    const peerKey = await importPublicKey(target.publicKey)
+    const wrapKey = await wrappingKey(
+      identity.privateKey,
+      peerKey,
+      identity.accountId,
+      target.id,
+    )
+    const wrapIv = randomIv()
+    keys[target.id] = {
+      iv: base64url(wrapIv),
+      ct: base64url(await encryptBytes(wrapKey, wrapIv, raw)),
     }
   }
 
@@ -253,7 +284,6 @@ export async function sealMessage(
     enc: {
       v: ENVELOPE_VERSION,
       iv: base64url(iv),
-      sender_device: identity.id,
       keys,
       ...(mediaIv ? { media_iv: base64url(mediaIv) } : {}),
       ...(mediaIv && mediaChunk ? { media_chunk: mediaChunk } : {}),
@@ -262,96 +292,38 @@ export async function sealMessage(
 }
 
 /**
- * Whether this envelope carries a content key for `deviceId` at all.
+ * Opens a message addressed to this account. Returns the payload and the
+ * content key, because a media message needs the same key to decrypt its
+ * object.
  *
- * Split out of `openMessage` so the caller can tell "this message was never
- * addressed to this browser" — the ordinary case for anything sent before it
- * registered — from "it was, and it did not open", which is not ordinary at
- * all. Both used to arrive as the same null and be rendered with the same
- * sentence.
- */
-export function isAddressedTo(enc: EncEnvelope, deviceId: string): boolean {
-  return deviceId in enc.keys
-}
-
-/**
- * Whose public key opens the content key for `deviceId` — the sender, or the
- * device of this account that handed the message over afterwards.
+ * `senderPublicKey` is the sending account's published key — the one the
+ * directory names for `context.senderId`. There is no longer a second
+ * possibility: the handover that could put somebody else's key here died with
+ * the device model.
  *
- * Returns null when the envelope holds nothing for this device at all, which
- * the caller renders as `not-addressed`.
- */
-export function unwrapsVia(enc: EncEnvelope, deviceId: string): string | null {
-  const wrapped = enc.keys[deviceId]
-  if (!wrapped) return null
-  return wrapped.via ?? enc.sender_device
-}
-
-/**
- * Wraps an already-open content key for another device of the *same* account,
- * so a browser somebody just signed into can read what arrived before it
- * existed.
- *
- * This is the only place a content key is wrapped by somebody other than the
- * message's sender, and it is why `via` exists: the wrap is under ECDH between
- * this device and the target, not between the sender and the target, because
- * the sender's private key is not here and never will be.
- *
- * It hands over read access to messages, so it is gated on the person saying
- * yes (screens/ThreadScreen.tsx) rather than happening because a device
- * appeared. A session token that can register a device would otherwise be a
- * session token that can pull down the whole retention window.
- */
-export async function rewrapFor(
-  identity: DeviceIdentity,
-  target: PublicDevice,
-  contentKey: CryptoKey,
-): Promise<{ iv: string; ct: string; via: string }> {
-  const raw = await crypto.subtle.exportKey('raw', contentKey)
-  const targetKey = await importPublicKey(target.public_key)
-  const wrapKey = await wrappingKey(identity.privateKey, targetKey, identity.id, target.id)
-  const iv = randomIv()
-  return {
-    iv: base64url(iv),
-    ct: base64url(await encryptBytes(wrapKey, iv, raw)),
-    via: identity.id,
-  }
-}
-
-/**
- * Opens a message addressed to this device. Returns the payload and the content
- * key, because a media message needs the same key to decrypt its object.
- *
- * `senderPublicKey` is whatever `unwrapsVia` named — the message's sender for
- * an ordinary entry, or another of this account's devices for one that was
- * handed over. The *body* is unaffected either way: it is still bound to the
- * original sender and message through `messageAad`, so a handover changes who
- * can open a message and nothing about what it says or who it came from.
- *
- * Null covers four different situations, three of them expected: the message
- * predates this device (no wrapped key for it), the sender's device is no
- * longer in the directory, the ciphertext does not authenticate — or the
- * envelope was moved, and `context` no longer matches what it was sealed
- * against. The caller renders a placeholder rather than treating any of them as
- * an error, which is the right handling for the fourth too: a message the
- * server relocated is one this device genuinely cannot read.
+ * Null covers three situations, and none of them is an error the caller should
+ * treat as one: the sender's key is not in the directory, the ciphertext does
+ * not authenticate, or the envelope was moved and `context` no longer matches
+ * what it was sealed against. All three render as a placeholder, which is the
+ * right handling for the third too — a message the server relocated is one this
+ * account genuinely cannot read.
  */
 export async function openMessage(
-  identity: DeviceIdentity,
+  identity: AccountIdentity,
   context: MessageContext,
   senderPublicKey: string,
   body: string,
-  enc: EncEnvelope,
+  enc: AccountEnvelope,
 ): Promise<{ payload: Payload; contentKey: CryptoKey } | null> {
-  const wrapped = enc.keys[identity.id]
+  const wrapped = enc.keys[identity.accountId]
   if (!wrapped) return null
   try {
     const senderKey = await importPublicKey(senderPublicKey)
     const wrapKey = await wrappingKey(
       identity.privateKey,
       senderKey,
-      identity.id,
-      wrapped.via ?? enc.sender_device,
+      identity.accountId,
+      context.senderId,
     )
     const raw = await decryptBytes(
       wrapKey,
@@ -362,17 +334,11 @@ export async function openMessage(
       'encrypt',
       'decrypt',
     ])
-    // v1 predates the binding and is opened without it. Not a fallback the
-    // caller can be talked into: the version is inside the envelope the server
-    // stores, but downgrading a v2 message to v1 means re-encrypting a body
-    // whose key the server does not have. The worst it buys is replaying an
-    // envelope that was already unbound when it was written — and retention
-    // ends that seven days after this ships.
     const plaintext = await decryptBytes(
       contentKey,
       fromBase64url(enc.iv),
       fromBase64url(body) as BufferSource,
-      enc.v === 1 ? undefined : messageAad(context, enc.sender_device),
+      messageAad(context),
     )
     return { payload: JSON.parse(new TextDecoder().decode(plaintext)) as Payload, contentKey }
   } catch {
@@ -523,43 +489,36 @@ export async function decryptChunks(
  * A number both sides can read out loud to check they are talking through the
  * same keys.
  *
- * Derived from the two device directories rather than from a single identity
- * key, because identity here is per device: the number therefore changes when
- * either side adds or loses a device, which is the honest behaviour — a new
- * device really is a new party that can read the conversation, whether it
- * belongs to the peer or to the server pretending to be them.
+ * Derived from the two accounts' public keys, which is what makes it worth
+ * comparing: it is now stable for the life of those keys. It used to mix both
+ * *device directories*, so it changed every time either person signed into a
+ * new browser — several times a year, for a reason that was never an attack,
+ * and a number that keeps changing for innocent reasons is a number nobody
+ * checks. This one moves when a key really moves, and the only things that
+ * move a key are a fresh account and an owner's password reset.
  *
  * Sixty digits in twelve groups of five, the Signal shape, because it is a
  * format people have some chance of comparing without losing their place.
  */
-/**
- * A short digest of one side's device set, for "did this change since I last
- * looked". Not the safety number: that one mixes both sides and is meant to be
- * read out loud.
- */
-export async function devicesFingerprint(devices: readonly PublicDevice[]): Promise<string> {
-  const material = [...devices].map((device) => device.id).sort().join('|')
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material))
-  return [...new Uint8Array(digest).slice(0, 8)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-export async function safetyNumber(
-  a: readonly PublicDevice[],
-  b: readonly PublicDevice[],
-): Promise<string> {
-  const fingerprint = (devices: readonly PublicDevice[]) =>
-    [...devices]
-      .map((device) => device.public_key)
-      .sort()
-      .join('|')
+export async function safetyNumber(a: string, b: string): Promise<string> {
   // Sorted so both sides hash the same string without agreeing who is first.
-  const material = [fingerprint(a), fingerprint(b)].sort().join('||')
+  const material = [a, b].sort().join('||')
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material))
   const digits = [...new Uint8Array(digest)]
     .map((byte) => byte.toString().padStart(3, '0'))
     .join('')
     .slice(0, 60)
   return (digits.match(/.{1,5}/g) ?? []).join(' ')
+}
+
+/**
+ * A short digest of one account's key, for "did this change since I last
+ * looked". Not the safety number: that one mixes both sides and is meant to be
+ * read out loud.
+ */
+export async function keyFingerprint(publicKey: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(publicKey))
+  return [...new Uint8Array(digest).slice(0, 8)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
 }

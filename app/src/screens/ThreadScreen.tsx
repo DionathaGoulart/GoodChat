@@ -30,8 +30,8 @@ import { Composer } from '../components/Composer'
 import { MessageBubble } from '../components/MessageBubble'
 import { PresenceMarker } from '../components/Presence'
 import { SafetyNumberDialog } from '../components/SafetyNumber'
-import { devicesFingerprint } from '../lib/e2ee'
-import { getDevices } from '../lib/deviceDirectory'
+import { keyFingerprint } from '../lib/e2ee'
+import { getAccountKey } from '../lib/keyDirectory'
 import { RetroIconButton } from '../components/RetroIconButton'
 import { MessagesSkeleton, ThreadSkeleton } from '../components/Skeleton'
 import { WindowDots } from '../components/WindowDots'
@@ -229,9 +229,6 @@ function LiveThread({
     nextExpiryAt,
     encryption,
     e2eeRequired,
-    keysRequestedBy,
-    shareKeysWith,
-    dismissKeyRequest,
     sendRejected,
     send,
     sendMedia,
@@ -241,19 +238,18 @@ function LiveThread({
   } = useConversation(conversationId, otherUser.id, myId)
   const [safetyOpen, setSafetyOpen] = useState(false)
   /**
-   * The peer's device set changed since this device last opened the thread.
-   * Legitimate whenever they signed in somewhere new — and indistinguishable,
-   * from here, from a directory that was tampered with, which is the reason to
-   * say it out loud instead of absorbing it silently (components/
-   * SafetyNumber.tsx).
+   * The peer's key is not the one this browser last saw here.
+   *
+   * One state where there used to be two. While identity was per browser this
+   * fired every time either person signed in somewhere new, so it had to
+   * separate "they opened a new browser" (ordinary, and constant) from "the set
+   * moved after you compared the number" (an alarm) — and the ordinary one was
+   * frequent enough to teach people to dismiss both. An account has one key,
+   * and the only things that replace it are a fresh account and an owner's
+   * password reset. So it is rare, it is one banner, and it means what it says.
    */
-  /**
-   * What the directory comparison found, or null. `new-device` is a statement,
-   * `since-verified` is a warning — see the effect below for why they are not
-   * the same banner.
-   */
-  const [keysChanged, setKeysChanged] = useState<'new-device' | 'since-verified' | null>(null)
-  /** The peer's current device set is the one somebody compared out loud. */
+  const [keyChanged, setKeyChanged] = useState(false)
+  /** The peer's current key is the one somebody compared out loud. */
   const [verified, setVerified] = useState(false)
   /**
    * Whether the rule is on screen. Once per device by default — it is a fact
@@ -268,31 +264,20 @@ function LiveThread({
 
   // Compared on open, and only on open: a change is worth one banner, not a
   // re-render every time the directory cache refreshes.
-  //
-  // Two different findings come out of the same comparison, and conflating them
-  // is what made this banner ignorable. A device the person has never verified
-  // against is *news* — most people sign into a new browser every few weeks and
-  // an alarm each time trains them to dismiss it. A device set that has moved
-  // since they compared the number out loud is an *alarm*, because they are
-  // holding a number that no longer describes the conversation.
   useEffect(() => {
     if (!myId || readonly) return
     let cancelled = false
     void (async () => {
-      const devices = await getDevices(otherUser.id)
-      if (cancelled || devices.length === 0) return
-      const fingerprint = await devicesFingerprint(devices)
+      const key = await getAccountKey(otherUser.id)
+      if (cancelled || !key) return
+      const fingerprint = await keyFingerprint(key)
       if (cancelled) return
       const seen = readCachedThread(myId, otherUser.id)
       setVerified(seen?.verifiedFingerprint === fingerprint)
       // No stored fingerprint is a first look, not a change: announcing one
       // would fire for every thread the first time this build runs, which is
       // the fastest way to teach somebody to ignore the banner.
-      if (seen?.verifiedFingerprint && seen.verifiedFingerprint !== fingerprint) {
-        setKeysChanged('since-verified')
-      } else if (seen?.peerFingerprint && seen.peerFingerprint !== fingerprint) {
-        setKeysChanged('new-device')
-      }
+      if (seen?.peerFingerprint && seen.peerFingerprint !== fingerprint) setKeyChanged(true)
       if (seen) writeCachedThread(myId, otherUser.id, { ...seen, peerFingerprint: fingerprint })
     })()
     return () => {
@@ -308,9 +293,9 @@ function LiveThread({
    */
   const markVerified = useCallback(async () => {
     if (!myId) return
-    const devices = await getDevices(otherUser.id)
-    if (devices.length === 0) return
-    const fingerprint = await devicesFingerprint(devices)
+    const key = await getAccountKey(otherUser.id)
+    if (!key) return
+    const fingerprint = await keyFingerprint(key)
     const seen = readCachedThread(myId, otherUser.id)
     if (seen) {
       writeCachedThread(myId, otherUser.id, {
@@ -320,7 +305,7 @@ function LiveThread({
       })
     }
     setVerified(true)
-    setKeysChanged(null)
+    setKeyChanged(false)
   }, [myId, otherUser.id])
 
   // One observer per open thread, and one clock for every countdown in it.
@@ -539,59 +524,26 @@ function LiveThread({
         </p>
       )}
 
-      {/* Handing over history is handing over read access, so it is a question
-          and never an inference. A session token that can register a device
-          would otherwise be a session token that can pull down the whole
-          retention window — the one thing this exchange must not become. The
-          device id is shown because it is the only name the new browser has,
-          and it is the same string its own safety-number dialog reports. */}
-      {keysRequestedBy && (
+      {/* Rare on purpose, and therefore worth reading. A key changes when the
+          account is new or when the owner reset its password — never because
+          somebody opened another browser, which is what used to fire this. */}
+      {keyChanged && (
         <div className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center">
-          <p className="font-mono text-[10px] font-bold uppercase leading-relaxed tracking-[0.2em] text-warning">
-            um aparelho novo da sua conta pediu esta conversa
-            <span className="block opacity-60">{keysRequestedBy.slice(0, 8)}</span>
+          <p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
+            a chave de @{otherUser.username} mudou
           </p>
-          <div className="mt-1 flex justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => void shareKeysWith(keysRequestedBy)}
-              className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] underline opacity-70 hover:opacity-100"
-            >
-              enviar
-            </button>
-            <button
-              type="button"
-              onClick={dismissKeyRequest}
-              className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] underline opacity-40 hover:opacity-100"
-            >
-              agora não
-            </button>
-          </div>
-        </div>
-      )}
-
-      {keysChanged && (
-        <div className="animate-enter shrink-0 retro-border bg-base-200 p-2 text-center">
-          <p
-            className={`font-mono text-[10px] font-bold uppercase tracking-[0.2em] ${
-              keysChanged === 'since-verified' ? 'text-error' : 'opacity-60'
-            }`}
-          >
-            {keysChanged === 'since-verified'
-              ? `os aparelhos de @${otherUser.username} mudaram depois de você conferir`
-              : `@${otherUser.username} entrou num aparelho novo`}
+          <p className="font-mono text-[9px] uppercase tracking-[0.15em] opacity-50">
+            conta nova, ou senha redefinida pelo dono
           </p>
           <button
             type="button"
             onClick={() => {
-              setKeysChanged(null)
+              setKeyChanged(false)
               setSafetyOpen(true)
             }}
             className="mt-1 cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] underline opacity-70 hover:opacity-100"
           >
-            {keysChanged === 'since-verified'
-              ? 'conferir o número de novo'
-              : 'conferir o número de segurança'}
+            conferir o número de segurança
           </button>
         </div>
       )}

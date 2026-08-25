@@ -58,6 +58,14 @@ export interface WrappedAccountKey {
  */
 export interface AccountIdentity {
   /**
+   * The account this key belongs to — the same value the record is stored
+   * under. Duplicated inside the record because the service worker reads the
+   * store with `getAll()`, which hands back values without their keys, and
+   * because every caller that has the identity needs the id in the same
+   * breath: it is what the envelope's key map is keyed by.
+   */
+  accountId: string
+  /**
    * SHA-256 of the raw public key, truncated to 32 hex.
    *
    * A digest rather than a random value, which is what makes it a commitment:
@@ -119,7 +127,12 @@ export async function readAccountKey(userId: string): Promise<AccountIdentity | 
     // Shape check, not validation: a record from an older build can be missing
     // a field, and a half-read identity would fail later somewhere with much
     // less context than this.
-    if (!stored || typeof stored.id !== 'string' || !(stored.privateKey instanceof CryptoKey)) {
+    if (
+      !stored ||
+      typeof stored.id !== 'string' ||
+      typeof stored.accountId !== 'string' ||
+      !(stored.privateKey instanceof CryptoKey)
+    ) {
       return null
     }
     return stored
@@ -175,6 +188,7 @@ export async function createAccountKey(
     }
 
     const identity: AccountIdentity = {
+      accountId: userId,
       id: await accountIdFor(raw),
       publicKey: base64url(raw),
       privateKey: await importPrivate(pkcs8),
@@ -209,6 +223,7 @@ export async function adoptAccountKey(
       fromBase64url(published.wrapped) as BufferSource,
     )
     const identity: AccountIdentity = {
+      accountId: userId,
       id: await accountIdFor(fromBase64url(published.public_key).buffer as ArrayBuffer),
       publicKey: published.public_key,
       privateKey: await importPrivate(pkcs8),
@@ -270,17 +285,6 @@ function importPrivate(pkcs8: ArrayBuffer): Promise<CryptoKey> {
   return crypto.subtle.importKey('pkcs8', pkcs8, { name: 'ECDH', namedCurve: 'P-256' }, false, [
     'deriveBits',
   ])
-}
-
-/** Imports a peer's published key for `deriveBits`. */
-export function importPublicKey(publicKey: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    'raw',
-    fromBase64url(publicKey) as BufferSource,
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    [],
-  )
 }
 
 /**

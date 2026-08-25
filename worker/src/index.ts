@@ -26,7 +26,7 @@ import {
   rotatePassword,
 } from './routes/auth'
 import { listConversations, resolveConversation } from './routes/conversations'
-import { listDevices, registerDevice } from './routes/devices'
+import { listDevices, readUserKey } from './routes/devices'
 import { createUploadUrl, serveMedia } from './routes/media'
 import { heartbeat } from './routes/presence'
 import { updateProfile } from './routes/profile'
@@ -110,8 +110,14 @@ async function route(
   if (pathname === '/api/profile' && method === 'PATCH') return updateProfile(request, env)
   if (pathname === '/api/presence' && method === 'POST') return heartbeat(request, env)
   if (pathname === '/api/users/lookup' && method === 'GET') return lookupUsers(request, env, url)
-  if (pathname === '/api/devices' && method === 'POST') return registerDevice(request, env)
-  // /api/users/<id>/devices — the key directory a sender encrypts against.
+  // /api/users/<id>/key — the account key a sender encrypts against.
+  const keyMatch = /^\/api\/users\/([^/]+)\/key$/.exec(pathname)
+  if (keyMatch?.[1] && method === 'GET') {
+    return readUserKey(request, env, decodeURIComponent(keyMatch[1]))
+  }
+  // /api/users/<id>/devices — read-only remnant of the per-browser directory,
+  // so a browser can still open what it received before the account key
+  // (app/src/lib/legacyEnvelope.ts). Goes when the last v2 message expires.
   const devicesMatch = /^\/api\/users\/([^/]+)\/devices$/.exec(pathname)
   if (devicesMatch && method === 'GET') {
     return listDevices(request, env, decodeURIComponent(devicesMatch[1]))

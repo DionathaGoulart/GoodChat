@@ -1,17 +1,16 @@
-// The device key directory, cached.
+// The old per-browser directory, read-only.
 //
-// Split out of lib/e2ee.ts rather than living beside it, because the two have
-// opposite dependencies: this half is nothing but network, and that half is
-// nothing but crypto. Keeping the crypto free of any value import from ./api is
-// what lets it be executed and cross-checked outside a browser
-// (worker/scripts/smoke-phase16.ts) — a bundler-free module is a testable one.
+// Replaced by lib/keyDirectory.ts, which answers with one key per account
+// instead of a list per account. What is left here is what opening a v1/v2
+// message needs (lib/legacyEnvelope.ts): the public key of the *device* that
+// sealed it. Nothing registers a device anymore, so this only ever shrinks,
+// and seven days of retention after the account key shipped it is dead along
+// with the module it serves.
 
 import { userDevices, type PublicDevice } from './api'
 
-// Cached because a thread encrypts on every keystroke-to-send and the answer
-// changes only when somebody installs the app somewhere new. Short TTL, and
-// `refreshDevices` forces it on connect, which is when a peer's new device
-// would matter.
+// Still cached, though nothing is racing it anymore: the list cannot grow, so
+// a stale copy is only ever missing rows that were swept for going quiet.
 
 const DIRECTORY_TTL_MS = 5 * 60 * 1000
 
@@ -35,25 +34,6 @@ export async function getDevices(userId: string, force = false): Promise<PublicD
     // which the transition allows.
     return cached?.devices ?? []
   }
-}
-
-export function refreshDevices(userId: string): Promise<PublicDevice[]> {
-  return getDevices(userId, true)
-}
-
-/**
- * Seeds the cache from a payload that already carried the keys — the
- * conversation list does, so opening a thread from it needs no round trip and
- * the tiles can decrypt their own previews.
- */
-export function cacheDevices(userId: string, devices: readonly PublicDevice[]): void {
-  if (devices.length === 0) return
-  directory.set(userId, { devices: [...devices], fetchedAt: Date.now() })
-}
-
-/** Logout, or a peer whose keys should not be remembered any longer. */
-export function forgetDirectory(): void {
-  directory.clear()
 }
 
 /** Finds one device's public key across every directory currently cached. */

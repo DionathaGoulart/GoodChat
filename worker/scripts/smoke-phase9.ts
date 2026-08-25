@@ -15,7 +15,7 @@
 
 import WebSocket from 'ws'
 import { startMediaDevServer } from './media-dev-server.ts'
-import { signIn } from './lib.ts'
+import { d1Execute, signIn } from './lib.ts'
 
 const API = process.env.API_URL ?? 'http://localhost:8000'
 const WS_API = API.replace(/^http/, 'ws')
@@ -75,6 +75,14 @@ async function medianLoginMs(username: string, runs = 3): Promise<number> {
 
 let ownedServer: Awaited<ReturnType<typeof startMediaDevServer>> | null = null
 try {
+  // Every deliberately-failed sign-in below spends a slot of the per-IP window,
+  // and `signIn` spends two of them — it tries the derived credential and then
+  // the plaintext one, the way the app does (scripts/lib.ts). On localhost the
+  // whole suite shares one address, so a run that left its counters behind
+  // would lock out whatever ran next. Cleared at both ends: at the start so a
+  // previous run cannot decide this one's outcome, at the end so this one
+  // cannot decide the next.
+  d1Execute('DELETE FROM login_attempts;')
   ownedServer = await startMediaDevServer(MEDIA_PORT)
   console.log(`media stub started on :${MEDIA_PORT}`)
 } catch (err: any) {
@@ -484,6 +492,8 @@ try {
   check('cleanup runs and reports', cleanup.status === 200 && 'orphan_media_deleted' in cleanup.body, cleanup.body)
   const stillThere = await fetch(`${API}/api/media/${key}`, { headers: { Cookie: aliceCookie } })
   check('a fresh unclaimed upload is not swept yet (24h TTL)', stillThere.status === 200, stillThere.status)
+
+  d1Execute('DELETE FROM login_attempts;')
 
   console.log(failures === 0 ? '\nphase 9 smoke: all green' : `\nphase 9 smoke: ${failures} failure(s)`)
 } finally {

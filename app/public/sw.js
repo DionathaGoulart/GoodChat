@@ -242,10 +242,17 @@ self.addEventListener('fetch', (event) => {
 // to decrypt it here. What arrives in the push is only *which* message: the
 // conversation and the message id. This context reads it back through
 // /api/conversations — same origin, same session cookie the page uses — and
-// opens it with the private key in IndexedDB, where app/src/lib/deviceKeys.ts
+// opens it with the private key in IndexedDB, where app/src/lib/accountKeys.ts
 // put it as a non-extractable CryptoKey. That is the whole reason it went to
 // IndexedDB instead of localStorage: this context can use it, and no code
 // anywhere can export it.
+//
+// The key is the *account's* now (migration 0014), not this browser's, which
+// is why the subscription no longer names a device and why every browser
+// signed into an account can show the same preview. A v1/v2 message is not
+// decrypted here: it was sealed to a device key, and a notification is not
+// worth carrying that path into a second implementation. It falls through to
+// the generic line, which is what a preview does whenever anything is missing.
 //
 // The ciphertext used to travel in the notification itself, which meant a
 // message too long for Web Push's 4096-byte record silently lost its preview —
@@ -258,7 +265,7 @@ self.addEventListener('fetch', (event) => {
 // older build all degrade to "@alice te mandou uma mensagem" rather than to
 // nothing.
 
-const KEY_DB = 'goodchat-keys'
+const KEY_DB = 'goodchat-account'
 const KEY_STORE = 'identity'
 
 function openKeyDb() {
@@ -272,7 +279,7 @@ function openKeyDb() {
   })
 }
 
-/** Every identity this browser holds — one per account signed in here. */
+/** Every account key this browser holds — one per account signed in here. */
 async function storedIdentities() {
   const db = await openKeyDb()
   try {
@@ -326,12 +333,12 @@ async function wrappingKey(privateKey, senderKeyRaw, aId, bId) {
 
 /**
  * Mirrors `messageAad` in app/src/lib/e2ee.ts — same order, same separator,
- * same literal. A v2 body does not decrypt without it, so a drift here shows up
+ * same literal. A v3 body does not decrypt without it, so a drift here shows up
  * as "push previews went generic" rather than as anything dangerous.
  */
-function previewAad(conversationId, message, senderDevice) {
+function previewAad(conversationId, message) {
   return new TextEncoder().encode(
-    ['goodchat-v2', conversationId, message.sender_id, senderDevice, message.client_id].join('|'),
+    ['goodchat-v3', conversationId, message.sender_id, message.client_id].join('|'),
   )
 }
 
@@ -339,7 +346,7 @@ function previewAad(conversationId, message, senderDevice) {
  * The conversation the push names, read back from the API.
  *
  * /api/conversations rather than a purpose-built endpoint: it already carries
- * the last message with its envelope *and* the peer's device keys, already
+ * the last message with its envelope *and* the peer's account key, already
  * checks the session and membership, and is the same payload the conversation
  * list decrypts on screen. One endpoint doing both is one endpoint to keep
  * right.
@@ -360,21 +367,30 @@ async function decryptPreview(ref) {
     // The newest message is normally the one the push is about; when it is not,
     // showing it would put the wrong text on the lock screen.
     if (!message?.enc || message.id !== ref.mid) return null
+    // v1/v2 was sealed to a device key. Not decrypted here — see the note at
+    // the top of this section.
+    if (message.enc.v !== 3) return null
 
+    // Whichever account this browser holds a key for that the envelope names.
     const identities = await storedIdentities()
-    const identity = identities.find((entry) => entry?.id && message.enc.keys[entry.id])
+    const identity = identities.find((entry) => entry?.id && message.enc.keys[entry.accountId])
     if (!identity) return null
-    const wrapped = message.enc.keys[identity.id]
+    const wrapped = message.enc.keys[identity.accountId]
 
-    // Whoever wrapped this entry: the sender, or another device of this account
-    // that handed the message over (`via`). Its public key has to come from the
-    // directory the payload carries, so a handover falls back to the generic
-    // line rather than guessing.
-    const via = wrapped.via ?? message.enc.sender_device
-    const source = (conversation.peer_devices ?? []).find((device) => device.id === via)
-    if (!source) return null
+    // Whose key sealed it: the peer's, or this account's own for a message this
+    // person sent from somewhere else.
+    const senderKey =
+      message.sender_id === identity.accountId
+        ? identity.publicKey
+        : conversation.peer_account_key
+    if (!senderKey) return null
 
-    const wrapKey = await wrappingKey(identity.privateKey, source.public_key, identity.id, via)
+    const wrapKey = await wrappingKey(
+      identity.privateKey,
+      senderKey,
+      identity.accountId,
+      message.sender_id,
+    )
     const raw = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: fromBase64url(wrapped.iv) },
       wrapKey,
@@ -387,15 +403,11 @@ async function decryptPreview(ref) {
       true,
       ['decrypt'],
     )
-    // v1 was sealed before the binding existed and carries none. Everything
-    // else is v2 and fails closed.
     const plain = await crypto.subtle.decrypt(
       {
         name: 'AES-GCM',
         iv: fromBase64url(message.enc.iv),
-        ...(message.enc.v === 1
-          ? {}
-          : { additionalData: previewAad(ref.conv, message, message.enc.sender_device) }),
+        additionalData: previewAad(ref.conv, message),
       },
       contentKey,
       fromBase64url(message.body),

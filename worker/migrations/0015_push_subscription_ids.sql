@@ -1,0 +1,21 @@
+-- Migration 0015: the push subscription stops naming a device.
+--
+-- `push_subscriptions.device_id` (migration 0012) existed for one reason: a
+-- push goes to one browser, and the encrypted preview it pointed at was
+-- wrapped per browser, so the worker had to know which key that subscription
+-- could open. Migration 0014 gave the account one key, held by every browser
+-- signed into it, so every subscription of an account can open every preview
+-- and there is nothing left to name.
+--
+-- Dropped rather than repurposed as a subscription identifier, which is what
+-- the plan sketched. `endpoint` is already the primary key and already
+-- identifies the subscription exactly; a second id would have been a column
+-- with no reader.
+--
+-- The `devices` table itself is deliberately *not* dropped here. A browser
+-- that received messages before the account key still needs the public key
+-- that opens them (app/src/lib/legacyEnvelope.ts), and retention caps a
+-- message at seven days — so the table, the read-only GET /api/users/:id/devices
+-- route, and the staleness sweep that drains it all go together in one
+-- migration a week after this one, when the last v1/v2 envelope has expired.
+ALTER TABLE push_subscriptions DROP COLUMN device_id;

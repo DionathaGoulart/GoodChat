@@ -14,7 +14,6 @@ import {
   unsubscribe,
 } from '@mmmike/web-push/client'
 import { ApiError, pushSubscribe, pushUnsubscribe, pushVapidKey } from './api'
-import { readDeviceKey } from './deviceKeys'
 
 export type PushState =
   | 'unsupported' // browser has no Push API (or: iOS Safari outside an installed PWA)
@@ -48,7 +47,7 @@ export async function currentPushState(): Promise<PushState> {
 }
 
 /** Ask permission, subscribe the browser, register with the worker. */
-export async function enablePush(userId?: string): Promise<PushState> {
+export async function enablePush(): Promise<PushState> {
   let publicKey: string
   try {
     ;({ public_key: publicKey } = await pushVapidKey())
@@ -59,12 +58,11 @@ export async function enablePush(userId?: string): Promise<PushState> {
   const result = await subscribe(publicKey)
   if (result.status === 'unsupported') return 'unsupported'
   if (result.status === 'denied') return 'denied'
-  // Which device this subscription belongs to: a push reaches exactly one, and
-  // the encrypted preview it may carry has to be wrapped for exactly that one
-  // (worker/src/lib/push.ts). Without it the notification still arrives, just
-  // always with the generic body.
-  const identity = userId ? await readDeviceKey(userId) : null
-  await pushSubscribe(serializeSubscription(result.subscription), identity?.id)
+  // The subscription used to name a device, because the preview's content key
+  // was wrapped per browser and the worker had to pick the right one. With one
+  // key per account every browser of that account can open it, so there is
+  // nothing to name (migration 0014, worker/src/lib/push.ts `withPreview`).
+  await pushSubscribe(serializeSubscription(result.subscription))
   return 'on'
 }
 

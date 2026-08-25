@@ -1,35 +1,23 @@
-// This device's encryption identity: one ECDH P-256 keypair, generated here,
-// and the private half never leaves this browser.
+// The per-browser key this build no longer creates.
 //
-// IndexedDB rather than localStorage, and that is the entire reason this module
-// exists instead of being three lines in e2ee.ts. localStorage stores strings,
-// which means a private key would have to be exported to bytes to be saved —
-// and anything that can be exported can be read by any script that runs on this
-// origin. IndexedDB stores structured clones, and a `CryptoKey` is one, so the
-// key can be written and read back while staying `extractable: false`: it is a
-// handle the browser will use for ECDH and refuse to serialize. That is the
-// difference between "the key is on this device" and "the key is in a variable".
+// Identity used to live here: one ECDH P-256 pair per browser, private half
+// never leaving it. Migration 0014 moved it to the account (lib/accountKeys.ts)
+// — one key, wrapped under the password, readable from anywhere — and this
+// module is what is left over: the ability to *read* the key a browser already
+// has, so messages sealed before the change still open in the browser that
+// received them.
 //
-// P-256 rather than X25519 because `deriveBits` over P-256 is in every
-// WebCrypto implementation the app already targets, and this file is also read
-// by the service worker (sw.js decrypts push previews), which has the same
-// requirement and no bundler.
-//
-// No backup, on purpose. There is no recovery phrase and nothing wrapped on the
-// server, because retention caps a message's life at seven days: a device that
-// loses this key loses at most a week, and a new device simply starts reading
-// from the moment it registers. See docs/architecture.md.
+// Nothing calls `createDeviceKey` anymore because there is nothing to create;
+// nothing registers a key with the worker because the directory only drains.
+// Retention caps a message at seven days, so seven days after the account key
+// ships there is no v1/v2 envelope left, and this file goes with
+// lib/legacyEnvelope.ts, its IndexedDB database, and the `devices` table.
 
 const DB_NAME = 'goodchat-keys'
 const DB_VERSION = 1
 const STORE = 'identity'
 
-/**
- * One record per account. The key is account-scoped rather than browser-scoped
- * so that signing in as somebody else on this machine cannot decrypt the
- * previous account's messages — and so `wipeDeviceKey` on logout is a delete of
- * one row rather than a guess.
- */
+/** One record per account, from back when this was the encryption identity. */
 export interface DeviceIdentity {
   /** SHA-256 of the raw public key, truncated to 32 hex — see migration 0012. */
   id: string
@@ -69,37 +57,6 @@ async function withStore<T>(
   }
 }
 
-export function base64url(bytes: ArrayBuffer | Uint8Array): string {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
-  let binary = ''
-  for (const byte of view) binary += String.fromCharCode(byte)
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
-}
-
-export function fromBase64url(value: string): Uint8Array {
-  const padded = value.replaceAll('-', '+').replaceAll('_', '/')
-  const binary = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, '='))
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-  return bytes
-}
-
-/**
- * The device id is a digest of the key rather than a random value, which is
- * what makes it a commitment: the same id can only ever mean the same key, so a
- * key that was swapped shows up as a *different device* instead of the same
- * device with new bytes. Both the change banner and the safety number rely on
- * that (lib/e2ee.ts).
- */
-export async function deviceIdFor(publicKeyRaw: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', publicKeyRaw)
-  let hex = ''
-  for (const byte of new Uint8Array(digest).slice(0, 16)) {
-    hex += byte.toString(16).padStart(2, '0')
-  }
-  return hex
-}
-
 /** The stored identity for one account, or null when this device has none. */
 export async function readDeviceKey(userId: string): Promise<DeviceIdentity | null> {
   try {
@@ -121,37 +78,9 @@ export async function readDeviceKey(userId: string): Promise<DeviceIdentity | nu
 }
 
 /**
- * Creates this device's identity and stores it. Called once per account per
- * browser; `ensureDeviceKey` is the entry point that decides whether it runs.
- */
-export async function createDeviceKey(userId: string): Promise<DeviceIdentity | null> {
-  try {
-    const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, [
-      'deriveBits',
-    ])
-    const raw = await crypto.subtle.exportKey('raw', pair.publicKey)
-    const identity: DeviceIdentity = {
-      id: await deviceIdFor(raw),
-      publicKey: base64url(raw),
-      privateKey: pair.privateKey,
-      createdAt: Date.now(),
-    }
-    await withStore('readwrite', (store) => store.put(identity, userId))
-    return identity
-  } catch {
-    return null
-  }
-}
-
-/** The identity for this account, creating it on first use. */
-export async function ensureDeviceKey(userId: string): Promise<DeviceIdentity | null> {
-  return (await readDeviceKey(userId)) ?? (await createDeviceKey(userId))
-}
-
-/**
- * Logout. The next account on this device must not hold the previous one's key,
- * and there is nothing to preserve: history is at most seven days old and this
- * device will generate a fresh identity when it signs back in.
+ * Logout. The next account on this browser must not hold the previous one's
+ * key, and there is nothing to preserve: the account key is what this browser
+ * signs back in with, and it comes from the server.
  */
 export async function wipeDeviceKeys(): Promise<void> {
   try {
@@ -159,15 +88,4 @@ export async function wipeDeviceKeys(): Promise<void> {
   } catch {
     // Nothing to do — a key that cannot be reached cannot be used either.
   }
-}
-
-/** Imports a peer's published key for `deriveBits`. */
-export function importPublicKey(publicKey: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    'raw',
-    fromBase64url(publicKey) as BufferSource,
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    [],
-  )
 }

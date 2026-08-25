@@ -62,12 +62,15 @@ export async function listConversations(request: Request, env: Env): Promise<Res
     .bind(auth.user.id)
     .all<ConversationRow>()
 
-  // The peers' device keys, inline rather than through N calls to
-  // /api/users/:id/devices. The tile preview is an encrypted message like any
+  // The peers' account keys, inline rather than through N calls to
+  // /api/users/:id/key. The tile preview is an encrypted message like any
   // other, so the list cannot be rendered without them — and this is the one
   // request that already knows exactly which peers the caller may see, so
   // carrying them here costs one query instead of one round trip per thread.
-  const devicesByUser = await peerDevices(
+  //
+  // Only the peers': a preview of the caller's *own* message unwraps against
+  // the caller's own key, which the browser already holds (lib/accountKeys.ts).
+  const keysByUser = await peerAccountKeys(
     env,
     results.map((row) => row.other_id),
   )
@@ -88,8 +91,8 @@ export async function listConversations(request: Request, env: Env): Promise<Res
     last_message_at: row.last_message_at,
     last_message: summaries[i]?.last_message ?? null,
     unread_count: summaries[i]?.unread_count ?? 0,
-    /** What a message to this peer is encrypted for (migration 0012). */
-    peer_devices: devicesByUser.get(row.other_id) ?? [],
+    /** What a message to this peer is encrypted for (migration 0014). */
+    peer_account_key: keysByUser.get(row.other_id) ?? null,
     other_user: {
       id: row.other_id,
       username: row.other_username,
@@ -169,29 +172,25 @@ export async function resolveConversation(request: Request, env: Env): Promise<R
 }
 
 /**
- * Device keys for a set of peers, in one query. Chunked well under D1's bound
+ * Account keys for a set of peers, in one query. Chunked well under D1's bound
  * parameter cap, like lib/mediaIndex.ts `forgetKeys` does for the same reason.
  */
-async function peerDevices(
+async function peerAccountKeys(
   env: Env,
   userIds: readonly string[],
-): Promise<Map<string, { id: string; public_key: string }[]>> {
+): Promise<Map<string, string>> {
   const unique = [...new Set(userIds)]
-  const byUser = new Map<string, { id: string; public_key: string }[]>()
+  const byUser = new Map<string, string>()
   for (let i = 0; i < unique.length; i += 50) {
     const chunk = unique.slice(i, i + 50)
     const placeholders = chunk.map(() => '?').join(', ')
     const { results } = await env.DB.prepare(
-      `SELECT id, user_id, public_key FROM devices
-       WHERE user_id IN (${placeholders}) ORDER BY id`,
+      `SELECT id, account_public_key FROM users
+       WHERE id IN (${placeholders}) AND account_public_key IS NOT NULL`,
     )
       .bind(...chunk)
-      .all<{ id: string; user_id: string; public_key: string }>()
-    for (const row of results) {
-      const list = byUser.get(row.user_id) ?? []
-      list.push({ id: row.id, public_key: row.public_key })
-      byUser.set(row.user_id, list)
-    }
+      .all<{ id: string; account_public_key: string }>()
+    for (const row of results) byUser.set(row.id, row.account_public_key)
   }
   return byUser
 }

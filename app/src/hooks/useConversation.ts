@@ -15,24 +15,23 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { wsUrl } from '../lib/api'
-import { base64url, readDeviceKey, type DeviceIdentity } from '../lib/deviceKeys'
-import {
-  createContentKey,
-  isAddressedTo,
-  openMessage,
-  rewrapFor,
-  sealMessage,
-  type Payload,
-} from '../lib/e2ee'
-import { findCachedDevice, getDevices, refreshDevices } from '../lib/deviceDirectory'
+import { readAccountKey, type AccountIdentity } from '../lib/accountKeys'
+import { base64url } from '../lib/kdf'
+import { createContentKey, openMessage, sealMessage, type Payload } from '../lib/e2ee'
+import { getAccountKey, refreshKey } from '../lib/keyDirectory'
+// The v1/v2 read path, and everything it drags with it. One import block, so
+// the day retention makes it dead the deletion is obvious.
+import { readDeviceKey, type DeviceIdentity } from '../lib/deviceKeys'
+import { findCachedDevice, getDevices } from '../lib/deviceDirectory'
+import { legacyAddressedTo, openLegacyMessage } from '../lib/legacyEnvelope'
 import type { MediaSealing } from '../lib/media'
 import { dismissNotifications } from '../lib/push'
 import { readCachedMessages, writeCachedMessages } from '../lib/threadCache'
 import {
   MAX_READ_IDS,
-  MAX_SHARED_KEYS,
   ServerEventSchema,
   UNREAD_TTL_MS,
+  isAccountEnvelope,
   type MessageStatus,
   type SendMessageEvent,
   type ServerEvent,
@@ -77,28 +76,28 @@ export interface ThreadMessage {
   expires_at: number
   status: MessageStatus | 'sending'
   /**
-   * This message was encrypted and this device could not open it. Expected,
-   * not exceptional: it is what every message sent before this browser
-   * registered its key looks like, and what a message from a device that has
-   * since rotated looks like. The bubble says so instead of showing nothing.
+   * This message was encrypted and could not be opened. The bubble says so
+   * instead of showing nothing.
    */
   sealed?: boolean
   /**
-   * Why, so the bubble can say something the person can act on. One placeholder
-   * for four situations meant the only honest reading of it was "something is
-   * wrong somewhere", which is the least useful thing a message can say:
+   * Why, so the bubble can say something the person can act on:
    *
-   * - `no-key` — this browser holds no identity. A private window, or storage
-   *   that was cleared. The only one of the four the person can fix, and the
-   *   only one where every message in the thread looks like this.
-   * - `not-addressed` — sent before this browser registered. Ordinary, and
-   *   permanent: no key for it was ever wrapped.
-   * - `unknown-sender` — the sending device is gone from the directory, so
-   *   there is no public key left to run ECDH against.
-   * - `undecryptable` — it was addressed here and still did not open. Corrupt,
-   *   or an envelope that was moved (see `messageAad` in lib/e2ee.ts).
+   * - `no-key` — this browser holds no key at all. A private window, or
+   *   storage that refuses. The only one the person can fix, and the only one
+   *   where every message in the thread looks like this.
+   * - `unknown-sender` — the sender's key is not in the directory, so there is
+   *   no public half left to run ECDH against.
+   * - `undecryptable` — it was addressed to this account and still did not
+   *   open. Corrupt, or an envelope that was moved (`messageAad` in
+   *   lib/e2ee.ts).
+   * - `predates-account-key` — a v1/v2 message, sealed to a *device* key this
+   *   browser never held. The one placeholder that is still permanent, and the
+   *   only one left of the four: it used to be the ordinary case for every
+   *   message older than the browser, and it is now bounded by retention. It
+   *   goes when the last v2 message expires.
    */
-  sealedReason?: 'no-key' | 'not-addressed' | 'unknown-sender' | 'undecryptable'
+  sealedReason?: 'no-key' | 'unknown-sender' | 'undecryptable' | 'predates-account-key'
   /**
    * The server refused this send and will not be asked again — the instance
    * requires encryption and this device has no key, or the envelope did not
@@ -151,6 +150,16 @@ type Action =
   | { type: 'send_rejected'; myId: string }
 
 /**
+ * What this browser can open with. `account` is the key everything new is
+ * sealed to; `device` is the leftover that opens v1/v2 and nothing else, and
+ * it goes when they do.
+ */
+interface ThreadKeys {
+  account: AccountIdentity | null
+  device: DeviceIdentity | null
+}
+
+/**
  * Wire frame to what the thread renders, which is where decryption happens.
  *
  * A frame with no envelope is a plaintext message and passes straight through:
@@ -160,8 +169,9 @@ type Action =
  */
 async function toThread(
   m: WireMessage,
-  identity: DeviceIdentity | null,
+  keys: ThreadKeys,
   conversationId: string,
+  myId: string,
 ): Promise<ThreadMessage> {
   const { enc, ...rest } = m
   if (!enc) return { ...rest }
@@ -171,23 +181,44 @@ async function toThread(
     sealed: true,
     sealedReason,
   })
-  if (!identity) return sealed('no-key')
-  if (!isAddressedTo(enc, identity.id)) return sealed('not-addressed')
+  const context = { conversationId, senderId: m.sender_id, clientId: m.client_id }
 
-  const sender = findCachedDevice(enc.sender_device)
-  if (!sender) return sealed('unknown-sender')
-  // Both halves of the binding come from outside the envelope — the thread this
-  // frame arrived on, and the sender the frame claims. A server that changed
-  // either one to make a message say something it did not lands on
-  // `undecryptable` here rather than on a convincing bubble.
-  const opened = await openMessage(
-    identity,
-    { conversationId, senderId: m.sender_id, clientId: m.client_id },
-    sender.public_key,
-    m.body,
-    enc,
-  )
-  if (!opened) return sealed('undecryptable')
+  const opened = isAccountEnvelope(enc)
+    ? await (async () => {
+        if (!keys.account) return null
+        // Whose key sealed it: the peer's, or this account's own for a message
+        // this person sent. Both come from outside the envelope — the thread
+        // this frame arrived on and the sender the frame claims — so a server
+        // that changed either to make a message say something it did not lands
+        // on `undecryptable` rather than on a convincing bubble.
+        const senderKey =
+          m.sender_id === myId ? keys.account.publicKey : await getAccountKey(m.sender_id)
+        if (!senderKey) return 'unknown-sender' as const
+        return openMessage(keys.account, context, senderKey, m.body, enc)
+      })()
+    : await (async () => {
+        // The v1/v2 path. Sealed to a device key, so it opens only in a browser
+        // that held one — see lib/legacyEnvelope.ts.
+        if (!keys.device || !legacyAddressedTo(enc, keys.device.id)) {
+          return 'predates-account-key' as const
+        }
+        // Pulled on demand: most threads will never hold a v1/v2 message
+        // again, and the directory it needs only shrinks. `findCachedDevice`
+        // first so a thread full of them pays for one fetch, not one each.
+        const via = enc.keys[keys.device.id]?.via ?? enc.sender_device
+        let sender = findCachedDevice(via)
+        if (!sender) {
+          await Promise.all([getDevices(m.sender_id), getDevices(myId)])
+          sender = findCachedDevice(via)
+        }
+        if (!sender) return 'unknown-sender' as const
+        return openLegacyMessage(keys.device, context, sender.public_key, m.body, enc)
+      })()
+
+  if (opened === null) {
+    return sealed(keys.account || keys.device ? 'undecryptable' : 'no-key')
+  }
+  if (typeof opened === 'string') return sealed(opened)
 
   return {
     ...rest,
@@ -320,12 +351,6 @@ export function useConversation(
    * difference between "this is not private" and "this is not being delivered".
    */
   e2eeRequired: boolean | null
-  /** A device of this account waiting to be handed the history, or null. */
-  keysRequestedBy: string | null
-  /** Answers that request with yes. There is no automatic yes. */
-  shareKeysWith: (deviceId: string) => Promise<void>
-  /** Answers it with no, and stops asking for this thread. */
-  dismissKeyRequest: () => void
   /** Why the server refused the last send, or null when it refused nothing. */
   sendRejected: string | null
   peerTyping: boolean
@@ -355,13 +380,6 @@ export function useConversation(
     () => readCachedMessages(myId, conversationId) ?? [],
   )
   /**
-   * The reducer's output, readable from a callback that must not re-run when it
-   * changes. `shareKeysWith` walks every message's content key; rebuilding that
-   * callback on each frame would be churn for a function called once, by hand.
-   */
-  const messagesRef = useRef(messages)
-  messagesRef.current = messages
-  /**
    * Whether the `history` frame has landed for this conversation. It is the
    * only way to tell an empty thread from one that has not answered yet —
    * `messages.length === 0` means both, and the thread used to say "no
@@ -373,30 +391,6 @@ export function useConversation(
   const wsRef = useRef<WebSocket | null>(null)
   const pendingRef = useRef(new Map<string, SendMessageEvent>())
   /**
-   * The *unsealed* form of everything still pending, plus how it was sealed.
-   *
-   * `pendingRef` deliberately holds the encrypted event, so an ordinary resend
-   * after a reconnect does not re-encrypt against a directory that has since
-   * moved. `stale_directory` is the one case that has to do exactly that, and
-   * a ciphertext cannot be re-addressed — so the plaintext is kept beside it,
-   * for as long as the message is in flight and no longer.
-   *
-   * The media `sealing` is carried through unchanged on purpose: the object is
-   * already in the bucket under that content key, so re-sealing the body has to
-   * reuse it rather than mint a new one and orphan the upload.
-   */
-  const unsealedRef = useRef(
-    new Map<
-      string,
-      {
-        plain: SendMessageEvent
-        sealing?: MediaSealing
-        /** Re-seals so far. One is a race; a second is a device we cannot address. */
-        attempts: number
-      }
-    >(),
-  )
-  /**
    * Ids already reported on this connection. `ReadObserver` never names one
    * twice either, but it is rebuilt whenever the thread's message list changes
    * shape, and a receipt sent on a dying socket has to be offered again — so
@@ -404,30 +398,11 @@ export function useConversation(
    */
   const readSentRef = useRef(new Set<string>())
   /**
-   * Whether this device has already asked the account's other devices for the
-   * history it cannot open. Once per thread per session: the answer is a person
-   * tapping a button on another machine, and asking again every time a frame
-   * arrives would put a dialog in front of them repeatedly.
+   * What this browser can open with. Both halves null means it holds no key at
+   * all — private mode, or a browser that refuses IndexedDB — and everything
+   * below degrades to plaintext rather than refusing to open the thread.
    */
-  const askedForKeysRef = useRef(false)
-  /**
-   * `seal`, reachable from inside the socket effect.
-   *
-   * The effect is declared above `seal` and must not list it: rebuilding the
-   * effect tears the WebSocket down and puts it back, and re-sealing one
-   * refused message is not a reason to reconnect a thread. The ref is written
-   * on every render, so what `resealPending` calls is always current.
-   */
-  const sealRef = useRef<(
-    event: SendMessageEvent,
-    sealing?: MediaSealing,
-  ) => Promise<SendMessageEvent | null>>(() => Promise.resolve(null))
-  /**
-   * This device's encryption identity. Null means it has none — private mode,
-   * or a browser that refuses IndexedDB — and everything below degrades to
-   * plaintext rather than refusing to open the thread.
-   */
-  const identityRef = useRef<DeviceIdentity | null>(null)
+  const keysRef = useRef<ThreadKeys>({ account: null, device: null })
   const [encryption, setEncryption] = useState<EncryptionState>('unknown')
   /**
    * Whether this instance refuses an unencrypted message, as the Durable Object
@@ -436,13 +411,6 @@ export function useConversation(
    * claim about delivery is worse than a late one.
    */
   const [e2eeRequired, setE2eeRequired] = useState<boolean | null>(null)
-  /**
-   * Another device of this account is asking for the keys it has no way to
-   * derive. Null unless one is: the thread turns it into a question, because
-   * handing over history is handing over read access and a session that can
-   * register a device would otherwise be a session that can drain the window.
-   */
-  const [keysRequestedBy, setKeysRequestedBy] = useState<string | null>(null)
   /**
    * The server's reason for refusing a send, or null. Kept as the message the
    * server wrote rather than a code the screen has to translate: the only
@@ -474,14 +442,11 @@ export function useConversation(
       messages: readCachedMessages(myId, conversationId) ?? [],
     })
     pendingRef.current.clear()
-    unsealedRef.current.clear()
     readSentRef.current = new Set()
-    askedForKeysRef.current = false
     setPeerTyping(false)
     setSynced(false)
     setEncryption('unknown')
     setE2eeRequired(null)
-    setKeysRequestedBy(null)
     setSendRejected(null)
 
     // Peer typing is ephemeral: each frame re-arms a short expiry, and a real
@@ -499,44 +464,30 @@ export function useConversation(
     const handleFrame = async (event: ServerEvent) => {
       switch (event.type) {
         case 'history': {
-          const identity = identityRef.current
-          // A browser signed into after these messages were sent holds a key no
-          // envelope names. Nothing on the server can fix it — the content keys
-          // exist only wrapped — so the account's other devices are asked.
-          if (identity && !askedForKeysRef.current) {
-            const strangers = event.messages.filter(
-              (m) => m.enc && !isAddressedTo(m.enc, identity.id),
-            )
-            if (strangers.length > 0) {
-              askedForKeysRef.current = true
-              wsRef.current?.send(
-                JSON.stringify({ type: 'request_keys', device_id: identity.id }),
-              )
-            }
-          }
+          // Nothing is asked for anymore. A browser signing in used to hold a
+          // key no envelope named, so it sent `request_keys` and waited for a
+          // person on another machine to say yes; the account key means it
+          // already holds what opens all of this.
           dispatch({
             type: 'history',
             messages: await Promise.all(
-              event.messages.map((m) => toThread(m, identity, conversationId)),
+              event.messages.map((m) => toThread(m, keysRef.current, conversationId, myId)),
             ),
           })
           setSynced(true)
           return
         }
         case 'message': {
-          if (event.sender_id === myId) {
-            pendingRef.current.delete(event.client_id)
-            unsealedRef.current.delete(event.client_id)
-          } else clearPeerTyping()
+          if (event.sender_id === myId) pendingRef.current.delete(event.client_id)
+          else clearPeerTyping()
           dispatch({
             type: 'message',
-            frame: await toThread(event, identityRef.current, conversationId),
+            frame: await toThread(event, keysRef.current, conversationId, myId),
           })
           return
         }
         case 'message_status':
           pendingRef.current.delete(event.client_id)
-          unsealedRef.current.delete(event.client_id)
           dispatch({
             type: 'status',
             id: event.id,
@@ -556,16 +507,6 @@ export function useConversation(
         case 'policy':
           setE2eeRequired(event.e2ee_required)
           return
-        case 'keys_requested':
-          // Never auto-answered. The thread asks (screens/ThreadScreen.tsx).
-          if (event.device_id !== identityRef.current?.id) setKeysRequestedBy(event.device_id)
-          return
-        case 'keys_shared':
-          // The `history` frame right behind this one carries the envelopes
-          // with the new entries in them, so there is nothing to do but stop
-          // asking.
-          if (event.device_id === identityRef.current?.id) askedForKeysRef.current = true
-          return
         case 'messages_expired':
           dispatch({ type: 'expired', ids: event.ids })
           // The push notification for this thread previewed messages that no
@@ -582,63 +523,16 @@ export function useConversation(
             scheduleFlush(2000)
             return
           }
-          // A device registered between this tab's last directory refresh and
-          // the send. Nothing was stored, so the fix is to address the message
-          // again and offer it again — not to tell anybody, because from where
-          // the person is sitting nothing went wrong.
-          //
-          // Once. A second refusal after a forced refresh is not a race any
-          // more: it is a device whose public key `sealMessage` could not use,
-          // and refusing forever would leave the thread unable to send at all.
-          // The message then goes as it is, readable by every device that could
-          // be addressed — which is the same outcome as before this check.
-          if (event.error === 'stale_directory' && event.client_id) {
-            void resealPending(event.client_id)
-            return
-          }
           // Anything else is a refusal, not a delay: retrying would be refused
           // the same way. Stop offering the queue, say why, and let the bubbles
           // stop pretending they are on their way — a message that reads
           // "enviando_" forever is the failure mode this whole banner exists to
           // prevent.
           pendingRef.current.clear()
-          unsealedRef.current.clear()
           setSendRejected(event.message ?? event.error)
           dispatch({ type: 'send_rejected', myId })
           return
       }
-    }
-
-    /**
-     * Seals one pending message again against a freshly fetched directory and
-     * puts it back on the wire under the same client id — which the Durable
-     * Object dedups on, and which the envelope is now bound to (`messageAad`),
-     * so the re-sealed body is a different ciphertext for the same message
-     * rather than a second message.
-     */
-    const resealPending = async (clientId: string) => {
-      const held = unsealedRef.current.get(clientId)
-      if (!held) return
-      const giveUp = held.attempts >= 1
-      held.attempts += 1
-      if (!giveUp) {
-        await Promise.all([refreshDevices(otherUserId), refreshDevices(myId)])
-        if (disposed) return
-        const resealed = await sealRef.current(held.plain, held.sealing)
-        if (disposed) return
-        if (resealed) pendingRef.current.set(clientId, resealed)
-      }
-      const event = pendingRef.current.get(clientId)
-      const ws = wsRef.current
-      if (!event) return
-      if (giveUp) {
-        // Out of re-seals. Strip the envelope only if there is none — an
-        // unsealable peer is the plaintext path, which E2EE_REQUIRED may well
-        // refuse, and that refusal is the honest answer rather than a silent
-        // downgrade.
-        console.warn('directory still stale after a re-seal; sending as addressed')
-      }
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event))
     }
 
     // Pending sends are flushed a few at a time. The server rate-limits each
@@ -678,28 +572,32 @@ export function useConversation(
 
     let frameQueue: Promise<void> = Promise.resolve()
 
-    // The identity and both device directories, refreshed on every connect —
-    // which is exactly when a peer's new browser would need to start receiving
-    // messages, and when one of ours would.
+    // This account's key and the peer's, refreshed on every connect — which is
+    // when a rotation on either side would matter, and the only thing that
+    // rotates a key now is a fresh account or an owner's password reset.
+    //
+    // The old device key is read alongside it, and only so that history from
+    // before the account key still opens in the browser that received it
+    // (lib/legacyEnvelope.ts). Its directory is pulled lazily, by `toThread`,
+    // because most threads will never contain a v1/v2 message again.
     const loadKeys = async () => {
-      const identity = await readDeviceKey(myId)
-      identityRef.current = identity
-      const [peers] = await Promise.all([refreshDevices(otherUserId), refreshDevices(myId)])
+      const [account, device] = await Promise.all([readAccountKey(myId), readDeviceKey(myId)])
+      keysRef.current = { account, device }
+      const peer = await refreshKey(otherUserId)
       if (disposed) return
       // Exactly the two conditions `seal` checks, so the indicator cannot claim
       // something the send path does not do.
-      setEncryption(identity && peers.length > 0 ? 'on' : 'off')
+      setEncryption(account && peer ? 'on' : 'off')
     }
 
     /**
      * The keys go through the same queue as the frames rather than beside them.
      * `history` lands within a millisecond of the socket opening, and a frame
-     * opened before the identity and both directories are in hand decrypts to
-     * nothing: the bubble renders as "[mensagem de antes deste dispositivo]"
-     * and stays that way until something forces another history, because the
-     * reducer has no reason to revisit a message it already placed. Failing to
-     * load them must not wedge the queue either — an unencrypted thread still
-     * has frames to deliver.
+     * opened before the keys are in hand decrypts to nothing: the bubble
+     * renders as a placeholder and stays that way until something forces
+     * another history, because the reducer has no reason to revisit a message
+     * it already placed. Failing to load them must not wedge the queue either —
+     * an unencrypted thread still has frames to deliver.
      */
     const queueKeys = () => {
       frameQueue = frameQueue.then(loadKeys).catch((error: unknown) => {
@@ -793,13 +691,15 @@ export function useConversation(
       event: SendMessageEvent,
       sealing?: MediaSealing,
     ): Promise<SendMessageEvent | null> => {
-      const identity = identityRef.current ?? (await readDeviceKey(myId))
+      const identity = keysRef.current.account ?? (await readAccountKey(myId))
       if (!identity) return null
-      identityRef.current = identity
+      keysRef.current = { ...keysRef.current, account: identity }
 
-      const [peers, mine] = await Promise.all([getDevices(otherUserId), getDevices(myId)])
-      // Only this device registered: nobody on the other side can read it yet.
-      if (peers.length === 0) return null
+      const peerKey = await getAccountKey(otherUserId)
+      // The peer has published no key: a guest mid-signup, or an account that
+      // has not rotated. Nothing on the other side can read this yet, so it
+      // goes in the clear and the instance decides whether it will carry that.
+      if (!peerKey) return null
 
       const payload: Payload =
         event.msg_type === 'sticker'
@@ -812,7 +712,7 @@ export function useConversation(
       const { body, enc } = await sealMessage(
         identity,
         { conversationId, senderId: myId, clientId: event.client_id },
-        [...peers, ...mine],
+        { accountId: otherUserId, publicKey: peerKey },
         payload,
         contentKey,
         sealing?.mediaIv,
@@ -871,7 +771,6 @@ export function useConversation(
         }
         const event = (await seal(plain, sealing)) ?? plain
         pendingRef.current.set(clientId, event)
-        unsealedRef.current.set(clientId, { plain, sealing, attempts: 0 })
         const ws = wsRef.current
         if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event))
         // Not open: the queued event is flushed by the next onopen.
@@ -879,49 +778,6 @@ export function useConversation(
     },
     [myId, seal],
   )
-
-  /**
-   * Hands the history this device can read to another device of the same
-   * account, one wrapped content key per message.
-   *
-   * Only ever called from a yes. Everything it can open, it re-wraps under its
-   * own pair and marks `via` — the sending device's private key is not here, so
-   * a handover cannot reproduce the wrap the sender would have written, and it
-   * does not pretend to. The bodies are untouched: still bound to the original
-   * sender and message, still saying exactly what they said.
-   *
-   * Messages this device cannot open itself are skipped in silence. A browser
-   * that arrived late cannot pass on what it never received either.
-   */
-  const shareKeysWith = useCallback(
-    async (deviceId: string) => {
-      const identity = identityRef.current ?? (await readDeviceKey(myId))
-      if (!identity) return
-      const target = (await getDevices(myId)).find((device) => device.id === deviceId)
-      if (!target) return
-
-      let batch: Record<string, { iv: string; ct: string; via: string }> = {}
-      let sent = 0
-      const flush = () => {
-        if (Object.keys(batch).length === 0) return
-        wsRef.current?.send(
-          JSON.stringify({ type: 'share_keys', device_id: deviceId, keys: batch }),
-        )
-        batch = {}
-      }
-      for (const message of messagesRef.current) {
-        if (!message.id || !message.contentKey) continue
-        batch[message.id] = await rewrapFor(identity, target, message.contentKey)
-        sent += 1
-        if (sent % MAX_SHARED_KEYS === 0) flush()
-      }
-      flush()
-      setKeysRequestedBy(null)
-    },
-    [myId],
-  )
-
-  sealRef.current = seal
 
   const send = useCallback((body: string) => sendEvent('text', body, null), [sendEvent])
 
@@ -1044,9 +900,6 @@ export function useConversation(
     connection: connectionRef.current,
     encryption,
     e2eeRequired,
-    keysRequestedBy,
-    shareKeysWith,
-    dismissKeyRequest: () => setKeysRequestedBy(null),
     sendRejected,
     peerTyping,
     send,

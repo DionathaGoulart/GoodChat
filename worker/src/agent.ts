@@ -39,7 +39,7 @@ import { claimUpload } from './lib/mediaIndex'
 import { DEFAULT_PUSH_PREVIEW, notifyUser, previewFor, previewPreferenceOf } from './lib/push'
 import {
   ClientEventSchema,
-  MAX_ENVELOPE_RECIPIENTS,
+  isAccountEnvelope,
   READ_TTL_MS,
   STICKER_ID_RE,
   UNREAD_TTL_MS,
@@ -647,35 +647,6 @@ export class ConversationAgent extends Agent<Env> {
     return String(this.env.E2EE_REQUIRED) === 'true'
   }
 
-  /**
-   * Registered devices of either participant that this envelope has no key for.
-   *
-   * Not cached. A cache here would be a window in which messages still go out
-   * unreadable, which is the exact thing this check exists to close, and the
-   * query is one indexed lookup (`idx_devices_user`, migration 0012) on a path
-   * that already makes a D1 round trip for the push notification.
-   *
-   * Fails open. If D1 is unreachable the message goes through as sealed: a
-   * conversation that stops working entirely is worse than one where a device
-   * registered in the last few seconds misses a message.
-   */
-  private async unaddressedDevices(enc: NonNullable<SendMessageEvent['enc']>): Promise<string[]> {
-    const participants = this.sql<{ user_id: string }>`SELECT user_id FROM participants`
-    if (participants.length === 0) return []
-    try {
-      const placeholders = participants.map(() => '?').join(', ')
-      const { results } = await this.env.DB.prepare(
-        `SELECT id FROM devices WHERE user_id IN (${placeholders})`,
-      )
-        .bind(...participants.map((p) => p.user_id))
-        .all<{ id: string }>()
-      return (results ?? []).map((row) => row.id).filter((id) => !(id in enc.keys))
-    } catch (error) {
-      console.warn('directory check failed', error instanceof Error ? error.message : error)
-      return []
-    }
-  }
-
   override async onMessage(conn: Connection<ConnState>, raw: WSMessage): Promise<void> {
     const userId = conn.state?.userId
     if (typeof raw !== 'string' || !userId) return
@@ -708,108 +679,6 @@ export class ConversationAgent extends Agent<Env> {
       case 'read_receipt':
         await this.handleReadReceipt(userId, event.data.ids)
         return
-      case 'request_keys':
-        await this.handleRequestKeys(conn, userId, event.data.device_id)
-        return
-      case 'share_keys':
-        await this.handleShareKeys(conn, userId, event.data.device_id, event.data.keys)
-        return
-    }
-  }
-
-  /**
-   * A device of this account says it cannot read the history and asks the
-   * account's other devices for the keys.
-   *
-   * Only forwarded to connections on the same account. The peer is never told:
-   * they hold nothing that would help, and which browsers somebody signs into
-   * is not a thing this object should narrate to the other side of a chat.
-   */
-  private async handleRequestKeys(
-    conn: Connection<ConnState>,
-    userId: string,
-    deviceId: string,
-  ): Promise<void> {
-    if (!(await this.deviceBelongsTo(deviceId, userId))) {
-      this.send(conn, { type: 'error', error: 'unknown_device' })
-      return
-    }
-    for (const other of this.getConnections<ConnState>()) {
-      if (other === conn || other.state?.userId !== userId) continue
-      this.send(other, { type: 'keys_requested', device_id: deviceId })
-    }
-  }
-
-  /**
-   * Content keys, wrapped by one device of this account for another, merged
-   * into the envelopes already stored.
-   *
-   * Three things are checked, and they are the whole of what this object can
-   * check: the target device belongs to the account on this connection, the
-   * envelope does not grow past `MAX_ENVELOPE_RECIPIENTS`, and an entry that
-   * already exists is not overwritten — a handover adds a reader, it never
-   * rewrites one. Everything else is opaque: these bytes are as unreadable here
-   * as the ones the sender wrote.
-   *
-   * Restricting the target to the sender's own account is not what stops
-   * somebody sharing what they read — they could retype it — but it keeps this
-   * object from being the tool that does it.
-   */
-  private async handleShareKeys(
-    conn: Connection<ConnState>,
-    userId: string,
-    deviceId: string,
-    keys: Record<string, { iv: string; ct: string; via: string }>,
-  ): Promise<void> {
-    if (!(await this.deviceBelongsTo(deviceId, userId))) {
-      this.send(conn, { type: 'error', error: 'unknown_device' })
-      return
-    }
-    let merged = 0
-    for (const [messageId, wrapped] of Object.entries(keys)) {
-      const rows = this.sql<{ enc: string | null }>`
-        SELECT enc FROM messages WHERE id = ${messageId}
-      `
-      const raw = rows[0]?.enc
-      if (!raw) continue
-      const envelope = safeParseEnvelope(raw)
-      if (!envelope) continue
-      if (deviceId in envelope.keys) continue
-      if (Object.keys(envelope.keys).length >= MAX_ENVELOPE_RECIPIENTS) continue
-      envelope.keys[deviceId] = wrapped
-      this.sql`UPDATE messages SET enc = ${JSON.stringify(envelope)} WHERE id = ${messageId}`
-      merged += 1
-    }
-    if (merged === 0) return
-
-    // The envelopes on the asking device are the ones it was sent, without the
-    // entries just added, so telling it "done" is not enough — it has to be
-    // handed the rows again. Sent to every connection on this account rather
-    // than to the target alone: the browser that did the sharing is looking at
-    // the same thread, and a `history` frame is idempotent for it.
-    const rows = this.sql<MessageRow>`
-      SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, read_at, expires_at, enc
-      FROM messages ORDER BY rowid ASC LIMIT ${HISTORY_LIMIT}
-    `
-    for (const other of this.getConnections<ConnState>()) {
-      if (other.state?.userId !== userId) continue
-      this.send(other, { type: 'keys_shared', device_id: deviceId, count: merged })
-      this.send(other, { type: 'history', messages: rows.map(toWire) })
-    }
-  }
-
-  /** Whether a device id is registered to this account (migration 0012). */
-  private async deviceBelongsTo(deviceId: string, userId: string): Promise<boolean> {
-    try {
-      const row = await this.env.DB.prepare(
-        'SELECT 1 AS ok FROM devices WHERE id = ? AND user_id = ?',
-      )
-        .bind(deviceId, userId)
-        .first<{ ok: number }>()
-      return row !== null
-    } catch (error) {
-      console.warn('device ownership check failed', error instanceof Error ? error.message : error)
-      return false
     }
   }
 
@@ -836,38 +705,32 @@ export class ConversationAgent extends Agent<Env> {
       this.send(conn, { type: 'error', error: 'media_key_required' })
       return
     }
-    // An envelope has to name the sender's own device among its recipients or
-    // the sender's other tabs could never read what it just sent — and, more
-    // usefully here, it is the one structural claim about `enc` this object can
-    // check without holding a key.
-    if (event.enc && !(event.enc.sender_device in event.enc.keys)) {
-      this.send(conn, { type: 'error', error: 'invalid_envelope' })
-      return
-    }
-    // A device that registered while this sender's tab was open is not in the
-    // directory copy the browser sealed against (lib/deviceDirectory.ts caches
-    // for five minutes and force-refreshes only on connect). Accepting the
-    // message anyway would store one that device can never open — not late,
-    // never, because no key was ever wrapped for it. This object is the one
-    // place that sees both the envelope and the current directory, so it is
-    // where the mismatch is caught.
+    // An envelope has to name the sender's own account among its recipients,
+    // or the person could not read what they just sent — and it is the one
+    // structural claim about `enc` this object can check without holding a
+    // key.
     //
-    // Refuse rather than warn: nothing is stored, so the client seals again
-    // under the same client_id and the person sees an ordinary send. The
-    // device list is public (`GET /api/users/:id/devices`), so naming the
-    // mismatch tells the sender nothing they could not already ask for.
+    // A v1/v2 envelope is checked the way it was written, against the sending
+    // device. Nothing produces one anymore; the branch exists for as long as
+    // the schema accepts them, and goes with them.
     if (event.enc) {
-      const missing = await this.unaddressedDevices(event.enc)
-      if (missing.length > 0) {
-        this.send(conn, {
-          type: 'error',
-          error: 'stale_directory',
-          message: 'um aparelho novo entrou nesta conversa',
-          client_id: event.client_id,
-        })
+      const addressed = isAccountEnvelope(event.enc)
+        ? userId in event.enc.keys
+        : event.enc.sender_device in event.enc.keys
+      if (!addressed) {
+        this.send(conn, { type: 'error', error: 'invalid_envelope' })
         return
       }
     }
+    // What used to sit here was a directory check: a *device* that registered
+    // while this sender's tab was open would not be in the cached list the
+    // browser sealed against, so the message had to be refused and sealed
+    // again. With the account as the unit there is no such race — a person's
+    // key does not change because they opened a new browser — and the check
+    // that remains would be vacuous: a client that could not find the peer's
+    // key does not send a half-addressed envelope, it sends plaintext, which
+    // the rule below is what answers.
+    //
     // The end of the transition: once every client encrypts, a plaintext
     // message is a client that should not be trusted rather than an old one.
     // Off by default — see the note in wrangler.jsonc for why turning it on is

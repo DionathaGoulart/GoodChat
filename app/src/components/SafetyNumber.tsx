@@ -33,7 +33,7 @@
 import { useEffect, useState } from 'react'
 import type { PublicUser } from '../lib/api'
 import { safetyNumber } from '../lib/e2ee'
-import { getDevices } from '../lib/deviceDirectory'
+import { getAccountKey } from '../lib/keyDirectory'
 import { Modal } from './Modal'
 import { RetroIconButton } from './RetroIconButton'
 
@@ -61,11 +61,11 @@ export function SafetyNumberDialog({
         // Forced: this is the moment somebody is deciding whether to trust the
         // directory, so a cached copy of it is exactly the wrong thing to show.
         const [mine, theirs] = await Promise.all([
-          getDevices(myId, true),
-          getDevices(otherUser.id, true),
+          getAccountKey(myId, true),
+          getAccountKey(otherUser.id, true),
         ])
         if (cancelled) return
-        if (mine.length === 0 || theirs.length === 0) {
+        if (!mine || !theirs) {
           setFailed(true)
           return
         }
@@ -94,7 +94,7 @@ export function SafetyNumberDialog({
 
       {failed ? (
         <p className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-error">
-          {'não foi possível calcular — um dos lados ainda não tem chave neste aparelho'}
+          {'não foi possível calcular — um dos lados ainda não publicou uma chave'}
         </p>
       ) : number === null ? (
         <div className="skeleton h-20 w-full" />

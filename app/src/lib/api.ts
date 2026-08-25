@@ -80,11 +80,11 @@ export interface ConversationListItem {
   unread_count: number
   other_user: PublicUser
   /**
-   * The peer's device keys, inline so the tile preview can be decrypted without
-   * one /api/users/:id/devices call per thread (migration 0012). Optional: a
-   * payload from a worker that predates encryption has none.
+   * The peer's account key, inline so the tile preview can be decrypted without
+   * one /api/users/:id/key call per thread (migration 0014). Null when they
+   * have not published one.
    */
-  peer_devices?: PublicDevice[]
+  peer_account_key?: string | null
 }
 
 export interface ResolveResult {
@@ -249,7 +249,17 @@ export function me(): Promise<{ user: SessionUser }> {
   return call('/api/auth/me')
 }
 
-/** A device's published half of its key (migration 0012). */
+/**
+ * The key a message to this account has to be encrypted for (migration 0014).
+ * Null when they have not published one — a live answer, not an error.
+ */
+export function userAccountKey(userId: string): Promise<{ public_key: string | null }> {
+  return call(`/api/users/${encodeURIComponent(userId)}/key`)
+}
+
+// --- the directory this replaced ------------------------------------------
+
+/** A device's published key, from before the account key (migration 0012). */
 export interface PublicDevice {
   id: string
   public_key: string
@@ -257,18 +267,11 @@ export interface PublicDevice {
   last_seen_at: number
 }
 
-/** Registers this browser's public key, or says it is still here. */
-export function registerDevice(id: string, publicKey: string): Promise<{ ok: boolean }> {
-  return call('/api/devices', {
-    method: 'POST',
-    body: JSON.stringify({ id, public_key: publicKey }),
-  })
-}
-
 /**
- * The devices a message to this account has to be encrypted for. Sorted by the
- * worker, and the order matters: both sides hash this list into the safety
- * number, so they have to see it identically.
+ * The old per-browser directory, read-only. Nothing registers a device
+ * anymore; this exists so a browser can still find the key that opens what it
+ * received before the account key (lib/legacyEnvelope.ts), and goes when the
+ * last v2 message expires.
  */
 export function userDevices(userId: string): Promise<{ devices: PublicDevice[] }> {
   return call(`/api/users/${encodeURIComponent(userId)}/devices`)
@@ -386,15 +389,8 @@ export function pushVapidKey(): Promise<{ public_key: string }> {
   return call('/api/push/vapid-public-key')
 }
 
-export function pushSubscribe(
-  subscription: PushSubscriptionBody,
-  /** This browser's device id, so an encrypted preview can be wrapped for it. */
-  deviceId?: string,
-): Promise<{ ok: boolean }> {
-  return call('/api/push/subscribe', {
-    method: 'POST',
-    body: JSON.stringify({ ...subscription, ...(deviceId ? { device_id: deviceId } : {}) }),
-  })
+export function pushSubscribe(subscription: PushSubscriptionBody): Promise<{ ok: boolean }> {
+  return call('/api/push/subscribe', { method: 'POST', body: JSON.stringify(subscription) })
 }
 
 export function pushUnsubscribe(endpoint: string): Promise<{ ok: boolean; removed: boolean }> {

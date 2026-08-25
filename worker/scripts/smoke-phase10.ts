@@ -157,9 +157,12 @@ try {
 }
 
 try {
-  // The per-IP guest quota is deliberately small; a rerun inside the same hour
-  // would trip it before testing anything.
-  d1Execute("DELETE FROM login_attempts WHERE key LIKE 'temp:%';")
+  // The per-IP guest quota is deliberately small, and every refused sign-in
+  // below spends a slot of the login window too — twice over, because `signIn`
+  // tries the derived credential and then the plaintext one the way the app
+  // does. On localhost the whole suite shares one address, so the counters are
+  // cleared whole rather than by prefix, at both ends of the run.
+  d1Execute('DELETE FROM login_attempts;')
 
   const ownerCookie = await login(OWNER.username, OWNER.password)
   const aliceCookie = await login(ALICE.username, ALICE.password)
@@ -354,6 +357,8 @@ try {
 
   const overview = await api('/api/admin/overview', { cookie: ownerCookie })
   check('overview counts guests and tombstones', 'temp_users' in overview.body && 'tombstones' in overview.body, overview.body)
+
+  d1Execute('DELETE FROM login_attempts;')
 
   console.log(failures === 0 ? '\nphase 10 smoke: all green' : `\nphase 10 smoke: ${failures} failure(s)`)
 } finally {

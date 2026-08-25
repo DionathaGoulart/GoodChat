@@ -15,9 +15,10 @@ import { listConversations } from '../lib/api'
 import type { ConversationListItem } from '../lib/api'
 import { readCachedConversations, writeCachedConversations } from '../lib/conversationsCache'
 import { usePresence } from '../hooks/usePresence'
-import { readDeviceKey } from '../lib/deviceKeys'
+import { readAccountKey } from '../lib/accountKeys'
 import { openMessage } from '../lib/e2ee'
-import { cacheDevices, findCachedDevice, getDevices } from '../lib/deviceDirectory'
+import { isAccountEnvelope } from '../lib/protocol'
+import { cacheAccountKey, getAccountKey } from '../lib/keyDirectory'
 import { useSession } from '../hooks/useSession'
 import { useTheme } from '../hooks/useTheme'
 import { Panel } from '../components/Panel'
@@ -57,33 +58,36 @@ function signatureOf(conversations: readonly ConversationListItem[]): string {
  * directory from the keys the same payload carried — which is also what makes
  * opening a thread from this list need no round trip before it can send.
  *
- * A preview this device cannot open keeps its `enc` and loses its body, which
- * is what `ConversationTile` renders as "[mensagem cifrada]". Expected for
- * anything sent before this browser registered a key.
+ * A preview this browser cannot open keeps its `enc` and loses its body, which
+ * is what `ConversationTile` renders as "[mensagem cifrada]". Since the account
+ * key that means one of two things: no key in this browser at all, or a message
+ * from before the change, sealed to a device key.
  */
 async function openPreviews(
   myId: string,
   conversations: readonly ConversationListItem[],
 ): Promise<ConversationListItem[]> {
-  for (const item of conversations) {
-    if (item.peer_devices) cacheDevices(item.other_user.id, item.peer_devices)
-  }
-  const identity = await readDeviceKey(myId)
+  for (const item of conversations) cacheAccountKey(item.other_user.id, item.peer_account_key)
+  const identity = await readAccountKey(myId)
   if (!identity) return [...conversations]
-  // My own devices too: the last message in a thread is often one I sent, and
-  // opening it means running ECDH against my own other device's key.
-  await getDevices(myId)
 
   return Promise.all(
     conversations.map(async (item) => {
       const last = item.last_message
       if (!last?.enc) return item
-      const sender = findCachedDevice(last.enc.sender_device)
-      const opened = sender
+      // A v1/v2 preview is not opened here. It was sealed to a device key, and
+      // the tile has a placeholder for exactly this — the thread is where the
+      // legacy path lives, because that is where it is worth the round trip.
+      if (!isAccountEnvelope(last.enc)) return item
+      // The sender's key: the peer's for their message, this account's own for
+      // one this person sent — which is most of the last messages in a list.
+      const senderKey =
+        last.sender_id === myId ? identity.publicKey : await getAccountKey(last.sender_id)
+      const opened = senderKey
         ? await openMessage(
             identity,
             { conversationId: item.id, senderId: last.sender_id, clientId: last.client_id },
-            sender.public_key,
+            senderKey,
             last.body,
             last.enc,
           )

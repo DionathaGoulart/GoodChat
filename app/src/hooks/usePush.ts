@@ -2,7 +2,6 @@
 // exposes a single toggle. All transitions go through lib/push.ts.
 
 import { useCallback, useEffect, useState } from 'react'
-import { useSession } from './useSession'
 import { currentPushState, disablePush, enablePush } from '../lib/push'
 import type { PushState } from '../lib/push'
 
@@ -11,9 +10,6 @@ export function usePush(): {
   busy: boolean
   toggle: () => void
 } {
-  // The account id is what finds this browser's key, which is what lets an
-  // encrypted preview be wrapped for this subscription (lib/push.ts).
-  const { user } = useSession()
   const [state, setState] = useState<PushState | 'loading'>('loading')
   const [busy, setBusy] = useState(false)
 
@@ -30,12 +26,12 @@ export function usePush(): {
   const toggle = useCallback(() => {
     if (busy || state === 'loading' || state === 'unsupported' || state === 'denied') return
     setBusy(true)
-    const action = state === 'on' ? disablePush : () => enablePush(user?.id)
+    const action = state === 'on' ? disablePush : enablePush
     action()
       .then(setState)
       .catch(() => setState('off'))
       .finally(() => setBusy(false))
-  }, [busy, state, user?.id])
+  }, [busy, state])
 
   return { state, busy, toggle }
 }

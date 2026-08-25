@@ -30,7 +30,7 @@ import {
   decryptChunks,
   sealedChunkCount,
 } from '../lib/e2ee'
-import { fromBase64url } from '../lib/deviceKeys'
+import { fromBase64url } from '../lib/kdf'
 import { mediaUrl } from '../lib/media'
 import { handStreamToWorker, releaseStream } from '../lib/mediaStream'
 import { STICKER_ID_RE } from '../lib/protocol'
@@ -324,27 +324,29 @@ function StickerContent({ stickerId }: { stickerId: string }) {
 
 /**
  * What an unopened message says. Four sentences rather than one, because the
- * four causes call for four different reactions — and the person can only act
- * on the first of them (`useConversation.ts` documents each).
+ * causes call for different reactions (`useConversation.ts` documents each).
  *
- * `undecryptable` is the only one phrased as a problem, because it is the only
- * one that is: the other three are what correct behaviour looks like when a key
- * is younger than a message.
+ * `[mensagem de antes deste dispositivo]` used to be the commonest of these
+ * and is gone: with one key per account, a browser signing in can open the
+ * whole history. What replaced it is narrower and true — a message sealed
+ * before that change, to a key this browser never had — and it stops appearing
+ * at all once retention has cleared the last of them.
  */
 const SEALED_TEXT: Record<NonNullable<ThreadMessage['sealedReason']>, string> = {
   'no-key': '[sem chave neste navegador]',
-  'not-addressed': '[mensagem de antes deste dispositivo]',
-  'unknown-sender': '[aparelho de origem não existe mais]',
+  'predates-account-key': '[mensagem de antes desta mudança]',
+  'unknown-sender': '[a chave de quem enviou não existe mais]',
   undecryptable: '[não foi possível abrir esta mensagem]',
 }
 
 /**
- * The line under it, for the one case somebody can do something about. A
- * private window keeps no key, so every message in every thread reads as
- * `no-key` — saying why once per bubble beats letting it look like data loss.
+ * The line under it, for the cases somebody can make sense of. A private
+ * window keeps no key, so every message in every thread reads as `no-key` —
+ * saying why once per bubble beats letting it look like data loss.
  */
 const SEALED_HINT: Partial<Record<NonNullable<ThreadMessage['sealedReason']>, string>> = {
   'no-key': 'janela anônima ou dados apagados',
+  'predates-account-key': 'só abre no navegador que a recebeu',
 }
 
 export function MessageBubble({
@@ -391,11 +393,11 @@ export function MessageBubble({
   }
 
   // Encrypted and unopened. Expected rather than broken in three of the four
-  // cases: a key is simply younger than the message, or the device that sealed
-  // it is gone. Saying which is better than one sentence for all of them, and
-  // far better than an empty bubble, which reads as a bug.
+  // cases: a message older than the account key, a sender whose key is gone,
+  // or a browser that keeps no keys at all. Saying which is better than one
+  // sentence for all of them, and far better than an empty bubble.
   if (message.sealed) {
-    const reason = message.sealedReason ?? 'not-addressed'
+    const reason = message.sealedReason ?? 'undecryptable'
     const hint = SEALED_HINT[reason]
     return (
       <div

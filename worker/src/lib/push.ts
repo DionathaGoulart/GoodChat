@@ -122,8 +122,6 @@ interface SubscriptionRow {
   endpoint: string
   p256dh: string
   auth: string
-  /** Which device this browser registered (migration 0012); null before it. */
-  device_id: string | null
 }
 
 /**
@@ -136,9 +134,10 @@ export async function notifyUser(
   userId: string,
   payload: NotificationPayload,
   /**
-   * The encrypted message, when there is one and the recipient asked to see
-   * previews. Scoped per subscription below: each device gets only the content
-   * key wrapped for itself, and a subscription with no device gets none.
+   * Which message to preview, when there is one and the recipient asked to see
+   * previews. A pointer, never the ciphertext: the service worker reads the
+   * message back over the session cookie and opens it with the account key
+   * (app/public/sw.js), so the push service is handed nothing to read.
    */
   preview?: EncryptedPreview,
 ): Promise<void> {
@@ -146,7 +145,7 @@ export async function notifyUser(
   if (!vapid) return
 
   const { results } = await env.DB.prepare(
-    'SELECT endpoint, p256dh, auth, device_id FROM push_subscriptions WHERE user_id = ?',
+    'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?',
   )
     .bind(userId)
     .all<SubscriptionRow>()
@@ -161,7 +160,7 @@ export async function notifyUser(
       try {
         const delivered = await sendPushNotification(
           { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-          withPreview(payload, preview, sub.device_id),
+          withPreview(payload, preview),
           vapid,
           {
             ttl: 24 * 60 * 60,
@@ -191,18 +190,24 @@ export async function notifyUser(
 
 /**
  * The payload one subscription gets: the generic one, plus a pointer to the
- * message when this subscription belongs to a device that could open it.
+ * message.
  *
- * A subscription with no `device_id` predates the key directory (migration
- * 0012), so there is no browser identity behind it to decrypt with and the
- * generic line is all it can honestly show.
+ * The pointer used to be withheld unless the subscription named a device
+ * (migration 0012), because the content key was wrapped per browser and one
+ * that had not registered held nothing that could open it. Migration 0014
+ * makes every browser of an account hold the same key, so every subscription
+ * of that account can open it — the `device_id` gate was the last thing in the
+ * push path that thought in devices.
+ *
+ * It is still only a pointer: which conversation and which message. The
+ * ciphertext is read back by the service worker over the session cookie, so
+ * the browser vendor's push service is handed nothing to read.
  */
 function withPreview(
   payload: NotificationPayload,
   preview: EncryptedPreview | undefined,
-  deviceId: string | null,
 ): NotificationPayload {
-  if (!preview || !deviceId) return payload
+  if (!preview) return payload
   return {
     ...payload,
     enc: { conv: preview.conversation_id, mid: preview.message_id },
