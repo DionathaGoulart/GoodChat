@@ -551,6 +551,15 @@ const storedIdentity = {
   createdAt: alice.createdAt,
 }
 
+/**
+ * Where the sandboxed worker is told the API lives, and the URL it actually
+ * asked. A deliberately different host from the page's: a worker that ignored
+ * the registration parameter and used its own origin would answer every push
+ * with the generic line, and nothing else in this file would notice.
+ */
+const SW_API_ORIGIN = 'https://api.test'
+let conversationsUrl: string | null = null
+
 function fakeRequest<T>(value: T) {
   const request: any = { result: value, onsuccess: null, onerror: null, transaction: null }
   queueMicrotask(() => request.onsuccess?.())
@@ -571,7 +580,8 @@ const sandbox: Record<string, unknown> = {
   // The media half honours Range the way the bucket proxy does, because that
   // is the contract `serveRange` is written against.
   fetch: async (input: string, init?: { headers?: Record<string, string> }) => {
-    if (String(input).startsWith('/api/conversations')) {
+    if (String(input).endsWith('/api/conversations')) {
+      conversationsUrl = String(input)
       return { ok: true, json: async () => conversationsBody }
     }
     if (mediaObject && String(input) === mediaObject.url) {
@@ -600,7 +610,11 @@ const sandbox: Record<string, unknown> = {
     addEventListener: () => {},
     registration: { showNotification: async () => {} },
     clients: {},
-    location: { origin: 'http://localhost' },
+    // `href`, not just `origin`: the worker reads its own script URL to learn
+    // where the API is, because on a split origin "/api/..." is the app's dev
+    // server and not the Worker (public/sw.js, API_ORIGIN). A registration
+    // with no `?api=` is production, where the two are the same host.
+    location: { origin: 'http://localhost', href: `http://localhost/sw.js?api=${SW_API_ORIGIN}` },
     __PRECACHE__: [],
   },
   indexedDB: {
@@ -623,6 +637,11 @@ const swExports = runInNewContext(
 
 const swPreview = await swExports.decryptPreview({ conv: THREAD, mid: PREVIEW_MSG })
 check('and it decrypts a preview the app sealed', swPreview === secret, swPreview)
+check(
+  'reading it back went to the API origin it was registered with',
+  conversationsUrl === `${SW_API_ORIGIN}/api/conversations`,
+  conversationsUrl,
+)
 
 check(
   'a push for a message that is no longer the newest shows the generic body',
