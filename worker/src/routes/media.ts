@@ -280,6 +280,16 @@ const MEDIA_ISOLATION_HEADERS: Record<string, string> = {
   'Content-Security-Policy': "default-src 'none'; sandbox",
   'Cross-Origin-Resource-Policy': 'same-origin',
   'Content-Disposition': 'inline',
+  // Without this a cross-origin reader can see the bytes and not the range
+  // they came from: `Content-Range` is not one of the seven response headers
+  // CORS exposes by default, so `response.headers.get('content-range')` reads
+  // null. The service worker asks for `bytes=0-0` precisely to learn an
+  // object's total length from that header before it can decrypt anything
+  // (app/public/sw.js, `ciphertextSize`) — so on a split origin every chunked
+  // video failed at its first range request and the bubble said the media was
+  // unavailable. Same shape as the CORP note above: correct in production,
+  // where nothing is cross-origin, and broken everywhere else.
+  'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
 }
 
 /**
