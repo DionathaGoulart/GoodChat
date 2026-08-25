@@ -108,6 +108,7 @@ npm run smoke:phase9   # headers, CORS, login timing, settings, owner console
 npm run smoke:phase10  # guest accounts: quotas, expiry, deletion rules
 npm run smoke:phase13  # retention: the shared window, its mirror, its deadline
 npm run smoke:phase14  # the copies of a message, and the powers that reach them
+npm run smoke:phase18  # the app itself, in three browsers (needs Playwright)
 ```
 
 `smoke:phase13` also needs the owner account: the deadline it checks is read
@@ -133,6 +134,19 @@ phase 9 keeps its WebSocket flood inside the owner's own thread so the other
 suites' fixtures stay clean. Phase 10 talks to D1 directly to force guest
 expiry (five hours is a long wait) and to clear its own per-IP signup quota,
 so it is rerunnable.
+`smoke:phase18` is the only one that opens a browser, and the only one that
+needs the app running as well — `cd app && npm run dev` on :5173, plus the
+media stub and a published sticker pack. It drives three Playwright contexts
+(two people and a third browser signing in as one of them), which is what makes
+it able to state the thing no Node script can: that an account's history opens
+somewhere it has never been. `npx playwright install chromium` once, then
+`HEADED=1` to watch it and `SLOWMO=250` to watch it slowly. On a failure it
+writes `/tmp/phase18-<context>.png` and prints whatever the screen was saying.
+
+It is deliberately not in CI: it wants four processes and a browser download,
+and the deploy workflow typechecks, lints and builds. It is the pass you run
+before believing a change to the message path.
+
 Run the suites against a freshly migrated database — a few of them assert on
 state that earlier runs leave behind (`rm -rf worker/.wrangler/state`, then
 migrate and seed again).

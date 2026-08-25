@@ -171,7 +171,7 @@ Worker (`cd worker`):
 | `npm run media:dev`     | Fake-B2 media store on port 9000               |
 | `npm run stickers:publish` | Publish sticker pack to the media store     |
 | `npm run vapid:generate`| Generate a VAPID key pair for web push         |
-| `npm run smoke:phase3..16` | Smoke test suites (see Testing)             |
+| `npm run smoke:phase3..18` | Smoke test suites (see Testing)             |
 | `npm run typecheck`     | TypeScript check                               |
 | `npm run deploy:full`   | Build the app and deploy the Worker            |
 
@@ -205,6 +205,7 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase15` | The account envelope, against a second implementation of the wire format written from the docs rather than imported: the key directory, a message the two participants open and nobody else does, the binding that stops it being moved or replayed, ciphertext in the Durable Object and in the bucket, the content key that opens both a message and its attachment, the push preview the service worker decrypts, the safety number, and both sides of `E2EE_REQUIRED` |
 | `smoke:phase16` | The app's own crypto, executed: `app/src/lib/e2ee.ts` and the service worker's copy of the key derivation, cross-checked against phase 15's independent implementation in both directions — the app opens what the reference sealed and the reference opens what the app sealed |
 | `smoke:phase17` | Where the key comes from: nothing the wrapping key derives from appears in any request the client sends, a copy of D1 plus the token the server verifies does not open the wrapped account key, a browser with an empty key store signs in with the password alone and reads the whole history, and `/api/auth/kdf` answers a nonexistent username with the same salt every time |
+| `smoke:phase18` | The conversation itself, in three isolated Chromium profiles: the twelve steps of the manual pass, driven by Playwright — text both ways with a closed lock, ciphertext on the wire, sticker art and emoji, an image the app renders and the proxy will not, a video that plays, list previews, a reload inside a thread, a browser that has never seen the account reading the whole history, a safety number that does not move when it opens, a push the service worker decrypts, an owner reset and what it costs, and whichever half of `E2EE_REQUIRED` the instance is running. Needs the app on :5173 as well |
 
 ## Documentation
 
