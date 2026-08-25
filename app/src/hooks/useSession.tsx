@@ -21,7 +21,14 @@ import type { ReactNode } from 'react'
 import * as api from '../lib/api'
 import type { PushPreview, SessionUser } from '../lib/api'
 import { ApiError } from '../lib/api'
+import type { LoginResult } from '../lib/api'
 import { clearCachedAccount, readCachedAccount, writeCachedAccount } from '../lib/accountCache'
+import {
+  adoptAccountKey,
+  createAccountKey,
+  readAccountKey,
+  wipeAccountKeys,
+} from '../lib/accountKeys'
 import { ensureDeviceKey, wipeDeviceKeys } from '../lib/deviceKeys'
 import { clearCachedConversations } from '../lib/conversationsCache'
 import { clearDrafts } from '../lib/drafts'
@@ -94,11 +101,57 @@ function forgetLocalState(): void {
   clearCachedConversations()
   clearCachedThreads()
   clearDrafts()
-  // The encryption identity goes with them, and for the same reason: the next
-  // account on this device must not hold the previous one's key. Nothing is
-  // lost that could have been kept — history is at most seven days old and a
-  // fresh identity is generated on the next sign-in (lib/deviceKeys.ts).
+  // The encryption identities go with them, and for the same reason: the next
+  // account on this browser must not hold the previous one's key. Nothing is
+  // lost either — the account key's wrapped copy is on the server, and the
+  // next sign-in unwraps it again (lib/accountKeys.ts).
   void wipeDeviceKeys()
+  void wipeAccountKeys()
+}
+
+/**
+ * Puts this account's key in this browser, whatever state it is in.
+ *
+ * Three cases, and the order is what makes them distinguishable:
+ *
+ *   - the browser already holds it — a second sign-in on the same machine, or
+ *     a tab that raced another one. Nothing to do.
+ *   - the server has a wrapped copy — unwrap it with the `wrapKey` derived a
+ *     moment ago. This is the case the whole design exists for: a browser that
+ *     has never seen this account walks away with the key that opens its
+ *     entire history.
+ *   - neither — mint one, publish it, keep it. First sign-in of an account
+ *     that predates all this, or a guest.
+ *
+ * Best effort throughout. A browser with no IndexedDB (private mode, or one
+ * that refuses it) gets no key and the app keeps working unencrypted for the
+ * length of the transition, exactly as it does without a device key.
+ *
+ * The one failure worth naming: a wrapped copy that does not open. It means
+ * the blob was sealed under a `wrapKey` nobody derives anymore, which is what
+ * the owner's password reset leaves behind — so a fresh pair is minted, and
+ * the history sealed to the old one is gone. `publishAccountKey` is
+ * create-only and will refuse that write; replacing a key is the password
+ * routes' job, not this one's.
+ */
+async function installAccountKey(user: SessionUser, result: LoginResult, wrapKey: CryptoKey | null) {
+  if (await readAccountKey(user.id)) return
+  if (result.account_key && wrapKey) {
+    if (await adoptAccountKey(user.id, wrapKey, result.account_key)) return
+  }
+  if (result.account_key) return
+  const created = await createAccountKey(user.id, wrapKey)
+  if (!created) return
+  try {
+    await api.publishAccountKey(created.published)
+  } catch (error) {
+    // 409: another tab published first. Its key is the account's; this one's
+    // is scrap. The next sign-in unwraps the winner's, and until then this
+    // browser simply has a key nobody encrypts to — which reads as an
+    // unencrypted thread rather than as a broken one.
+    if (!(error instanceof ApiError) || error.code !== 'account_key_exists') throw error
+    await wipeAccountKeys()
+  }
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null)
@@ -226,15 +279,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (username: string, password: string) => {
       const params = await api.kdfParams(username)
-      const { authToken } = await deriveAccountSecrets(password, params)
-      let user: SessionUser
+      const { authToken, wrapKey } = await deriveAccountSecrets(password, params)
+      let result: LoginResult
       try {
-        ;({ user } = await api.login(username, authToken))
+        result = await api.login(username, authToken)
       } catch (error) {
         if (!(error instanceof ApiError) || error.code !== 'invalid_credentials') throw error
-        ;({ user } = await api.loginLegacy(username, password))
+        result = await api.loginLegacy(username, password)
       }
-      adopt(user)
+      // Before the screen switches, not after: every surface behind it opens a
+      // thread, and a thread that paints before the key lands is a column of
+      // placeholders that nothing forces it to repaint.
+      //
+      // Skipped for an account still on the legacy hash — `wrapKey` there was
+      // derived against a decoy salt and means nothing. The rotation screen is
+      // what comes next, and that is where its key is minted.
+      if (!result.user.must_rotate) {
+        await installAccountKey(result.user, result, wrapKey)
+      }
+      adopt(result.user)
       setStatus('authenticated')
     },
     [adopt],
@@ -251,23 +314,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
    */
   const rotatePassword = useCallback(
     async (currentPassword: string, newPassword: string) => {
+      if (!user) return
       const params = newKdfParams()
-      const { authToken } = await deriveAccountSecrets(newPassword, params)
+      const { authToken, wrapKey } = await deriveAccountSecrets(newPassword, params)
+      // A whole key, not a rewrap. An account arriving here either never had
+      // one, or had one sealed under a `wrapKey` that is gone — the owner reset
+      // its password, which is the only other thing that sets `must_rotate`.
+      // Either way there is nothing to re-seal, and the history sealed to a
+      // previous key does not come back.
+      const created = await createAccountKey(user.id, wrapKey)
+      if (!created) throw new ApiError('no_keystore', 0, 'este navegador não guarda chaves')
       await api.rotatePassword({
         current_password: currentPassword,
         auth_token: authToken,
         kdf_salt: params.salt,
         kdf_iterations: params.iterations,
+        account_key: created.published,
       })
-      const { user } = await api.me()
-      adopt(user)
+      const { user: next } = await api.me()
+      adopt(next)
     },
-    [adopt],
+    [adopt, user],
   )
 
   const loginAsGuest = useCallback(async () => {
-    const { user } = await api.createTempAccount()
-    adopt(user)
+    const result = await api.createTempAccount()
+    // No password, so no `wrapKey` and nothing wrapped: the private half stays
+    // in this browser and only the public one is published. A guest has one
+    // device by definition, which is the one case where the per-device model
+    // this replaced was the right one all along.
+    await installAccountKey(result.user, result, null)
+    adopt(result.user)
     setStatus('authenticated')
   }, [adopt])
 

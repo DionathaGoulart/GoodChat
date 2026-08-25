@@ -15,6 +15,7 @@ import {
   updateAccount,
 } from './routes/admin'
 import { tempAccountConfig } from './lib/accounts'
+import { publishAccountKey } from './routes/accountKey'
 import {
   changePassword,
   createTempSession,
@@ -96,6 +97,7 @@ async function route(
     })
   }
   if (pathname === '/api/auth/login' && method === 'POST') return login(request, env)
+  if (pathname === '/api/account/key' && method === 'PUT') return publishAccountKey(request, env)
   if (pathname === '/api/auth/kdf' && method === 'POST') return kdfParams(request, env)
   if (pathname === '/api/auth/rotate' && method === 'POST') return rotatePassword(request, env)
   if (pathname === '/api/auth/temp' && method === 'POST') return createTempSession(request, env)

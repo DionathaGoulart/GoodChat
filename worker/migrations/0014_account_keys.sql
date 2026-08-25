@@ -1,0 +1,52 @@
+-- Migration 0014: one encryption key per account, not per browser.
+--
+-- Until now identity was per device (migration 0012): every browser generated
+-- its own ECDH pair, a message was wrapped once per device, and a browser
+-- somebody had just signed into held a key no envelope named — so its history
+-- was a column of "[mensagem de antes deste dispositivo]". There was a
+-- handover for that, and it only worked with another device of yours online
+-- and looking at the same thread.
+--
+-- The unit of read access becomes the account. One ECDH P-256 pair per person,
+-- generated in a browser, with the private half encrypted under a key derived
+-- from their password (`wrapKey` — app/src/lib/kdf.ts, migration 0013). Sign in
+-- anywhere, unwrap, read everything. No pairing, no QR code, no handover.
+--
+-- What the server holds is these three columns and nothing else:
+--
+--   account_public_key   raw P-256 public key, base64url. Published — this is
+--                        the directory a peer encrypts to.
+--   account_key_wrapped  the private half, PKCS#8, AES-GCM under `wrapKey`.
+--                        Opaque here, forever: `wrapKey` is derived from the
+--                        password, which stopped arriving in migration 0013.
+--   account_key_iv       the nonce for that ciphertext.
+--
+-- So a dump of this table is a set of public keys and a set of ciphertexts
+-- whose key nobody stored. That is the entire point, and it is why 0013 had to
+-- come first: while the server saw the password it could derive `wrapKey`, and
+-- these two columns would have been a decorative lock.
+--
+-- ECDH and not ECDSA. This key wraps content keys; it never signs anything,
+-- because with the account as the unit there is no device list left to attest
+-- to. See the plan's "fora de escopo".
+--
+-- Written by the client, whole, in one request — `PUT /api/account/key` for an
+-- account that has none, or the password routes (`/api/auth/rotate`,
+-- `/api/auth/password`) which rewrap under a new `wrapKey` in the same
+-- statement that stores the new hash. Never assembled server-side: the three
+-- values only make sense together, and a public key stored against somebody
+-- else's wrapped private half is an account that encrypts to a void.
+--
+-- All three nullable, for three different reasons:
+--   - an account that has not rotated yet (migration 0013) has no `wrapKey` to
+--     wrap anything under, and gets its key the moment it does
+--   - a guest has no password at all, so there is nothing to wrap: it
+--     publishes `account_public_key` and keeps the private half in the one
+--     browser it will ever have. `account_key_wrapped` stays NULL by design,
+--     which is the honest encoding of "the server has no copy of this"
+--   - the owner's password reset clears `account_key_wrapped` — it cannot
+--     rewrap what it cannot unwrap — and the person generates a fresh pair on
+--     their next sign-in, losing the history that was sealed to the old one
+ALTER TABLE users ADD COLUMN account_public_key  TEXT;
+ALTER TABLE users ADD COLUMN account_key_wrapped TEXT;
+ALTER TABLE users ADD COLUMN account_key_iv      TEXT;

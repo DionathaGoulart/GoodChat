@@ -262,6 +262,11 @@ async function removeIfUnreferenced(
  * id and a name that reads as gone. The username is derived from the id (so it
  * is unique and stable if this runs twice) and frees the original handle for
  * reuse.
+ *
+ * The encryption columns go with the credentials (migrations 0013, 0014). A
+ * tombstone that kept its public key would still be an address peers encrypt
+ * to, for an account with nobody behind it, and the wrapped private half would
+ * outlive every possible reader of it.
  */
 async function tombstone(db: D1Database, userId: string, now: number): Promise<void> {
   await db
@@ -271,6 +276,12 @@ async function tombstone(db: D1Database, userId: string, now: number): Promise<v
          display_name = NULL,
          avatar_key = NULL,
          password_hash = NULL,
+         kdf_salt = NULL,
+         kdf_iterations = NULL,
+         must_rotate = 0,
+         account_public_key = NULL,
+         account_key_wrapped = NULL,
+         account_key_iv = NULL,
          theme_mode = NULL,
          theme_light = NULL,
          theme_dark = NULL,

@@ -5,6 +5,12 @@ import {
   liveTempAccounts,
   tempAccountConfig,
 } from '../lib/accounts'
+import {
+  AccountKeySchema,
+  accountKeyShapeError,
+  readAccountKey,
+  type PublishedAccountKey,
+} from './accountKey'
 import { apiError, json } from '../lib/http'
 import { KDF_ITERATIONS, decoyKdfSalt } from '../lib/kdf'
 import { burnPasswordTime, hashPassword, verifyPassword } from '../lib/password'
@@ -108,6 +114,9 @@ interface UserRow extends Omit<SessionUser, 'is_temp' | 'must_rotate'> {
   is_temp: number
   must_rotate: number
   password_hash: string | null
+  account_public_key: string | null
+  account_key_wrapped: string | null
+  account_key_iv: string | null
 }
 
 /**
@@ -168,7 +177,8 @@ export async function login(request: Request, env: Env): Promise<Response> {
   const user = await env.DB.prepare(
     `SELECT id, username, display_name, avatar_key, created_at, role,
             theme_mode, theme_light, theme_dark, skin, push_preview,
-            is_temp, expires_at, must_rotate, password_hash
+            is_temp, expires_at, must_rotate, password_hash,
+            account_public_key, account_key_wrapped, account_key_iv
      FROM users
      WHERE username = ?1
        AND disabled_at IS NULL
@@ -190,14 +200,34 @@ export async function login(request: Request, env: Env): Promise<Response> {
   }
 
   await clearLoginFailures(env.DB, username, env, ip)
-  const { password_hash, is_temp, must_rotate, ...rest } = user
+  const {
+    password_hash,
+    is_temp,
+    must_rotate,
+    account_public_key,
+    account_key_wrapped,
+    account_key_iv,
+    ...rest
+  } = user
   const publicUser: SessionUser = {
     ...rest,
     is_temp: is_temp === 1,
     must_rotate: must_rotate === 1,
   }
   const { cookie } = await createSession(env.DB, user.id, user.expires_at)
-  return json({ user: publicUser }, 200, { 'Set-Cookie': cookie })
+  // The wrapped key rides back with the session, and only here.
+  //
+  // This is the one moment the browser holds `wrapKey` — it was derived from
+  // the password a few hundred milliseconds ago and is not written down
+  // anywhere — so it is the one moment the blob can be opened. /api/auth/me
+  // deliberately does not carry it: a reload has no password and nothing to
+  // unwrap with, and the key is already in IndexedDB by then.
+  const accountKey: PublishedAccountKey | null = readAccountKey({
+    account_public_key,
+    account_key_wrapped,
+    account_key_iv,
+  })
+  return json({ user: publicUser, account_key: accountKey }, 200, { 'Set-Cookie': cookie })
 }
 
 /**
@@ -259,7 +289,11 @@ export async function createTempSession(request: Request, env: Env): Promise<Res
     // A guest has no password, so there is nothing to rotate into anything.
     must_rotate: false,
   }
-  return json({ user }, 201, { 'Set-Cookie': cookie })
+  // No key yet, and no password to wrap one under. The browser mints one and
+  // publishes the public half through PUT /api/account/key, keeping the
+  // private half to itself — which is the correct model for an account that
+  // has exactly one device by definition (lib/accounts.ts).
+  return json({ user, account_key: null }, 201, { 'Set-Cookie': cookie })
 }
 
 const RotateSchema = z.object({
@@ -269,6 +303,13 @@ const RotateSchema = z.object({
   auth_token: z.string().min(1).max(128),
   kdf_salt: z.string().min(16).max(64),
   kdf_iterations: z.number().int().min(100_000).max(5_000_000),
+  /**
+   * The account key, sealed under the *new* `wrapKey` (migration 0014). A
+   * rotating account is either getting its first one or replacing one it can
+   * no longer open, so this is a whole key rather than a rewrap — and it has
+   * to arrive in the same request as the salt it was wrapped against.
+   */
+  account_key: AccountKeySchema,
 })
 
 /**
@@ -308,6 +349,14 @@ export async function rotatePassword(request: Request, env: Env): Promise<Respon
   if (!parsed.success) {
     return apiError('invalid_request', 400, parsed.error.issues[0]?.message ?? 'invalid body')
   }
+  const shape = accountKeyShapeError(parsed.data.account_key)
+  if (shape) return apiError('invalid_request', 400, shape)
+  // Only a guest may publish an unwrapped key, and a guest has no password to
+  // rotate. Reaching here with `wrapped: null` is a client that would have
+  // locked itself out of every browser but this one.
+  if (parsed.data.account_key.wrapped === null) {
+    return apiError('invalid_request', 400, 'a rotated account must wrap its key')
+  }
 
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown'
   const rate = await checkLoginAllowed(env.DB, ip, auth.user.username, env)
@@ -336,15 +385,22 @@ export async function rotatePassword(request: Request, env: Env): Promise<Respon
 
   // One statement, so an account can never be left holding a new hash with the
   // old salt — or with `must_rotate` cleared and no salt to derive against,
-  // which would be an account nobody can sign in to.
+  // which would be an account nobody can sign in to. The key goes in the same
+  // one, and for the stronger version of the same reason: a key wrapped under
+  // a `wrapKey` the stored salt no longer produces is unopenable by everyone,
+  // including the person who just wrapped it.
   await env.DB.prepare(
-    `UPDATE users SET password_hash = ?1, kdf_salt = ?2, kdf_iterations = ?3, must_rotate = 0
-     WHERE id = ?4`,
+    `UPDATE users SET password_hash = ?1, kdf_salt = ?2, kdf_iterations = ?3, must_rotate = 0,
+                      account_public_key = ?4, account_key_wrapped = ?5, account_key_iv = ?6
+     WHERE id = ?7`,
   )
     .bind(
       await hashPassword(parsed.data.auth_token),
       parsed.data.kdf_salt,
       parsed.data.kdf_iterations,
+      parsed.data.account_key.public_key,
+      parsed.data.account_key.wrapped,
+      parsed.data.account_key.iv,
       auth.user.id,
     )
     .run()
@@ -423,16 +479,31 @@ export async function changePassword(request: Request, env: Env): Promise<Respon
   }
 
   const row = await env.DB.prepare(
-    'SELECT password_hash, must_rotate FROM users WHERE id = ?',
+    'SELECT password_hash, must_rotate, account_public_key FROM users WHERE id = ?',
   )
     .bind(auth.user.id)
-    .first<{ password_hash: string | null; must_rotate: number }>()
+    .first<{
+      password_hash: string | null
+      must_rotate: number
+      account_public_key: string | null
+    }>()
   // An account still on the legacy hash cannot be changed from here: the
   // browser has no salt to have derived `current_auth_token` against, so it
   // could only ever fail. /api/auth/rotate is the door for that one, and
   // saying so beats a 401 that reads as "wrong password".
   if (row?.must_rotate === 1) {
     return apiError('rotation_required', 409, 'esta conta precisa migrar a senha primeiro')
+  }
+  // A new password is a new `wrapKey`, and the account key is wrapped under the
+  // old one. Writing the hash without the rewrap would leave a blob nobody can
+  // open — the history gone, silently, as a side effect of a routine password
+  // change. Refused until the client sends it (see the rewrap change).
+  if (row?.account_public_key) {
+    return apiError(
+      'rewrap_required',
+      409,
+      'este build ainda não reembrulha a chave da conta ao trocar a senha',
+    )
   }
   const valid = row?.password_hash
     ? await verifyPassword(parsed.data.current_auth_token, row.password_hash)

@@ -301,7 +301,41 @@ modelo de ameaça de hoje — o que muda é de onde ela vem.
 
 **Entrega:** login em navegador zerado devolve a chave da conta.
 
-**Handoff:** _(preencher ao concluir)_
+**Handoff:** feito e verificado contra a stack local: navegador que nunca viu a
+conta loga, recebe o blob, desembrulha, e a chave lida é **a que o diretório
+anuncia** — ECDH nos dois sentidos bate. Senha errada não abre nada.
+
+**Decisões que o plano não fixava:**
+
+- **`accountKeys.ts` nasce ao lado do `deviceKeys.ts`, não no lugar dele.** O
+  envelope ainda é por dispositivo até a fase 3; trocar agora quebraria o meio
+  do caminho. A fase 3 apaga o antigo.
+- **Banco IndexedDB separado (`goodchat-account`), não uma store nova no
+  `goodchat-keys`.** Adicionar object store exige subir a versão, e os dois
+  módulos abrem o mesmo banco — o `deviceKeys.ts` (versão 1) passaria a falhar
+  com `VersionError`. A fase 3 apaga o banco antigo junto com o módulo.
+- **O par é gerado `extractable: true` e reimportado como não-extraível.** Não
+  tem jeito de embrulhar sem exportar o PKCS#8 uma vez; o handle que sobrevive
+  à função é o reimportado, e o exportável morre com o frame.
+- **`PUT /api/account/key` é create-only**, via `WHERE account_public_key IS
+  NULL ... RETURNING`, e devolve 409 quando perde a corrida. Se publicar
+  pudesse *substituir*, uma sessão roubada bastaria para cortar a pessoa do
+  próprio histórico — as mensagens antigas estão seladas para a chave antiga e
+  nada as re-sela. Substituir é privilégio das rotas de senha, que provam a
+  senha antes.
+- **O blob volta no `/api/auth/login` e só ali.** É o único instante em que o
+  navegador tem `wrapKey` na mão. `/api/auth/me` não carrega: reload não tem
+  senha e a chave já está no IndexedDB.
+- **`changePassword` passa a recusar com `rewrap_required` (409)** enquanto a
+  conta tiver chave. Trocar a senha troca a `wrapKey`, e gravar o hash novo sem
+  reembrulhar apagaria o histórico em silêncio, como efeito colateral de uma
+  troca de senha rotineira. A fase 4 manda o reembrulho e levanta a recusa.
+- **A lápide zera as colunas de cripto** junto com as credenciais. Lápide que
+  guardasse a chave pública continuaria sendo um endereço para o qual peers
+  cifram, de uma conta sem ninguém atrás.
+- **Guest publica só a metade pública**, com `wrapped` NULL — e o worker recusa
+  essa forma para conta permanente. NULL ali é a codificação honesta de "o
+  servidor não tem cópia disto".
 
 ---
 

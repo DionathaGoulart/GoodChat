@@ -1,6 +1,7 @@
 // REST client for the GoodChat Worker (phases 2–3 shapes, see plan.md
 // handoffs). Cookie-based session: every call rides `credentials: include`.
 
+import type { WrappedAccountKey } from './accountKeys'
 import type { KdfParams } from './kdf'
 import type { WireMessage } from './protocol'
 import type { Mode } from './themes'
@@ -142,8 +143,18 @@ export function kdfParams(username: string): Promise<KdfParams> {
   return call('/api/auth/kdf', { method: 'POST', body: JSON.stringify({ username }) })
 }
 
+/**
+ * What signing in hands back: the account, and the account key sealed under a
+ * `wrapKey` only the browser that just derived it can produce (migration
+ * 0014). Null for an account that has not published one yet.
+ */
+export interface LoginResult {
+  user: SessionUser
+  account_key: WrappedAccountKey | null
+}
+
 /** Sign in with the derived token. The password itself never goes. */
-export function login(username: string, authToken: string): Promise<{ user: SessionUser }> {
+export function login(username: string, authToken: string): Promise<LoginResult> {
   return call('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, auth_token: authToken }),
@@ -157,10 +168,7 @@ export function login(username: string, authToken: string): Promise<{ user: Sess
  * see the note on the worker's login route for why that ordering is the whole
  * of what keeps this endpoint from enumerating accounts.
  */
-export function loginLegacy(
-  username: string,
-  password: string,
-): Promise<{ user: SessionUser }> {
+export function loginLegacy(username: string, password: string): Promise<LoginResult> {
   return call('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
@@ -177,12 +185,25 @@ export function rotatePassword(body: {
   auth_token: string
   kdf_salt: string
   kdf_iterations: number
+  /** Sealed under the new `wrapKey`, in the same request as the salt. */
+  account_key: WrappedAccountKey
 }): Promise<{ ok: boolean }> {
   return call('/api/auth/rotate', { method: 'POST', body: JSON.stringify(body) })
 }
 
+/**
+ * Publishes the key for an account that had none. Create-only on the worker's
+ * side — a 409 means another tab won the race, and this one throws its
+ * keypair away and reads back the winner's.
+ */
+export function publishAccountKey(key: WrappedAccountKey): Promise<{ ok: boolean }> {
+  return call('/api/account/key', { method: 'PUT', body: JSON.stringify(key) })
+}
+
 export interface TempAccountResult {
   user: SessionUser
+  /** Always null: a guest publishes its own, unwrapped. */
+  account_key: null
 }
 
 /**
