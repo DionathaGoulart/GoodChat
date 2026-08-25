@@ -224,28 +224,43 @@ The ones that change behaviour:
   `POST /api/admin/media/reindex` from the owner console once and check that
   `indexed_media_bytes` matches `bucket_bytes` in the overview before
   deploying with the flag closed.
-- `E2EE_REQUIRED` — when `"true"` (the default since the `v: 2` envelope), the
-  Durable Object refuses any message that arrives without an encryption
-  envelope. Nothing needs migrating to turn it on or off — retention deletes
-  every plaintext message within seven days by itself, so the instance becomes
-  fully encrypted a week after the deploy whether or not the flag is flipped.
-  The flag is what stops it going back.
+- `E2EE_REQUIRED` — when `"true"` (the default), the Durable Object refuses any
+  message that arrives without an encryption envelope. Nothing needs migrating
+  to turn it on or off — retention deletes every plaintext message within seven
+  days by itself, so the instance becomes fully encrypted a week after the
+  deploy whether or not the flag is flipped. The flag is what stops it going
+  back.
 
-  What it costs: an account with no registered device key cannot be written to.
-  A browser in private mode has no IndexedDB, gets no identity, and its sends
-  are refused with `encryption_required` rather than going out in the clear.
-  Check who is not ready before deploying a change to this value — there is no
-  owner-console view for it, so ask D1 directly:
+  What it costs: an account that has published no key cannot be written to.
+  Since the account key (migration 0014) that is a much shorter list than it
+  was — a key follows the person rather than the browser, so it is published
+  once and not once per machine — but three things still land on it: an account
+  that has not signed in since the client-side KDF shipped and therefore has
+  not rotated (`must_rotate = 1`), an account whose password the owner reset
+  and who has not signed in since, and a browser in private mode, which has no
+  IndexedDB, holds no key, and has its sends refused with
+  `encryption_required` rather than sending in the clear.
+
+  There is no owner-console view for it, so ask D1 directly before deploying a
+  change to this value:
 
   ```
   wrangler d1 execute goodchat --remote --command \
-    "SELECT u.username FROM users u
-       LEFT JOIN devices d ON d.user_id = u.id
-      WHERE d.id IS NULL"
+    "SELECT username, must_rotate FROM users
+      WHERE deleted_at IS NULL AND account_public_key IS NULL"
   ```
 
-  Every name it returns is somebody who has to open the app once, in a normal
-  window, before messages to them will send.
+  Every name it returns is somebody who has to sign in once — and set a new
+  password, if `must_rotate` is 1 — before messages to them will send.
+
+  **The day of the switch.** Deploying the account key forces every existing
+  account through one rotation: they sign in the old way once, are handed a
+  rotation screen, and pick a new password there. That is a cut, not a silent
+  migration, and it is worth telling people about before rather than after.
+  Two things to say when you do: the new password cannot be recovered by
+  anybody including you, and the history sealed to the old design does not come
+  across — it stays readable in the browser that received it, and expires on
+  the usual clock within a week.
 - `PUSH_ENDPOINT_HOSTS` — comma-separated domain suffixes a push subscription
   may point at. A stored endpoint is a URL the Worker POSTs to on every message
   the account receives, so this is what keeps it a browser vendor's push service

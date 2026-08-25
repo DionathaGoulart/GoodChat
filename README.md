@@ -11,12 +11,23 @@ end-to-end encrypted: the server routes and expires what it cannot read.
 
 ## Features
 
-- End-to-end encryption, per device: a random content key per message, wrapped
-  by ECDH for the peer's browsers and your own, so the server stores ciphertext
-  and holds no key that opens it. Attachments are sealed before they reach the
-  bucket, push previews are decrypted by the service worker, and a safety number
-  in the thread is what catches a swapped key. No forward secrecy — the
-  seven-day ceiling is what bounds a leaked device key
+- End-to-end encryption, per account: a random content key per message,
+  wrapped by ECDH for the two people in the conversation, so the server stores
+  ciphertext and holds no key that opens it. Your key is generated in a
+  browser and stored encrypted under a key derived from your password — which
+  never reaches the server — so signing in anywhere opens the whole history,
+  with nothing to pair and nothing to scan. Attachments are sealed before they
+  reach the bucket, push previews are decrypted by the service worker, and a
+  safety number in the thread catches a swapped key. Three things follow from
+  this and are worth knowing before you rely on it:
+  - **Lose the password, lose the history.** There is no recovery, by
+    construction: there is nothing on the server that could perform one.
+  - **A weak password is the weak link.** Somebody holding a copy of the
+    database can attack it offline, without a rate limiter. Twelve characters
+    minimum, and the app shows you how you are doing.
+  - **No forward secrecy.** ECDH is static, so a key that leaks opens what that
+    account could read — bounded by the seven-day ceiling below, and in
+    practice by the three hours after a message is read.
 - Real-time 1:1 messaging over WebSockets, with offline delivery and
   at-least-once semantics (client-side dedup by message id)
 - Delivery states (sent, delivered, read) and a typing indicator
@@ -34,10 +45,14 @@ end-to-end encrypted: the server routes and expires what it cannot read.
 - Owner console: accounts, storage per account (message bytes and bucket
   bytes), history purges, on-demand maintenance, and an audit trail of every
   owner action that changed something
-- Session auth: opaque tokens, HttpOnly Strict cookies, rate-limited login
+- Session auth where the password stays in the browser: it is stretched with
+  600k PBKDF2 iterations locally and only a derived token is posted, so the
+  server verifies a login without ever holding something that could unwrap a
+  message. Opaque session tokens, HttpOnly Strict cookies, rate-limited login
   with no timing oracle, case-insensitive usernames, and a self-service
-  password change that signs every other device out — the counters store a
-  salted digest of the caller's address, never the address
+  password change that re-seals the account key and signs every other device
+  out — the counters store a salted digest of the caller's address, never the
+  address
 - Disappearing messages, on a clock the reader starts: every message deletes
   itself — from the database, the bucket and every cache that copied it —
   three hours after the recipient reads it, and in seven days if they never
@@ -50,10 +65,12 @@ end-to-end encrypted: the server routes and expires what it cannot read.
 - Notifications that do not outlive the message: the push preview is generic
   by default ("@alice te mandou uma mensagem"), because a notification lands
   in a place the expiry clock cannot reach
-- Guest accounts: a throwaway account that lives 5 hours and then deletes
-  itself with its data — while keeping the conversations whose other side is
-  a permanent account, and taking a guest-to-guest thread with the last of
-  the pair to expire
+- Guest accounts: a throwaway account with no password at all, which lives
+  three hours and deletes itself with its data the moment you sign out —
+  while keeping the conversations whose other side is a permanent account, and
+  taking a guest-to-guest thread with the last of the pair to expire. With no
+  password there is nothing to wrap a key under, so a guest's key never leaves
+  the tab that made it
 - Hardened by default: CSP with `frame-ancestors 'none'`, CORS allowlist,
   per-connection WebSocket rate limiting, per-account upload quotas, hourly
   cleanup of expired sessions, expired accounts and orphaned uploads
@@ -185,8 +202,9 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | `smoke:phase12` | Presence: heartbeat, online window, presence on the listing endpoints, skin preference |
 | `smoke:phase13` | Retention: the deadline a new message carries, the read that pulls it in to three hours, both sides being told the same moment, the D1 mirror, and the three refusals that make reading safe to be destructive |
 | `smoke:phase14` | The copies of a message: cache ceilings per prefix, a key whose index row is gone, deletion taking bucket and index together, the deadline the cron scans by, `media_key` validation, the WebSocket Origin check, the push preview preference, the owner audit trail, the login lockout exemption |
-| `smoke:phase15` | End-to-end encryption, against a second implementation of the wire format written from the docs rather than imported: the key directory, a message two of one account's devices open and a later one cannot, ciphertext in the Durable Object and in the bucket, the content key that opens both a message and its attachment, the push preview the service worker decrypts, the safety number, and both sides of `E2EE_REQUIRED` |
+| `smoke:phase15` | The account envelope, against a second implementation of the wire format written from the docs rather than imported: the key directory, a message the two participants open and nobody else does, the binding that stops it being moved or replayed, ciphertext in the Durable Object and in the bucket, the content key that opens both a message and its attachment, the push preview the service worker decrypts, the safety number, and both sides of `E2EE_REQUIRED` |
 | `smoke:phase16` | The app's own crypto, executed: `app/src/lib/e2ee.ts` and the service worker's copy of the key derivation, cross-checked against phase 15's independent implementation in both directions — the app opens what the reference sealed and the reference opens what the app sealed |
+| `smoke:phase17` | Where the key comes from: nothing the wrapping key derives from appears in any request the client sends, a copy of D1 plus the token the server verifies does not open the wrapped account key, a browser with an empty key store signs in with the password alone and reads the whole history, and `/api/auth/kdf` answers a nonexistent username with the same salt every time |
 
 ## Documentation
 

@@ -38,7 +38,7 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
 - Group chats / channels / servers.
 - Public user discovery, search engines, or social graph features (follow/friend suggestions).
 - Voice/video calling (real-time media streaming — RTC).
-- Multi-device sync beyond "log in anywhere with the same account" (no cross-device message queue merge logic beyond what the DB naturally provides).
+- Multi-device sync beyond "log in anywhere with the same account" (no cross-device message queue merge logic beyond what the DB naturally provides). Encryption does not narrow this any further: the account key means a new browser reads the same history as an old one, with no pairing step.
 - Message backup/export tooling, searchable archives, or any "history" feature. Not merely out of scope: retention (§3.9) is the product, and a tool whose purpose is to keep messages around contradicts it.
 - Monetization, ads, or growth mechanics of any kind.
 - Native mobile apps (v1 targets installable PWA only).
@@ -119,10 +119,12 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
 - Session cookie: `HttpOnly`, `Secure`, `SameSite=Strict` (see 3.1).
 - **CSRF protection:** since cookies are `SameSite=Strict` and all mutating requests require a custom header or same-origin check, CSRF risk is low; add an explicit CSRF token for defense-in-depth on state-changing REST endpoints if a browser extension/edge case requires relaxed `SameSite`.
 - **Input sanitization:** all user-generated text rendered with strict escaping (no raw HTML rendering) to prevent stored XSS.
-- **Optional End-to-End Encryption (E2EE) — P1/P2 stretch goal:**
-  - Per-conversation symmetric key derived via an X25519 key exchange (Signal-style double ratchet is the gold standard but heavy to implement solo; a simpler static/rotating shared-secret model via `libsodium`/`tweetnacl` can be a pragmatic v1.5).
-  - If implemented, the server (Durable Object/D1) only ever stores ciphertext for message bodies; media files are optionally encrypted client-side before upload with the key stored only on participant devices.
-  - This is explicitly called out as **not required for v1 launch** but strongly recommended as the defining "actually private" feature — flagged as high value, high effort.
+- **End-to-end encryption — shipped, and the unit is the account.** Written here as it ended up rather than as it was sketched: the sketch said "per-conversation key via X25519, keys stored on participant devices", and both halves changed.
+  - **Per message, not per conversation.** A fresh random content key encrypts each payload; that key is wrapped twice, for the two accounts, under ECDH P-256 through HKDF. The body is authenticated under the conversation, the sender and the message id, so the server can store and forward an envelope it cannot read and cannot move.
+  - **Per account, not per device.** One keypair per person, generated in a browser and stored on the server encrypted under a key derived from their password — which never reaches the server (see below). Signing in anywhere opens the whole history: nothing to pair, nothing to scan, no cross-device handover. This is what answers open question 4.
+  - **The password stops arriving**, and that is the load-bearing part rather than a login hardening measure: the browser runs 600k PBKDF2 iterations locally and posts only a derived token, so the same derivation that authenticates cannot be walked backwards into the key that unwraps a message.
+  - **Media too**, sealed in the browser before the presigned PUT, in independently authenticated chunks so a video can play before it has finished arriving. The bucket, the read proxy and the edge cache hold ciphertext only.
+  - **The costs, which are real and are product decisions, not oversights:** lose the password and lose the history — there is nothing on the server that could perform a recovery; a weak password is attackable offline by whoever holds a database dump, hence a twelve-character minimum and a meter; and an owner's password reset discards the account key, so it hands over an account and empties it in the same action, which the console says before the click.
 - **Retention as the primary privacy mechanism (§3.9):** a message lives three hours past being read, and seven days at the outside. This is the guarantee that holds without any cryptography: what is not stored cannot be breached, subpoenaed or read by the operator. E2EE, if it ships, narrows *who* can read a live message; retention narrows *how long anyone* can. Tying the clock to the read rather than to the send is what makes the usual case hours instead of days — the week is the fallback for a message that never found its reader, not the normal life of one.
 - **Admin/operator transparency:** since this is a small trusted-operator deployment, the PRD assumes the operator (you) has infrastructure-level access to the database regardless of E2EE status for operational reasons (backups, debugging) — E2EE protects against external breach/subpoena/third-party exposure, not against the operator themselves, and this should be disclosed to users. Retention is what bounds that access in time: the operator can read what exists, and within a week nothing does — usually within hours. The owner console can see when a conversation's next message expires and how much of it is still unread, but cannot extend either.
 
@@ -362,7 +364,7 @@ The definitive visual reference for this project is the retro theme/skin used in
 1. **User visibility model** (3.2.1): fully open `@username` lookup within the instance, or gated by an explicit connection/approval step?
 2. **Message retention:** keep forever, or auto-expire media after N days to protect the B2 quota?
 3. **E2EE scope for v1.5:** message text only, or also media files?
-4. **Multi-device:** is simultaneous login from phone + desktop required for v1, or is "one active session" acceptable initially?
+4. ~~**Multi-device:** is simultaneous login from phone + desktop required for v1, or is "one active session" acceptable initially?~~ **Answered: simultaneous, with the full history everywhere.** The first encryption design made identity per browser, which made this question expensive — a new device started blind and needed a handover from an old one. The account key removed the question rather than answering it: the key belongs to the person, so every browser they sign into holds the same one.
 5. **Invite mechanism:** admin manually creates accounts, or a signed one-time invite link flow?
 
 ---

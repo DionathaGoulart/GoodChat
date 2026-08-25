@@ -43,7 +43,12 @@ All endpoints return JSON. Errors always use the shape
 | PATCH  | `/api/profile`                | yes  | Own display name and/or picture (`display_name`, `avatar_key` — both optional, `null` clears) |
 | GET    | `/api/users/lookup?q=`        | yes  | Search by username — prefix, or exact for a guest account |
 | POST   | `/api/devices`                | yes  | Register this browser's encryption key, or refresh it |
-| GET    | `/api/users/:id/devices`      | yes  | The device keys a message to that account is encrypted for |
+| POST   | `/api/auth/kdf`               | no   | The salt and cost a password is stretched with, for any username |
+| POST   | `/api/auth/rotate`            | yes  | The one-time move off a server-known password (migration 0013) |
+| POST   | `/api/auth/password/challenge`| yes  | The wrapped account key, in exchange for the current token |
+| PUT    | `/api/account/key`            | yes  | Publish the account key, once — replacing one is the password routes' job |
+| GET    | `/api/users/:id/key`          | yes  | The account key a message to that account is encrypted for |
+| GET    | `/api/users/:id/devices`      | yes  | Read-only remnant of the per-browser directory, for history sealed before migration 0014 |
 | GET    | `/api/conversations`          | yes  | List with preview and unread count     |
 | POST   | `/api/conversations/resolve`  | yes  | Deterministic conversation id, no side effects |
 | GET    | `/api/ws/:conversationId?with=` | yes | WebSocket upgrade, forwarded to the DO |
@@ -94,22 +99,41 @@ is what makes the policy worth having.
 
 ### Authentication and sessions
 
-- Passwords: PBKDF2-SHA-256, 100k iterations, WebCrypto only. Workers caps
-  `crypto.subtle` PBKDF2 at 100k iterations and free-tier CPU rules out
-  scrypt/argon2; the tradeoff is accepted for a closed instance and
-  documented in `worker/src/lib/password.ts`.
+- Passwords do not arrive. The browser stretches one with 600k PBKDF2-SHA-256
+  iterations and posts a derived `authToken`; the server stores
+  PBKDF2-SHA-256(token, 100k) exactly as before (`worker/src/lib/password.ts`
+  is unchanged — it receives a different string). The Workers cap of 100k
+  iterations, which used to be the documented compromise, stops mattering
+  because the expensive half is not run there. The reason is not login
+  hardening: the same derivation produces `wrapKey`, which unwraps the account
+  key, so a server that saw the password could read every message. See
+  "End-to-end encryption".
+- `POST /api/auth/kdf` hands out the per-account salt, and answers for every
+  username — a decoy `HMAC(instance secret, username)` for one with no rotated
+  account behind it. Unauthenticated by necessity and therefore the most
+  obvious enumeration oracle this instance could grow; the decoy has to be
+  deterministic, or two calls answering differently say "no row" out loud.
+- Every account that predates this carries `must_rotate` (migration 0013):
+  it signs in the legacy way once, and the app demands a new password before
+  showing anything else. The owner console sets the same flag whenever it
+  writes a password it chose, because a password the operator picked is a
+  password the operator knows.
 - Session tokens: opaque 256-bit values in a cookie set exactly as
   `HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=N`. The database
   stores only the SHA-256 of the token, so a leaked database cannot mint
   sessions. Sliding 7-day expiry with a 30-day hard cap; refreshes are
   persisted only when they gain at least one hour.
-- Password change (`PATCH /api/auth/password`) verifies the current password
+- Password change (`PATCH /api/auth/password`) verifies the current token
   first, so a borrowed session cannot be escalated into a stolen account, and
   revokes every session on success — the caller included, who is handed a
   fresh cookie so the tab doing the change stays signed in. It shares the login
-  counters, because verifying the current password is the same oracle the login
-  form is. Without this route the only way to replace a password was an owner
-  reset, which ends with the operator knowing it.
+  counters, because verifying the current token is the same oracle the login
+  form is. It also re-seals the account key, which is the half that keeps the
+  history; `POST /api/auth/password/challenge` is where the browser gets the
+  blob to re-seal, and it takes the current token rather than being a GET for
+  exactly one reason — a GET would turn a stolen cookie into an offline
+  password attack. Without this route the only way to replace a password was an
+  owner reset, which ends with the operator knowing it and the history gone.
 - Login rate limiting: fixed 15-minute window in D1, 5 failures per
   account and 20 per IP. Blocked attempts return 429 with `Retry-After`.
   Every key derived from an address is a digest salted with `RATE_LIMIT_SALT`,
@@ -126,11 +150,17 @@ is what makes the policy worth having.
 
 ### Temporary (guest) accounts
 
-`POST /api/auth/temp` mints a random `temp_<9 chars>` username and a
-16-character password, stores `is_temp = 1` and
-`expires_at = now + TEMP_ACCOUNT_TTL_HOURS` (5 by default), and signs the
-browser in. The password is returned once and never recoverable. Being
-unauthenticated, the endpoint is fenced three ways: a per-IP hourly quota
+`POST /api/auth/temp` mints a random `temp_<9 chars>` username with no password
+at all — `password_hash` stays NULL, so the login route refuses the account and
+there is nothing to write down, nothing to leak and no way back in from another
+browser. The tab that created it *is* the account, which also makes it the one
+account whose encryption key the server holds no copy of: with no password
+there is no `wrapKey` to seal one under, so the private half stays in the single
+browser a guest has by definition. Signing out deletes the account on the spot,
+by the same rule the expiry sweep uses. It stores `is_temp = 1` and
+`expires_at = now + TEMP_ACCOUNT_TTL_HOURS` (3 by default) as the backstop for a
+tab that was simply closed, and signs the browser in. Being unauthenticated, the
+endpoint is fenced three ways: a per-IP hourly quota
 (`TEMP_ACCOUNTS_PER_IP_HOUR`), a ceiling on live guests
 (`TEMP_ACCOUNTS_MAX`), and an off switch (`TEMP_ACCOUNTS_ENABLED`, surfaced
 on `/api/health` so the login screen only offers what exists).
@@ -294,47 +324,93 @@ The server routes, expires and bills messages it cannot read. Retention, media
 membership checks, push fan-out and the owner console's byte counts all keep
 working — on ciphertext.
 
-Identity is per **device**, not per account: each browser generates an ECDH
-P-256 keypair whose private half is a non-extractable `CryptoKey` in IndexedDB
-(`app/src/lib/deviceKeys.ts`) and publishes only the public half to the
-directory (migration 0012). The device id is SHA-256 of that public key,
-truncated — so the id is a commitment to the key, and a key that was swapped is
-a *different device* rather than the same one with new bytes.
+Identity is per **account**, not per device. One ECDH P-256 keypair per person,
+generated in a browser, with the private half encrypted under a key derived from
+their password and stored on the server in that form (migration 0014). Sign in
+anywhere, unwrap it, read everything. There is no pairing step, no QR code and
+no handover.
 
-There is no key escrow and no backup, and that is affordable here for one
-reason: retention caps a message at seven days, so a device that loses its key
-loses at most a week. A new device starts reading from the moment it registers.
+That only works because the password stopped arriving one migration earlier.
+The browser stretches it locally and posts a derived token
+(`app/src/lib/kdf.ts`, migration 0013):
+
+```
+masterKey = PBKDF2-SHA256(password, kdf_salt, 600_000)    browser only
+authToken = PBKDF2-SHA256(masterKey, password, 1)         on the wire
+wrapKey   = HKDF(masterKey, "goodchat/wrap/v1")           browser only
+```
+
+The server stores `hashPassword(authToken)` — `lib/password.ts` is untouched, it
+just receives a different string — and there is no path from `authToken` back to
+`wrapKey`. So `account_key_wrapped` is a ciphertext whose key the server has
+never held and cannot derive, which is the whole claim, and `smoke:phase17` is
+where it is asserted rather than described. 600k iterations is the OWASP figure
+and one the Worker could not have run: `crypto.subtle` PBKDF2 is capped at 100k
+there, which was a documented compromise until the expensive half moved into the
+browser.
+
+`POST /api/auth/kdf` hands out the salt before anybody has proven anything, so
+it answers for **every** username: a real salt for an account that has rotated,
+`HMAC(instance secret, username)` for anything else. Deterministic, because two
+different salts for one unknown username would say "no row" out loud. A
+not-yet-rotated account gets the decoy too, so the endpoint cannot be asked
+whether an account exists *or* what state it is in; the client discovers the
+second by trying the derived path and falling back, which keeps an unknown
+username and a wrong password taking the same two refusals.
+
+The unwrapped key lands in IndexedDB as a non-extractable `CryptoKey`
+(`app/src/lib/accountKeys.ts`). That is what `localStorage` could not do:
+`localStorage` stores strings, so a private key would have to be exported to be
+saved, and anything exportable is readable by any script on the origin. A
+structured clone holds a handle the browser will run ECDH with and refuse to
+serialize.
+
+There is no key escrow, no backup and no recovery, by construction — there is
+nothing on the server that could perform one. Losing the password means losing
+the history, and that is stated in front of the person before they choose one.
+The other two costs of this design are named in the README and are not
+implementation details: a weak password is attackable offline by whoever holds a
+dump, and what a stolen browser leaks is now the account rather than one
+device's share of it.
 
 Sending one message:
 
 1. a fresh random content key encrypts the payload — a small JSON object, so one
    shape covers every type: `{t}` text/emoji, `{s}` sticker id, `{m, t?}` media;
-2. the content key is wrapped once per device allowed to read it: the peer's,
-   plus this account's own others, or the desktop could not read what the phone
-   sent;
+2. the content key is wrapped exactly twice: for the recipient's account and for
+   the sender's own, so the person can read what they sent;
 3. each wrap is `AES-GCM` under `HKDF-SHA256(ECDH(mine, theirs))`, salted with
-   both device ids sorted — which binds the wrap to the pair and lets both sides
-   derive it without agreeing who is first;
+   both account ids sorted — which binds the wrap to the pair and lets both
+   sides derive it without agreeing who is first;
 4. the body is authenticated under additional data naming where it was sealed —
-   `goodchat-v2 | conversation id | sender account | sender device | client id` —
-   so the ciphertext is bound to its context and not only to its content;
-5. the envelope carries `{ v, iv, sender_device, keys, media_iv?, media_chunk? }`.
+   `goodchat-v3 | conversation id | sender account | client id` — so the
+   ciphertext is bound to its context and not only to its content;
+5. the envelope carries `{ v, iv, keys, media_iv?, media_chunk? }`.
 
-Step 4 is what `v: 2` means, and it closes something the crypto alone did not.
-AES-GCM authenticates what it encrypts and nothing else, so a v1 envelope was a
-sealed box with no address: the server could take a message Alice sent Bob and
-hand it back to Bob in a different conversation, or under a different name. Bob
-would unwrap it — the content key genuinely is wrapped for his device — and
-render it under whatever the frame claimed. No plaintext leaked, but forged
-context is its own kind of lie. The four fields are things the server already
-knows, so putting them in the additional data reveals nothing; what it removes
-is the server's ability to change any of them, because the tag stops verifying
-and `openMessage` returns null. The client id is the one that stops a replay:
-without it the binding says "somewhere in this conversation, from this person",
-which the message already satisfies, so the same envelope could be served again
-as a new message and would open. `v: 1` is still opened, without the binding, for
-as long as retention keeps a message written before the change — seven days —
-and the literal can be dropped from `EncEnvelopeSchema` after that.
+Step 4 closes something the crypto alone did not. AES-GCM authenticates what it
+encrypts and nothing else, so a v1 envelope was a sealed box with no address:
+the server could take a message Alice sent Bob and hand it back to Bob in a
+different conversation, or under a different name. Bob would unwrap it — the
+content key genuinely is wrapped for him — and render it under whatever the
+frame claimed. No plaintext leaked, but forged context is its own kind of lie.
+The three fields are things the server already knows, so putting them in the
+additional data reveals nothing; what it removes is the server's ability to
+change any of them, because the tag stops verifying and `openMessage` returns
+null. The client id is the one that stops a replay: without it the binding says
+"somewhere in this conversation, from this person", which the message already
+satisfies, so the same envelope could be served again as a new message and would
+open.
+
+`v: 3` is otherwise a subtraction. The key map used to be keyed by device id and
+to carry `sender_device`, and there was a handover protocol
+(`request_keys`/`share_keys`, with a `via` field on each wrapped key) so two of
+your own browsers could pass history between them while both were online and
+looking at the same thread. None of that exists: the account key made a new
+browser able to read what it never received. `v: 1` and `v: 2` are still parsed
+so a week of stored history validates, and a browser that held a device key can
+still open them through `app/src/lib/legacyEnvelope.ts` — one file, deleted with
+the `devices` table and the read-only `GET /api/users/:id/devices` route once
+retention has cleared the last of them.
 
 The attachment carries no additional data of its own and needs none: its content
 key is reachable only through the body that names it, so a media message moved
@@ -342,7 +418,7 @@ to another conversation fails at the body, before anything is fetched from the
 bucket.
 
 The Durable Object stores and forwards all of it and can check exactly one
-thing about it without a key: that the sender named its own device among the
+thing about it without a key: that the sender named its own account among the
 recipients. Two checks it used to run had to move, because ciphertext cannot be
 inspected — the empty-body check, and the sticker-id regex. The regex now runs
 on the recipient, in `app/src/components/MessageBubble.tsx`, at the point the id
@@ -378,9 +454,12 @@ The push preview survives, which was not obvious. `push_preview: 'full'` used to
 be answerable on the server because the message was readable there. Now the
 notification carries only *which* message — conversation id and message id — and
 the service worker reads it back through `/api/conversations`, which already
-carries the last message with its envelope and the peer's device keys, and
+carries the last message with its envelope and the peer's account key, and
 decrypts it there. That is what IndexedDB bought over `localStorage`: that
-context can use the key and no code anywhere can export it.
+context can use the key and no code anywhere can export it. A subscription used
+to have to name a device, because the content key was wrapped per browser and
+the worker had to pick the right wrapped copy; every browser of an account now
+holds the same key, so the column went (migration 0015).
 
 The ciphertext used to travel in the notification itself, which capped it at Web
 Push's 4096-byte record: a short message previewed and a long one silently did
@@ -390,46 +469,64 @@ stops being handed ciphertext at all. No network at notification time means the
 generic line, which is at least a reason.
 
 `safetyNumber` is the part no code closes. The server publishes the directory,
-so it could add a device of its own to somebody's list, and the encryption would
-work perfectly to the wrong recipient. The number is derived from both device
-sets, so a tampered directory produces different numbers on the two sides, and
-comparing it out of band is the only step here a server cannot take part in.
+so it could hand out a key of its own in somebody's place, and the encryption
+would work perfectly to the wrong recipient. The number is derived from the two
+account keys, so a tampered directory produces different numbers on the two
+sides, and comparing it out of band is the only step here a server cannot take
+part in.
 
-The thread reports a change, and at one of two volumes. A device set the person
-has never compared against is *news* — most people sign into a new browser every
-few weeks, and an alarm each time is one they learn to dismiss. A set that has
-moved *since* they said they compared it is an alarm, because they are holding a
-number that no longer describes the conversation. The difference is
-`verifiedFingerprint` in `lib/threadCache.ts`, written when somebody taps "já
-conferi este número". Nothing verifies anything here: the person did, out of
-band, and this is a note that they said so.
+It is now worth comparing, which it was not before. Derived from the two device
+*sets*, the number moved every time either person signed into a new browser —
+several times a year, always innocently, and a number that keeps changing for
+innocent reasons is one nobody checks. An account key changes only when the
+account is new or when the owner reset its password, so the thread has one
+banner instead of two volumes of the same one, and it means what it says.
+`verifiedFingerprint` in `lib/threadCache.ts` is what "já conferi este número"
+writes down. Nothing verifies anything here: the person did, out of band, and
+this is a note that they said so.
 
-Two other things keep a directory from quietly leaving somebody out. A device
-that registers while a sender's tab is open is not in the copy that tab cached,
-so the Durable Object — the only place that sees both the envelope and the
-current directory — refuses a message that misses one, and the client seals it
-again under the same client id; the person sees an ordinary send. And a browser
-signed into after the fact holds a key no envelope names, so it asks the
-account's other devices, one of them is offered the choice, and the content keys
-come across re-wrapped under that device's own pair and marked `via`. That
-handover moves who can read a message and nothing about what it says: the body
-is still bound to the original sender. It is a question rather than an
-inference, because a session token that can register a device would otherwise be
-a session token that can drain the whole retention window.
+Two mechanisms went with the device model. The Durable Object no longer refuses
+a message for a stale directory — a person's key does not change because they
+opened a browser, so the race it caught cannot happen. And the handover is gone
+entirely, along with the question it had to ask: handing over history was
+handing over read access, so it could never be automatic, and now there is
+nothing to hand over.
+
+Changing a password is a re-seal. `wrapKey` changes with it, so the browser
+fetches the wrapped blob (`POST /api/auth/password/challenge`, which requires
+the current token — a plain GET would turn a stolen cookie into an offline
+password attack), unwraps under the old key, seals under the new one, and sends
+all of it in one statement. The worker refuses the change without the re-seal
+rather than writing a hash that would orphan the key.
+
+The owner's reset cannot do that, and does not pretend to: the owner has no
+password to derive from, so it discards all three columns and the account
+generates a fresh key on its next sign-in. Every message sealed to the old one
+is unreadable, including what the peer sent, and retention removes the rest
+within seven days. That is the same sentence as "the owner cannot read a reset
+account's messages", said from the other side — so the console says so before
+the click, the notification tells the person their history is gone, and the
+audit entry records it.
 
 **Not** provided, stated plainly because the difference matters:
 
-- **No forward secrecy.** ECDH is static, so a device key that leaks opens the
-  messages that device could read. The retention window bounds that to seven
+- **No forward secrecy.** ECDH is static, so an account key that leaks opens the
+  messages that account could read. The retention window bounds that to seven
   days, which is why a ratchet is not worth its complexity here — but it is a
-  weaker property than Signal's.
+  weaker property than Signal's, and the account key widened it: a stolen
+  browser used to leak one device's share, and now leaks the account.
+- **No recovery.** Lose the password and the wrapped key is a ciphertext with no
+  key. This is a property, not a gap, and the cost is real.
+- **A weak password is the weak link.** 600k iterations makes each guess
+  expensive; only length makes there be too many of them. Minimum twelve, with a
+  meter, and it is the one thing standing between a database dump and the
+  messages.
 - **Nothing here defends against a hostile operator serving hostile code.** The
   app is served by the same origin it talks to, so that origin could ship one
-  browser a build that reads the message before it is encrypted. No amount of
-  crypto below that layer helps. `E2EE_REQUIRED` is a rule the server applies to
-  clients, not a defence against the server. What is written down here protects
-  against the stored bytes, the transport, and a server that tampers after the
-  fact — not against one that owns the client.
+  browser a build that reads the password as it is typed. No amount of crypto
+  below that layer helps — the same ceiling Bitwarden and Proton have.
+  `E2EE_REQUIRED` is a rule the server applies to clients, not a defence against
+  the server.
 - **Message order and timestamps are not authenticated.** `created_at` is the
   server's, so it can reorder or withhold without leaving a trace.
 - **Avatars, display names and usernames stay plaintext**, because they are
@@ -440,13 +537,14 @@ a session token that can drain the whole retention window.
   `localStorage`, scoped to one account and wiped on logout. This is about the
   server, not about device access.
 
-Rollout needs no migration: `enc` is optional, a frame without it renders as
-plaintext, and every plaintext message is gone within seven days by itself.
-`E2EE_REQUIRED=true` is the default and makes the Durable Object refuse a
-message that arrives without an envelope — which is what keeps the transition
-from being permanent. It has a price, and `docs/deployment.md` carries it: an
-account with no registered device key cannot be written to at all, and there is
-no owner-console view of who that is, so the query to ask D1 lives there.
+The transition is a cut rather than a silent migration, and there is exactly one
+of them: every account that existed before this holds a password the server
+knows, so it carries `must_rotate`, signs in the old way once, and the app puts
+a rotation screen in front of everything until a new password replaces it. That
+is also where its first account key is minted. `E2EE_REQUIRED=true` is the
+default and makes the Durable Object refuse a message that arrives without an
+envelope. It has a price, and `docs/deployment.md` carries it: an account that
+has published no key cannot be written to at all.
 
 ### Media pipeline
 
@@ -690,11 +788,12 @@ D1 (metadata):
 
 | Table                | Purpose                                             |
 | -------------------- | --------------------------------------------------- |
-| `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `role`, `theme_mode`, `theme_light`, `theme_dark`, `skin`, `push_preview`, `last_seen_at`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
+| `users`              | id, unique case-insensitive username, `display_name`, `avatar_key`, password hash, `kdf_salt`/`kdf_iterations`/`must_rotate` (the client-side KDF, migration 0013), `account_public_key`/`account_key_wrapped`/`account_key_iv` (the account key, migration 0014), `role`, `theme_mode`, `theme_light`, `theme_dark`, `skin`, `push_preview`, `last_seen_at`, `created_by`, `disabled_at`, `is_temp`, `expires_at`, `deleted_at` |
 | `sessions`           | SHA-256 of token, user, created/expires timestamps  |
 | `conversations`      | Deterministic id, ordered pair, last_message_at, `next_expiry_at` (mirror of the DO's earliest deadline), `swept_at`, and `retention_ms` — a tombstone of the per-conversation window |
 | `login_attempts`     | Rate-limit counters, keyed by purpose (login, guest signup, uploads), plus the hashed "this address has signed in to this account" rows that exempt a known address from the account lockout |
-| `push_subscriptions` | Endpoint (PK), user, p256dh, auth                   |
+| `push_subscriptions` | Endpoint (PK), user, p256dh, auth. The endpoint is the subscription; it stopped naming a device when every browser of an account started holding the same key (migration 0015) |
+| `devices`            | The per-browser key directory this replaced (migration 0012). Read-only and draining: nothing registers one, and it goes when the last message sealed to a device key expires |
 | `media_objects`      | Every presigned object: uploader, conversation, mime, size, claim timestamp |
 | `admin_audit`        | One row per mutating owner action: actor, action, target, details, timestamp |
 
