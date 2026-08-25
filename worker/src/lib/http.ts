@@ -15,7 +15,16 @@ export function corsHeaders(
   env: Env,
 ): Record<string, string> {
   const headers: Record<string, string> = {
-    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    // PUT is here for `PUT /api/account/key`, and it was missing for as long
+    // as that route existed. The gap was invisible in production, where the
+    // Worker serves the app and nothing is cross-origin — and invisible to
+    // every Node smoke, because a script does not preflight. It was only ever
+    // reachable from a browser on :5173 talking to :8000, which is the
+    // documented development setup: the preflight answered without PUT, the
+    // browser never sent the request, and the first sign-in of an account
+    // failed to publish its key. The list must name every verb the router
+    // dispatches on (src/index.ts).
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     Vary: 'Origin',
   }
