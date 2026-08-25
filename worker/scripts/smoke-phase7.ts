@@ -250,10 +250,10 @@ check(
 const emojiInHistory = bobHistory2.messages.find((m: any) => m.client_id === mEmoji)
 check('emoji body persisted intact in history', emojiInHistory?.body === emojiBody, emojiInHistory)
 
-wsBob2.send({ type: 'read_receipt', up_to_message_id: echoOffline.id })
+wsBob2.send({ type: 'read_receipt', ids: [echoOffline.id] })
 const read = await wsAlice.next(
   'read receipt at alice',
-  (e) => e.type === 'read_receipt' && e.up_to_message_id === echoOffline.id,
+  (e) => e.type === 'read_receipt' && e.reads.some((r: any) => r.id === echoOffline.id),
 )
 check('read receipt on the sticker reaches alice', read.user_id === bobId, read)
 

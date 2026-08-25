@@ -9,9 +9,9 @@
 // - `message_status` carries the server `id` alongside `client_id` so status
 //   transitions can target messages from previous sessions.
 // - `error` frame for invalid input (connection stays open).
-// - retention (PRD §3.9): `set_retention` in, `retention` and
-//   `messages_expired` out — the disappearing-message window is conversation
-//   state, so it travels on the same socket the messages do.
+// - retention (PRD §3.9): `read_receipt` in, `read_receipt` and
+//   `messages_expired` out — reading a message is what shortens its life, so
+//   the receipt carries the new deadline back to both sides.
 
 import { z } from 'zod'
 
@@ -130,53 +130,54 @@ export type EncEnvelope = z.infer<typeof EncEnvelopeSchema>
 // --- retention (PRD §3.9) ---
 //
 // GoodChat is not a place messages are kept; it is a place they pass through.
-// Every message carries its own clock: `retention_ms` after it was created it
-// is deleted for good — the row in the Durable Object and, when it carried
-// one, the object in the bucket. The window belongs to the conversation, not
-// to the account and not to the sender, and both participants share it.
+// Every message carries its own clock, and reading it is what winds that clock
+// down: three hours after the recipient has read it, the message is deleted for
+// good — the row in the Durable Object and, when it carried one, the object in
+// the bucket. A message nobody reads is not kept forever either; seven days
+// after it was sent it goes the same way.
 //
-// Seven days is both the default and the ceiling. The shorter values exist so
-// a conversation can decide it needs less; nothing can ask for more.
+//   expires_at = min(created_at + UNREAD_TTL_MS, read_at + READ_TTL_MS)
+//
+// Both numbers are fixed for the whole instance. There is no per-conversation
+// window to choose anymore: one rule, stated in one sentence, that holds in
+// every thread. The clock is on the message, not on a copy of it — the row is
+// shared, so both participants watch the same countdown and lose it in the same
+// second.
+//
+// Only the *recipient* reading starts it. Seeing your own message back has
+// never meant anything, and a sender who could start the other side's clock
+// could delete a message before it was read.
 
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
 
-export const RETENTION_OPTIONS_MS = [
-  3 * HOUR_MS,
-  5 * HOUR_MS,
-  12 * HOUR_MS,
-  DAY_MS,
-  3 * DAY_MS,
-  5 * DAY_MS,
-  7 * DAY_MS,
-] as const
+/** How long a message survives being read. */
+export const READ_TTL_MS = 3 * HOUR_MS
 
-export type RetentionMs = (typeof RETENTION_OPTIONS_MS)[number]
+/**
+ * How long a message survives *not* being read. The ceiling on any message's
+ * life, and the number the media cache and the cron backstop are sized against.
+ */
+export const UNREAD_TTL_MS = 7 * DAY_MS
 
-/** The window a conversation has until someone chooses otherwise — and the
-    longest one anybody can choose. */
-export const DEFAULT_RETENTION_MS: RetentionMs = 7 * DAY_MS
-
-export function isRetentionOption(value: unknown): value is RetentionMs {
-  return (
-    typeof value === 'number' && (RETENTION_OPTIONS_MS as readonly number[]).includes(value)
-  )
+/**
+ * When a message sent at `createdAt` and read at `readAt` dies. `readAt` null
+ * means it has not been read: the unread ceiling is the whole of its clock.
+ *
+ * `min`, not "whichever happened last": a message read on day seven has already
+ * spent its ceiling, and the read must not hand it three more hours.
+ */
+export function expiryFor(createdAt: number, readAt: number | null): number {
+  const ceiling = createdAt + UNREAD_TTL_MS
+  return readAt === null ? ceiling : Math.min(ceiling, readAt + READ_TTL_MS)
 }
 
 /**
- * Any stored or received number, coerced to a window that exists. An unknown
- * value (a hand-edited request, a column written by an older build) must never
- * end up meaning "keep forever", so it falls back to the maximum rather than
- * to no limit at all.
+ * How many message ids one `read_receipt` frame may carry. A thread painting a
+ * long scrollback flushes in batches; this bounds what a single frame can make
+ * the Durable Object rewrite in one go.
  */
-export function retentionOr(value: unknown): RetentionMs {
-  return isRetentionOption(value) ? value : DEFAULT_RETENTION_MS
-}
-
-export const RetentionSchema = z
-  .number()
-  .int()
-  .refine(isRetentionOption, { message: 'unsupported retention window' })
+export const MAX_READ_IDS = 200
 
 // Sticker messages carry a pack asset id in `body` (PRD §4.4). The id is used
 // to build asset URLs client-side, so it is locked to a safe slug shape.
@@ -192,6 +193,14 @@ export const WireMessageSchema = z.object({
   media_key: z.string().nullable(),
   created_at: z.number(),
   status: z.enum(MESSAGE_STATUSES),
+  /**
+   * When the recipient read it, and the moment it is deleted — the second one
+   * derived from the first (`expiryFor`). Both travel because the thread paints
+   * a countdown from them, and because a client must never have to guess a
+   * deadline it is about to show somebody.
+   */
+  read_at: z.number().nullable(),
+  expires_at: z.number(),
   /** Absent on a plaintext message — see the note above. */
   enc: EncEnvelopeSchema.nullish(),
 })
@@ -209,9 +218,6 @@ export const ClientEventSchema = z.discriminatedUnion('type', [
     enc: EncEnvelopeSchema.optional(),
   }),
   z.object({ type: z.literal('typing') }),
-  // Either participant may retune the window; the change applies to both and
-  // takes effect on the messages already in the thread.
-  z.object({ type: z.literal('set_retention'), retention_ms: RetentionSchema }),
   // --- handing history to another device of your own account ---
   //
   // A browser somebody just signed into holds a key no message was ever
@@ -242,14 +248,23 @@ export const ClientEventSchema = z.discriminatedUnion('type', [
         message: `at most ${MAX_SHARED_KEYS} messages per frame`,
       }),
   }),
+  // Named ids, not a "everything up to here" watermark.
+  //
+  // A prefix was fine while reading was free. It is not fine now that reading
+  // deletes: scrolling up past a message you had not opened, or landing on the
+  // thread from a notification, would mark — and so condemn — everything below
+  // the newest thing on screen. The client decides message by message what it
+  // actually showed somebody (app/src/lib/readObserver.ts) and names those.
   z.object({
     type: z.literal('read_receipt'),
-    up_to_message_id: z.string().min(1).max(64),
+    ids: z
+      .array(z.string().min(1).max(64))
+      .min(1)
+      .max(MAX_READ_IDS),
   }),
 ])
 export type ClientEvent = z.infer<typeof ClientEventSchema>
 export type SendMessageEvent = Extract<ClientEvent, { type: 'send_message' }>
-export type SetRetentionEvent = Extract<ClientEvent, { type: 'set_retention' }>
 
 // --- server → client ---
 
@@ -263,19 +278,18 @@ export const ServerEventSchema = z.discriminatedUnion('type', [
     status: z.enum(MESSAGE_STATUSES),
   }),
   z.object({ type: z.literal('typing'), user_id: z.string() }),
+  // Somebody read these, and here is when each one now dies.
+  //
+  // Sent to *every* connection, the reader's own other tabs included. The row
+  // is shared, so the deadline is shared: the sender needs it to show the
+  // countdown under its own bubble, and a second browser of the reader's needs
+  // it because it did not witness the read that started the clock.
   z.object({
     type: z.literal('read_receipt'),
-    up_to_message_id: z.string(),
     user_id: z.string(),
-  }),
-  // Sent right after `history` on every connect, and again whenever either
-  // side changes it. `changed_by` is null for the frame that only states the
-  // current window, so the client can tell "this is how it is" from "someone
-  // just changed it".
-  z.object({
-    type: z.literal('retention'),
-    retention_ms: z.number().int(),
-    changed_by: z.string().nullable(),
+    reads: z.array(
+      z.object({ id: z.string(), read_at: z.number().int(), expires_at: z.number().int() }),
+    ),
   }),
   // Another device of this same account has no keys and is asking. Delivered
   // only to this account's *other* connections — never to the peer, who has

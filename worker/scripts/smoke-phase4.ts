@@ -215,12 +215,17 @@ check(
 )
 
 // --- read receipts ---
-wsBob.send({ type: 'read_receipt', up_to_message_id: echo1.id })
+wsBob.send({ type: 'read_receipt', ids: [echo1.id] })
 const read1 = await wsAlice.next(
   'read receipt at alice',
-  (e) => e.type === 'read_receipt' && e.up_to_message_id === echo1.id,
+  (e) => e.type === 'read_receipt' && e.reads.some((r: any) => r.id === echo1.id),
 )
 check('alice receives read_receipt from bob for m1', read1.user_id === bobId, read1)
+check(
+  'and the receipt carries the message its new deadline',
+  read1.reads.find((r: any) => r.id === echo1.id).expires_at < echo1.expires_at,
+  read1.reads,
+)
 
 // --- typing (protocol only; UI in phase 7) ---
 wsAlice.send({ type: 'typing' })

@@ -31,9 +31,8 @@ const ALICE = { username: 'alice', password: 'alice-goodchat' }
 const BOB = { username: 'bob', password: 'bob-goodchat' }
 const OWNER = { username: 'good', password: 'good-goodchat' }
 
-const HOUR_MS = 60 * 60 * 1000
-
-/** Mirrors MEDIA_MAX_AGE_SECONDS in src/lib/media.ts: the shortest window. */
+/** Mirrors MEDIA_MAX_AGE_SECONDS in src/lib/media.ts: the shortest life any
+    message can have, which is READ_TTL_MS. */
 const MEDIA_MAX_AGE = 3 * 60 * 60
 const YEAR_MAX_AGE = 31_536_000
 
@@ -169,7 +168,7 @@ async function untilMirrored(
   let row: any = null
   for (let i = 0; i < attempts; i++) {
     row = d1Query(
-      `SELECT retention_ms, next_expiry_at FROM conversations WHERE id = ${sqlString(conversationId)};`,
+      `SELECT next_expiry_at FROM conversations WHERE id = ${sqlString(conversationId)};`,
     )[0]
     if (row && pred(row)) return row
     await new Promise((r) => setTimeout(r, 400))
@@ -318,21 +317,9 @@ try {
 
   const mirrored = await untilMirrored(conversationId, (row) => row?.next_expiry_at !== null)
   check(
-    'D1 mirrors when the oldest message ages out',
-    mirrored?.next_expiry_at === textMessage.created_at + mirrored?.retention_ms,
-    { mirrored, created_at: textMessage?.created_at },
-  )
-
-  socket.send({ type: 'set_retention', retention_ms: 3 * HOUR_MS })
-  await socket.await((e) => e.type === 'retention' && e.changed_by !== null)
-  const shortened = await untilMirrored(
-    conversationId,
-    (row) => row?.next_expiry_at === textMessage.created_at + 3 * HOUR_MS,
-  )
-  check(
-    'shortening the window moves the deadline with it',
-    shortened?.next_expiry_at === textMessage.created_at + 3 * HOUR_MS,
-    shortened,
+    'D1 mirrors the deadline an unread message carries',
+    mirrored?.next_expiry_at === textMessage.expires_at,
+    { mirrored, expires_at: textMessage?.expires_at },
   )
 
   console.log('\n— a media key the sender made up (F-10)')

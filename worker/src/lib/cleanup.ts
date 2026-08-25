@@ -22,10 +22,14 @@
 //      per-conversation window below: this one is an operator's ceiling on the
 //      bucket, not a product promise. Profile pictures are exempt: they are not
 //      history, and a window that blanked everyone's avatar would be a bug;
-//   7. conversation retention, media half — bucket objects whose conversation
-//      window (migration 0008) has passed. The Durable Object deletes its own
-//      objects the moment a message expires; this catches what a failed DELETE
-//      left behind, and what belongs to a conversation nobody opens anymore;
+//   7. conversation retention, media half — bucket objects older than the
+//      seven-day ceiling any message has (PRD §3.9). The Durable Object deletes
+//      its own objects the moment a message expires, usually far sooner than
+//      that; this catches what a failed DELETE left behind, and what belongs to
+//      a conversation nobody opens anymore. The ceiling rather than the real
+//      deadline because `expires_at` lives inside the DO and D1 mirrors only
+//      the earliest one — a per-object deadline here would need a second mirror
+//      to buy a few hours on a path that is already a backstop;
 //   8. conversation retention, message half — pokes the conversations that
 //      hold at least one expired message so they empty themselves even if their
 //      alarm was lost. `next_expiry_at` (migration 0009, mirrored by the DO) is
@@ -38,6 +42,7 @@ import { mediaConfig } from './media'
 import { deleteMediaObjects } from './mediaGc'
 import { UNCLAIMED_TTL_MS } from './mediaIndex'
 import { LOGIN_TRUST_TTL_MS, TRUSTED_KEY_PREFIX } from './ratelimit'
+import { UNREAD_TTL_MS } from '../protocol'
 
 /** Objects deleted per run, per job. Bounds both CPU time and B2 calls. */
 const MAX_DELETES_PER_RUN = 200
@@ -148,10 +153,10 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
     `SELECT m.key FROM media_objects m
      JOIN conversations c ON c.id = m.conversation_id
      WHERE m.claimed_at IS NOT NULL
-       AND m.created_at <= ?1 - c.retention_ms
+       AND m.created_at <= ?1 - ?3
        AND m.key NOT LIKE 'avatars/%'
      ORDER BY m.created_at LIMIT ?2`,
-    [now, MAX_DELETES_PER_RUN],
+    [now, MAX_DELETES_PER_RUN, UNREAD_TTL_MS],
   )
 
   report.orphan_media_deleted = await sweep(
@@ -186,12 +191,14 @@ export async function runCleanup(env: Env, now = Date.now()): Promise<CleanupRep
  * was lost (the DO logs `expiry schedule failed` and carries on) keeps taking
  * new messages, and a rule based on `last_message_at` would hold its oldest
  * ones alive until the newest one aged out — nearly twice the promised window
- * on a busy thread. `next_expiry_at` is the DO's own mirror of when its oldest
- * surviving message ages out, so `next_expiry_at <= now` means exactly "there
- * is something here to delete".
+ * on a busy thread. `next_expiry_at` is the DO's own mirror of the earliest
+ * `expires_at` it holds, so `next_expiry_at <= now` means exactly "there is
+ * something here to delete".
  *
- * Conversations that predate migration 0009 have no mirror yet: the old
- * whole-history rule still catches them, and the first sweep writes the column.
+ * Conversations that predate migration 0009 have no mirror yet: the ceiling
+ * rule catches them (nothing outlives seven days from its own send, so nothing
+ * outlives seven days from the newest send either), and the first sweep writes
+ * the column.
  *
  * `swept_at` is written after a successful pass so an idle thread costs one
  * round trip, not one per tick.
@@ -203,11 +210,11 @@ async function sweepExpiredConversations(env: Env, now: number): Promise<number>
        AND (swept_at IS NULL OR swept_at < last_message_at OR swept_at < next_expiry_at)
        AND (
          (next_expiry_at IS NOT NULL AND next_expiry_at <= ?1)
-         OR (next_expiry_at IS NULL AND last_message_at <= ?1 - retention_ms)
+         OR (next_expiry_at IS NULL AND last_message_at <= ?1 - ?3)
        )
      ORDER BY COALESCE(next_expiry_at, last_message_at) LIMIT ?2`,
   )
-    .bind(now, MAX_CONVERSATIONS_PER_RUN)
+    .bind(now, MAX_CONVERSATIONS_PER_RUN, UNREAD_TTL_MS)
     .all<{ id: string }>()
 
   let swept = 0

@@ -11,23 +11,25 @@
 // pair in a `participants` table on first connect and rejects anyone else.
 //
 // Retention (PRD §3.9) lives here too, because this is the only place that
-// holds messages. Each message dies `retention_ms` after it was written — the
-// row here and the bucket object it referenced — and the window is one shared
-// setting per conversation, changeable by either participant. Three things
-// keep the clock honest:
+// holds messages. Each row carries its own deadline in `expires_at`: seven days
+// from when it was sent, pulled forward to three hours from when the recipient
+// read it. Reading is therefore a write — the one client signal in this
+// protocol that destroys something — which is why `handleReadReceipt` takes
+// named ids and only ever moves a deadline *earlier*. Three things keep the
+// clock honest:
 //
-//   - an alarm (`expireTick`) armed for the moment the oldest message ages
-//     out, so a conversation nobody has open still empties itself;
+//   - an alarm (`expireTick`) armed for the earliest `expires_at` in the table,
+//     so a conversation nobody has open still empties itself;
 //   - a sweep on every wake (`onStart`) and on every connect, so no request
 //     can ever be answered with a message that should already be gone;
-//   - a sweep the instant the window is shortened, so choosing "3 horas" on a
-//     week-old thread deletes what is already past it right away.
+//   - a sweep on every read, because a read can make a message due within the
+//     same second it was reported.
 //
-// D1 mirrors two numbers, and only those: the window (migration 0008), which
-// the resolve endpoint needs before a socket exists, and the moment the oldest
-// surviving message ages out (migration 0009), which is what lets the cron
-// backstop find a conversation holding *an* expired message rather than only
-// the ones whose entire history has aged out (lib/cleanup.ts).
+// D1 mirrors one number: the moment the next message expires (migration 0009),
+// which is what lets the cron backstop find a conversation holding *an* expired
+// message without waking every conversation in the instance (lib/cleanup.ts).
+// `conversations.retention_ms` (migration 0008) is a tombstone — the window it
+// held is not a thing anyone chooses anymore.
 
 import { Agent, type Connection, type ConnectionContext, type WSMessage } from 'agents'
 import { ensureConversation } from './lib/conversation'
@@ -38,9 +40,9 @@ import { DEFAULT_PUSH_PREVIEW, notifyUser, previewFor, previewPreferenceOf } fro
 import {
   ClientEventSchema,
   MAX_ENVELOPE_RECIPIENTS,
+  READ_TTL_MS,
   STICKER_ID_RE,
-  retentionOr,
-  type RetentionMs,
+  UNREAD_TTL_MS,
   type SendMessageEvent,
   type ServerEvent,
   type WireMessage,
@@ -87,6 +89,9 @@ interface MessageRow {
   media_key: string | null
   created_at: number
   status: WireMessage['status']
+  /** When the recipient read it, and when the row is deleted (PRD §3.9). */
+  read_at: number | null
+  expires_at: number
   /** The encryption envelope, stored verbatim as JSON. Null = plaintext. */
   enc: string | null
 }
@@ -100,10 +105,10 @@ export interface ConversationStats {
   storage_bytes: number
   first_at: number | null
   last_at: number | null
-  /** The conversation's message window (PRD §3.9). */
-  retention_ms: number
-  /** When the oldest surviving message ages out; null when there is none. */
+  /** When the next message expires; null when there is none (PRD §3.9). */
   next_expiry_at: number | null
+  /** How many are still unread, and so still on the seven-day clock. */
+  unread: number
   per_sender: { user_id: string; messages: number; body_bytes: number }[]
   media: { key: string; user_id: string }[]
   participants: string[]
@@ -158,7 +163,9 @@ export class ConversationAgent extends Agent<Env> {
         status     TEXT NOT NULL DEFAULT 'sent',
         edited_at  INTEGER,
         deleted_at INTEGER,
-        enc        TEXT
+        enc        TEXT,
+        read_at    INTEGER,
+        expires_at INTEGER
       )
     `
     // Objects created before end-to-end encryption already have the table, and
@@ -172,6 +179,18 @@ export class ConversationAgent extends Agent<Env> {
     } catch {
       // Already there.
     }
+    // Same idiom for the per-message clock (PRD §3.9, the read-based rule).
+    try {
+      this.sql`ALTER TABLE messages ADD COLUMN read_at INTEGER`
+    } catch {
+      // Already there.
+    }
+    try {
+      this.sql`ALTER TABLE messages ADD COLUMN expires_at INTEGER`
+    } catch {
+      // Already there.
+    }
+    this.backfillExpiry()
     // At-least-once dedup: one row per (sender, client_id).
     this.sql`
       CREATE UNIQUE INDEX IF NOT EXISTS messages_sender_client
@@ -180,9 +199,10 @@ export class ConversationAgent extends Agent<Env> {
     this.sql`
       CREATE TABLE IF NOT EXISTS participants (user_id TEXT PRIMARY KEY)
     `
-    // The expiry sweep is a range scan over this column on every wake.
+    // The expiry sweep is a range scan over this column on every wake, and
+    // `MIN(expires_at)` — the moment the alarm is armed for — is its first row.
     this.sql`
-      CREATE INDEX IF NOT EXISTS messages_created_at ON messages (created_at)
+      CREATE INDEX IF NOT EXISTS messages_expires_at ON messages (expires_at)
     `
     // Conversation-level settings. One row per key so a second setting does
     // not need a migration inside the DO.
@@ -226,7 +246,7 @@ export class ConversationAgent extends Agent<Env> {
       const userId = request.headers.get('x-goodchat-user-id')
       if (!userId) return new Response('unauthorized', { status: 401 })
       const last = this.sql<MessageRow>`
-        SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, enc
+        SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, read_at, expires_at, enc
         FROM messages WHERE deleted_at IS NULL ORDER BY rowid DESC LIMIT 1
       `
       const unread = this.sql<{ n: number }>`
@@ -297,17 +317,18 @@ export class ConversationAgent extends Agent<Env> {
       // Not every runtime build exposes it; payload bytes are the fallback.
       storageBytes = totals[0].bytes
     }
-    const retention = this.retention()
     return {
       messages: totals[0].n,
       body_bytes: totals[0].bytes,
       storage_bytes: storageBytes,
       first_at: totals[0].first_at || null,
       last_at: totals[0].last_at || null,
-      retention_ms: retention,
       // The clock, made visible: what the alarm is armed for, and the only
       // way to see from outside that a conversation really is emptying itself.
-      next_expiry_at: totals[0].first_at ? totals[0].first_at + retention : null,
+      next_expiry_at: this.nextExpiryAt(),
+      /** Unread messages are the only ones still holding their full seven days. */
+      unread: this.sql<{ n: number }>`SELECT COUNT(*) AS n FROM messages WHERE read_at IS NULL`[0]
+        .n,
       per_sender: perSender.map((row) => ({
         user_id: row.sender_id,
         messages: row.n,
@@ -322,9 +343,45 @@ export class ConversationAgent extends Agent<Env> {
 
   // --- retention (PRD §3.9) ---------------------------------------------
 
-  /** The window this conversation runs on. Unset means nobody chose: 7 days. */
-  private retention(): RetentionMs {
-    return retentionOr(numberOrNull(this.setting('retention_ms')))
+  /**
+   * Gives a deadline to every row written before this file had one.
+   *
+   * Two rules, and the first one is the reason this is not a one-line UPDATE.
+   * These messages were written under a *per-conversation* window that could be
+   * as short as three hours, and the new rule is longer than that for anything
+   * unread. Handing them `created_at + 7 days` would extend a promise already
+   * made — so the old window is read one last time and used as a ceiling.
+   *
+   * The second: a message already marked read has no `read_at` to count from,
+   * because the column did not exist when it was read. It gets `now`, which
+   * grants a full three hours from this wake. That is a grace rather than an
+   * accident — the alternative is a deploy that empties every open thread on
+   * its first connect.
+   *
+   * Idempotent, and self-limiting: `expires_at` is NOT NULL on everything
+   * written from here on, so after the first wake this matches no rows.
+   */
+  private backfillExpiry(): void {
+    const pending = this.sql<{ n: number }>`
+      SELECT COUNT(*) AS n FROM messages WHERE expires_at IS NULL
+    `
+    if (pending[0].n === 0) return
+
+    const legacy = numberOrNull(this.setting('retention_ms'))
+    const ceiling = Math.min(legacy ?? UNREAD_TTL_MS, UNREAD_TTL_MS)
+    const now = Date.now()
+    this.sql`
+      UPDATE messages
+      SET read_at = CASE WHEN status = 'read' THEN ${now} ELSE NULL END,
+          expires_at = CASE
+            WHEN status = 'read' THEN MIN(created_at + ${ceiling}, ${now + READ_TTL_MS})
+            ELSE created_at + ${ceiling}
+          END
+      WHERE expires_at IS NULL
+    `
+    // The window is not a setting anymore. Its mirror flag goes with it, so a
+    // build rolled back and forward again does not read a stale one.
+    this.sql`DELETE FROM settings WHERE key IN ('retention_ms', 'retention_mirrored')`
   }
 
   private setting(key: string): string | null {
@@ -348,7 +405,7 @@ export class ConversationAgent extends Agent<Env> {
   }
 
   /**
-   * Deletes every message older than the window and tells both participants
+   * Deletes every message whose deadline has passed and tells both participants
    * which ids went, so an open thread drops them without a reload.
    *
    * The bucket objects go too, in the background: a failed DELETE leaves the
@@ -356,13 +413,12 @@ export class ConversationAgent extends Agent<Env> {
    * (lib/cleanup.ts) — dropping the row first would leak the object forever.
    */
   private async sweepExpired(now = Date.now()): Promise<string[]> {
-    const cutoff = now - this.retention()
     const expired = this.sql<{ id: string; media_key: string | null }>`
-      SELECT id, media_key FROM messages WHERE created_at <= ${cutoff}
+      SELECT id, media_key FROM messages WHERE expires_at <= ${now}
     `
     if (expired.length === 0) return []
 
-    this.sql`DELETE FROM messages WHERE created_at <= ${cutoff}`
+    this.sql`DELETE FROM messages WHERE expires_at <= ${now}`
     const ids = expired.map((row) => row.id)
     for (const conn of this.getConnections<ConnState>()) {
       this.send(conn, { type: 'messages_expired', ids })
@@ -389,30 +445,45 @@ export class ConversationAgent extends Agent<Env> {
   }
 
   /**
-   * Arms one alarm for the moment the oldest surviving message ages out. One
-   * schedule at a time — its id is kept in `settings` because the SDK has no
-   * "find my schedule by callback", and a stale one left behind would fire a
-   * second sweep for nothing.
+   * Arms one alarm for the moment the next message is due. One schedule at a
+   * time — its id is kept in `settings` because the SDK has no "find my
+   * schedule by callback", and a stale one left behind would fire a second
+   * sweep for nothing.
+   *
+   * Returns early when the alarm already points at exactly this moment, and
+   * that guard is why it can now be called on every read. Under the old
+   * whole-conversation window this ran on a handful of events; under a
+   * per-message clock every read is a candidate to move the deadline, and a
+   * cancel-plus-create per read receipt would be a schedule rewrite per glance.
+   * `expiry_schedule_at` is what makes "already correct" answerable without
+   * asking the SDK.
    *
    * Nothing left to expire means nothing scheduled: an empty conversation must
    * cost zero wake-ups.
    */
   private async armExpiryAlarm(): Promise<void> {
+    const dueAt = this.nextExpiryAt()
+    // D1 mirror of the same moment (migration 0009). It is what lets the cron
+    // backstop find a conversation with *an* expired message instead of only
+    // the ones whose whole history has aged out (lib/cleanup.ts). Attempted
+    // whenever it is not known to have landed — the row is created lazily by
+    // the first message, so the first tries can legitimately write nothing.
+    if (this.setting('next_expiry_mirrored') !== String(dueAt)) {
+      this.ctx.waitUntil(this.mirrorNextExpiry(dueAt))
+    }
+
     const previous = this.setting('expiry_schedule_id')
+    if (previous !== null && numberOrNull(this.setting('expiry_schedule_at')) === dueAt) {
+      return
+    }
     if (previous) {
       try {
         await this.cancelSchedule(previous)
       } catch (error) {
         console.error('cancelSchedule failed', this.name, error)
       }
-      this.sql`DELETE FROM settings WHERE key = 'expiry_schedule_id'`
+      this.sql`DELETE FROM settings WHERE key IN ('expiry_schedule_id', 'expiry_schedule_at')`
     }
-
-    const dueAt = this.nextExpiryAt()
-    // D1 mirror of the same moment (migration 0009). It is what lets the cron
-    // backstop find a conversation with *an* expired message instead of only
-    // the ones whose whole history has aged out (lib/cleanup.ts).
-    this.ctx.waitUntil(this.mirrorNextExpiry(dueAt))
     if (dueAt === null) return
 
     // A second of floor: a due-in-the-past message (the sweep above could not
@@ -421,6 +492,7 @@ export class ConversationAgent extends Agent<Env> {
     try {
       const schedule = await this.schedule(when, 'expireTick')
       this.writeSetting('expiry_schedule_id', schedule.id)
+      this.writeSetting('expiry_schedule_at', String(dueAt))
     } catch (error) {
       // The wake-time sweep and the cleanup backstop still catch this
       // conversation; only the precision of the deletion is lost.
@@ -428,32 +500,10 @@ export class ConversationAgent extends Agent<Env> {
     }
   }
 
-  /**
-   * Either participant retunes the window. Both are told at once, and a
-   * *shorter* window is applied to the history immediately — the point of
-   * choosing "3 horas" on a week-old thread is that the week-old part goes.
-   */
-  private async handleSetRetention(userId: string, retentionMs: RetentionMs): Promise<void> {
-    const previous = this.retention()
-    this.writeSetting('retention_ms', String(retentionMs))
-    // Re-mirror even when the value is unchanged: this is also the moment a
-    // D1 row that did not exist at the last attempt may have appeared.
-    this.sql`DELETE FROM settings WHERE key = 'retention_mirrored'`
-
-    for (const conn of this.getConnections<ConnState>()) {
-      this.send(conn, { type: 'retention', retention_ms: retentionMs, changed_by: userId })
-    }
-
-    if (retentionMs < previous) await this.sweepExpired()
-    await this.armExpiryAlarm()
-    this.ctx.waitUntil(this.mirrorRetention(retentionMs))
-  }
-
-  /** When the oldest surviving message ages out; null when there is none. */
+  /** When the next message expires; null when there is none. */
   private nextExpiryAt(): number | null {
-    const oldest = this.sql<{ at: number | null }>`SELECT MIN(created_at) AS at FROM messages`
-    const at = oldest.length > 0 ? oldest[0].at : null
-    return at === null ? null : at + this.retention()
+    const next = this.sql<{ at: number | null }>`SELECT MIN(expires_at) AS at FROM messages`
+    return next.length > 0 ? next[0].at : null
   }
 
   /**
@@ -461,11 +511,10 @@ export class ConversationAgent extends Agent<Env> {
    * expire", which is what stops the backstop from waking an empty conversation
    * forever.
    *
-   * Same lazy-row problem as the retention mirror, and the same answer: the
-   * conversation row is created by the first message, and the alarm is armed in
-   * the same breath — so the first write can legitimately update nothing. The
-   * flag records what actually landed, which is what makes the retry in
-   * handleSend stop at the right time.
+   * The conversation row is created lazily by the first message and the alarm
+   * is armed in the same breath, so the first write can legitimately update
+   * nothing. The flag records what actually landed, which is what makes the
+   * retry in `armExpiryAlarm` stop at the right time.
    */
   private async mirrorNextExpiry(at: number | null): Promise<void> {
     try {
@@ -479,28 +528,6 @@ export class ConversationAgent extends Agent<Env> {
       }
     } catch (error) {
       console.error('next expiry mirror failed', this.name, error)
-    }
-  }
-
-  /**
-   * Copies the window into D1 (migration 0008), where the resolve endpoint and
-   * the cleanup sweep can see it. The row is created lazily by the first
-   * message, so this can legitimately update nothing — the flag is only set
-   * once a row actually took the value, which is what makes the retry in
-   * handleSend stop at the right time.
-   */
-  private async mirrorRetention(retentionMs: number): Promise<void> {
-    try {
-      const result = await this.env.DB.prepare(
-        'UPDATE conversations SET retention_ms = ?1 WHERE id = ?2',
-      )
-        .bind(retentionMs, this.name)
-        .run()
-      if ((result.meta.changes ?? 0) > 0) {
-        this.writeSetting('retention_mirrored', String(retentionMs))
-      }
-    } catch (error) {
-      console.error('retention mirror failed', this.name, error)
     }
   }
 
@@ -605,18 +632,10 @@ export class ConversationAgent extends Agent<Env> {
       startRowid = undelivered[0].rowid
     }
     const rows = this.sql<MessageRow>`
-      SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, enc
+      SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, read_at, expires_at, enc
       FROM messages WHERE rowid >= ${startRowid} ORDER BY rowid ASC
     `
     this.send(conn, { type: 'history', messages: rows.map(toWire) })
-
-    // Straight after the history, so the thread can label the window it just
-    // painted. `changed_by: null` — this frame reports, it does not announce.
-    this.send(conn, {
-      type: 'retention',
-      retention_ms: this.retention(),
-      changed_by: null,
-    })
 
     // The same rule `onMessage` applies below, read from the same expression,
     // so what the thread promises and what this object does cannot drift.
@@ -687,10 +706,7 @@ export class ConversationAgent extends Agent<Env> {
         this.sendToOthers(userId, { type: 'typing', user_id: userId })
         return
       case 'read_receipt':
-        this.handleReadReceipt(conn, userId, event.data.up_to_message_id)
-        return
-      case 'set_retention':
-        await this.handleSetRetention(userId, event.data.retention_ms)
+        await this.handleReadReceipt(userId, event.data.ids)
         return
       case 'request_keys':
         await this.handleRequestKeys(conn, userId, event.data.device_id)
@@ -772,7 +788,7 @@ export class ConversationAgent extends Agent<Env> {
     // than to the target alone: the browser that did the sharing is looking at
     // the same thread, and a `history` frame is idempotent for it.
     const rows = this.sql<MessageRow>`
-      SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, enc
+      SELECT rowid, id, client_id, sender_id, type, body, media_key, created_at, status, read_at, expires_at, enc
       FROM messages ORDER BY rowid ASC LIMIT ${HISTORY_LIMIT}
     `
     for (const other of this.getConnections<ConnState>()) {
@@ -920,11 +936,17 @@ export class ConversationAgent extends Agent<Env> {
     )
     const status: WireMessage['status'] = peerOnline ? 'delivered' : 'sent'
 
+    // Unread from the moment it lands, so it starts on the seven-day ceiling.
+    // Being delivered is not being read: a peer with a socket open in another
+    // tab has been handed the bytes, not shown them to anybody.
+    const expiresAt = now + UNREAD_TTL_MS
+
     const enc = event.enc ? JSON.stringify(event.enc) : null
     this.sql`
-      INSERT INTO messages (id, client_id, sender_id, type, body, media_key, created_at, status, enc)
+      INSERT INTO messages (id, client_id, sender_id, type, body, media_key, created_at, status,
+                            read_at, expires_at, enc)
       VALUES (${id}, ${event.client_id}, ${userId}, ${event.msg_type}, ${event.body},
-              ${event.media_key ?? null}, ${now}, ${status}, ${enc})
+              ${event.media_key ?? null}, ${now}, ${status}, NULL, ${expiresAt}, ${enc})
     `
 
     // Everyone gets the full frame; the sender reconciles by client_id
@@ -940,31 +962,24 @@ export class ConversationAgent extends Agent<Env> {
       media_key: event.media_key ?? null,
       created_at: now,
       status,
+      read_at: null,
+      expires_at: expiresAt,
       enc: event.enc ?? null,
     }
     for (const c of this.getConnections<ConnState>()) this.send(c, frame)
 
-    // The message that starts a conversation is the one that arms its clock.
-    // Only then: re-arming per message would cancel and rewrite a schedule that
-    // is already pointing at the right message (the oldest one, which a new
-    // message never is).
-    if (this.setting('expiry_schedule_id') === null) {
-      this.ctx.waitUntil(this.armExpiryAlarm())
-    }
+    // Arms the clock on the first message of a conversation, and does nothing
+    // on every message after it: this one is the furthest from due, so the
+    // earliest deadline has not moved and `armExpiryAlarm` returns early.
+    this.ctx.waitUntil(this.armExpiryAlarm())
 
     // Lazy conversation row + last_message_at bump in D1 (phase-3 helper).
     // After the broadcast: D1 latency must not sit in the delivery path.
     try {
       await ensureConversation(this.env.DB, userId, peerId, now)
-      // The window may have been chosen before this conversation had a row to
-      // write it to. The flag stops this from being a write per message.
-      const retention = this.retention()
-      if (this.setting('retention_mirrored') !== String(retention)) {
-        this.ctx.waitUntil(this.mirrorRetention(retention))
-      }
-      // Same for the deadline the cleanup backstop scans by: the alarm was
-      // armed before this row existed. The oldest message does not move, so
-      // after it lands once this comparison is false on every later send.
+      // The deadline the cleanup backstop scans by: the alarm above was armed
+      // before this row existed, so its mirror wrote nothing. Retried here, and
+      // the flag is what stops it from being a D1 write per message.
       const dueAt = this.nextExpiryAt()
       if (this.setting('next_expiry_mirrored') !== String(dueAt)) {
         this.ctx.waitUntil(this.mirrorNextExpiry(dueAt))
@@ -1042,28 +1057,67 @@ export class ConversationAgent extends Agent<Env> {
     }
   }
 
-  private handleReadReceipt(
-    conn: Connection<ConnState>,
-    userId: string,
-    upToMessageId: string,
-  ): void {
-    const target = this.sql<{ rowid: number }>`
-      SELECT rowid FROM messages WHERE id = ${upToMessageId}
-    `
-    if (target.length === 0) {
-      this.send(conn, { type: 'error', error: 'unknown_message' })
-      return
+  /**
+   * The reader reports what it actually showed somebody, and each named message
+   * has its deadline pulled in to three hours from now (PRD §3.9).
+   *
+   * The one frame in this protocol that destroys data, so it is the one that
+   * refuses the most. Only messages addressed to the reader count — a sender
+   * that could report its own message read could delete it out of the other
+   * side's thread. Only messages not already read count, so a second report of
+   * the same id cannot restart a clock that is already running. And the new
+   * deadline is a `min`, never an assignment: a message with two hours left
+   * does not get three back because a second device rendered it.
+   *
+   * Unknown ids are ignored rather than refused. By the time a receipt arrives
+   * the message it names may have expired, and that is an ordinary race, not a
+   * client bug worth an error frame.
+   */
+  private async handleReadReceipt(userId: string, ids: string[]): Promise<void> {
+    const now = Date.now()
+    const wanted = new Set(ids)
+    // One scan, filtered in memory: `IN (...)` needs a dynamic placeholder list
+    // and this table holds at most a few days of one conversation.
+    const targets = this.sql<{ id: string; client_id: string; expires_at: number }>`
+      SELECT id, client_id, expires_at FROM messages
+      WHERE sender_id != ${userId} AND read_at IS NULL
+    `.filter((row) => wanted.has(row.id))
+    if (targets.length === 0) return
+
+    const reads = targets.map((row) => ({
+      id: row.id,
+      read_at: now,
+      expires_at: Math.min(row.expires_at, now + READ_TTL_MS),
+    }))
+    for (const read of reads) {
+      this.sql`
+        UPDATE messages SET status = 'read', read_at = ${now}, expires_at = ${read.expires_at}
+        WHERE id = ${read.id}
+      `
     }
-    // Only messages addressed to the reader can be marked read by them.
-    this.sql`
-      UPDATE messages SET status = 'read'
-      WHERE sender_id != ${userId} AND rowid <= ${target[0].rowid} AND status != 'read'
-    `
-    this.sendToOthers(userId, {
-      type: 'read_receipt',
-      up_to_message_id: upToMessageId,
-      user_id: userId,
-    })
+
+    // Everyone, the reader's own other tabs included: the row is shared, so the
+    // countdown is shared, and a second browser of the reader's did not witness
+    // the read that started it.
+    for (const conn of this.getConnections<ConnState>()) {
+      this.send(conn, { type: 'read_receipt', user_id: userId, reads })
+    }
+    // The sender's tick still moves through `message_status`, which is what it
+    // has always listened to for a message it sent in an earlier session.
+    for (const row of targets) {
+      this.sendToOthers(userId, {
+        type: 'message_status',
+        id: row.id,
+        client_id: row.client_id,
+        status: 'read',
+      })
+    }
+
+    // A read can make a message due inside the same second — three hours is the
+    // grant, not the floor, and a message with minutes left keeps them. Sweep
+    // before arming so the alarm is set from what survived.
+    await this.sweepExpired(now)
+    await this.armExpiryAlarm()
   }
 
   override async onClose(conn: Connection<ConnState>): Promise<void> {
@@ -1156,6 +1210,8 @@ function toWire(row: MessageRow): WireMessage {
     media_key: row.media_key,
     created_at: row.created_at,
     status: row.status,
+    read_at: row.read_at,
+    expires_at: row.expires_at,
     // Stored as the JSON text the sender supplied and handed back untouched:
     // this object has no key material and nothing to say about it. A row that
     // fails to parse is reported as plaintext, which renders as unreadable

@@ -1,19 +1,21 @@
-// Phase 13 smoke test — the disappearing-message window (PRD §3.9), against a
+// Phase 13 smoke test — the disappearing-message clock (PRD §3.9), against a
 // live dev server:
 //   npm run db:migrate && npm run db:seed && npm run dev   (terminal 1)
 //   npm run smoke:phase13                                  (terminal 2)
 //
-// Covers: the default window on resolve and on connect, either participant
-// changing it and both being told, the change landing in D1's mirror, the
-// refusal of a window that is not on the menu, the deadline the owner console
-// reports (first message + window, which is what the alarm is armed for), and
-// the cleanup report carrying the two retention counters.
+// Covers the rule that replaced the per-conversation window: a message lands
+// with seven days to live, and the recipient reading it pulls that deadline in
+// to three hours. Asserted here: the deadline a new message carries, the
+// receipt naming ids and moving it, both sides being told the same new moment,
+// the sender's tick following, the D1 mirror the cron backstop scans, and the
+// three refusals that make reading safe to be destructive — a sender cannot
+// report its own message read, a second report cannot restart a clock, and an
+// unknown id is ignored rather than answered with an error.
 //
-// What it deliberately does not cover: a message actually aging out. The
-// shortest window the product offers is three hours and nothing here can move
-// the clock — the DO stamps `created_at` itself. What is asserted instead is
-// every input to that deletion: the window in force, the deadline computed
-// from it, and the fact that shortening it re-computes the deadline at once.
+// What it deliberately does not cover: a message actually being deleted. The
+// shortest life the product offers is three hours and nothing here can move the
+// clock — the DO stamps `created_at` and `read_at` itself. What is asserted
+// instead is every input to that deletion.
 
 import WebSocket from 'ws'
 
@@ -23,8 +25,12 @@ const WS_API = API.replace(/^http/, 'ws')
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
 
-/** Mirrors RETENTION_OPTIONS_MS in src/protocol.ts. */
-const MENU = [3 * HOUR_MS, 5 * HOUR_MS, 12 * HOUR_MS, DAY_MS, 3 * DAY_MS, 5 * DAY_MS, 7 * DAY_MS]
+/** Mirrors READ_TTL_MS and UNREAD_TTL_MS in src/protocol.ts. */
+const READ_TTL_MS = 3 * HOUR_MS
+const UNREAD_TTL_MS = 7 * DAY_MS
+
+/** Clock skew and round-trip slack for a deadline the server stamped. */
+const SLACK_MS = 60_000
 
 let failures = 0
 
@@ -149,107 +155,118 @@ const resolved = await api('/api/conversations/resolve', {
 })
 const conversationId: string = resolved.body.conversation_id
 
-// Every conversation has a window, even one with no row yet. Reruns inherit
-// whatever the last run chose, so the value is only checked against the menu
-// here; the default is asserted below, on a conversation put back to it.
-check(
-  'resolve reports a window, and it is one of the offered ones',
-  MENU.includes(resolved.body.retention_ms),
-  resolved.body.retention_ms,
-)
-
 const wsAlice = await Client.connect(`/api/ws/${conversationId}?with=${bobId}`, alice)
 const wsBob = await Client.connect(`/api/ws/${conversationId}?with=${aliceId}`, bob)
 
-// --- the window is stated on connect --------------------------------------
-const stated = await wsAlice.next('retention frame on connect', (e) => e.type === 'retention')
 check(
-  'connect states the window, without claiming anyone just changed it',
-  stated.retention_ms === resolved.body.retention_ms && stated.changed_by === null,
-  stated,
+  'resolve no longer reports a window — there is one rule, not a per-thread choice',
+  resolved.body.retention_ms === undefined,
+  resolved.body,
 )
 
-// Back to the default, so the rest of the run starts from a known window and
-// so the maximum is exercised as a choice too.
-wsAlice.send({ type: 'set_retention', retention_ms: 7 * DAY_MS })
-const reset = await wsAlice.nextNew(
-  'window back to the default',
-  (e) => e.type === 'retention' && e.changed_by !== null && e.retention_ms === 7 * DAY_MS,
-)
-check('7 days is a window like any other, and can be chosen back', reset.retention_ms === 7 * DAY_MS, reset)
-
-// --- a message, so the conversation has a clock to run --------------------
-const clientId = `retention-${Date.now()}`
+// --- a message lands on the unread ceiling --------------------------------
+const clientId = `expiry-${Date.now()}`
 wsAlice.send({ type: 'send_message', client_id: clientId, msg_type: 'text', body: 'oi' })
 const echo = await wsAlice.next('message echo', (e) => e.type === 'message' && e.client_id === clientId)
 const sentAt: number = echo.created_at
-
-// --- either side changes it, both hear about it ---------------------------
-wsBob.send({ type: 'set_retention', retention_ms: 3 * HOUR_MS })
-const onBob = await wsBob.nextNew(
-  'retention echo',
-  (e) => e.type === 'retention' && e.changed_by !== null,
-)
-const onAlice = await wsAlice.nextNew(
-  'retention broadcast',
-  (e) => e.type === 'retention' && e.changed_by !== null,
-)
-check('the side that changed it is told', onBob.retention_ms === 3 * HOUR_MS, onBob)
 check(
-  'the other side is told too, and by whom',
-  onAlice.retention_ms === 3 * HOUR_MS && onAlice.changed_by === bobId,
-  onAlice,
+  'a new message is unread and carries seven days',
+  echo.read_at === null && echo.expires_at === sentAt + UNREAD_TTL_MS,
+  { read_at: echo.read_at, expires_at: echo.expires_at, expected: sentAt + UNREAD_TTL_MS },
+)
+// Being handed the bytes is not being shown to anybody: Bob's socket is open,
+// so this message is already 'delivered', and its clock has not started.
+const onBob = await wsBob.next('peer copy', (e) => e.type === 'message' && e.client_id === clientId)
+check(
+  'delivered is not read: an open socket does not start the clock',
+  onBob.status === 'delivered' && onBob.read_at === null,
+  { status: onBob.status, read_at: onBob.read_at },
 )
 
-// --- and a window that is not on the menu is refused ----------------------
-wsAlice.send({ type: 'set_retention', retention_ms: 60_000 })
-const refused = await wsAlice.next('refusal', (e) => e.type === 'error')
-check('a window outside the menu is refused', refused.error === 'invalid_message', refused)
-
-const stillThere = await api('/api/conversations/resolve', {
-  method: 'POST',
-  cookie: alice,
-  body: JSON.stringify({ user_id: bobId }),
-})
+const beforeRead = await api('/api/admin/conversations', { cookie: owner })
+const beforeRow = beforeRead.body.conversations.find((c: any) => c.id === conversationId)
 check(
-  'the refusal changed nothing: D1 still mirrors the chosen window',
-  stillThere.body.retention_ms === 3 * HOUR_MS,
-  stillThere.body.retention_ms,
+  'D1 mirrors the earliest deadline the DO holds',
+  beforeRow !== undefined && beforeRow.next_expiry_at !== null && beforeRow.next_expiry_at <= echo.expires_at,
+  { mirrored: beforeRow?.next_expiry_at, message: echo.expires_at },
 )
 
-// --- the deadline the alarm is armed for ----------------------------------
-const consoleView = await api('/api/admin/conversations', { cookie: owner })
-const row = consoleView.body.conversations.find((c: any) => c.id === conversationId)
+// --- the sender cannot condemn its own message ----------------------------
+wsAlice.send({ type: 'read_receipt', ids: [echo.id] })
+wsBob.send({ type: 'typing' })
+await wsBob.nextNew('a round trip to let any wrong receipt land', (e) => e.type === 'typing')
+const selfRead = wsAlice.received.filter((e) => e.type === 'read_receipt')
 check(
-  'the owner console reports the window',
-  row !== undefined && row.retention_ms === 3 * HOUR_MS,
-  row,
+  'a sender reporting its own message read changes nothing',
+  selfRead.length === 0,
+  selfRead,
 )
-// The oldest surviving message plus the window. Which message that is depends
-// on what else has run against this pair (the phase-4 suite writes here too),
-// so what is asserted is the range the 3h sweep guarantees: everything older
-// is already deleted, so the deadline is at most 3h out and still ahead of now.
-check(
-  'and the deadline, which is the oldest surviving message plus the window',
-  row !== undefined &&
-    row.next_expiry_at > sentAt &&
-    row.next_expiry_at <= sentAt + 3 * HOUR_MS,
-  { next_expiry_at: row?.next_expiry_at, sent_at: sentAt, window: 3 * HOUR_MS },
-)
-const deadlineAt3h: number = row?.next_expiry_at
 
-// --- a longer window moves the same deadline ------------------------------
-wsAlice.send({ type: 'set_retention', retention_ms: DAY_MS })
-await wsBob.nextNew(
-  'retention widened',
-  (e) => e.type === 'retention' && e.changed_by !== null && e.retention_ms === DAY_MS,
-)
-const widened = await api('/api/admin/conversations', { cookie: owner })
-const widenedRow = widened.body.conversations.find((c: any) => c.id === conversationId)
+// --- an unknown id is ignored, not refused --------------------------------
+wsBob.send({ type: 'read_receipt', ids: ['00000000-0000-0000-0000-000000000000'] })
+wsBob.send({ type: 'typing' })
+await wsAlice.nextNew('a round trip after the unknown id', (e) => e.type === 'typing')
 check(
-  'widening the window pushes the deadline out by exactly the difference',
-  widenedRow !== undefined && widenedRow.next_expiry_at - deadlineAt3h === DAY_MS - 3 * HOUR_MS,
-  { before: deadlineAt3h, after: widenedRow?.next_expiry_at, difference: DAY_MS - 3 * HOUR_MS },
+  'an id that no longer exists is ignored rather than answered with an error',
+  wsBob.received.filter((e) => e.type === 'error').length === 0,
+  wsBob.received.filter((e) => e.type === 'error'),
+)
+
+// --- the read that starts the clock ---------------------------------------
+const readSentAt = Date.now()
+wsBob.send({ type: 'read_receipt', ids: [echo.id] })
+const receipt = await wsAlice.nextNew(
+  'read receipt on the sender',
+  (e) => e.type === 'read_receipt' && e.reads.some((r: any) => r.id === echo.id),
+)
+const read = receipt.reads.find((r: any) => r.id === echo.id)
+check('the receipt names who read it', receipt.user_id === bobId, receipt.user_id)
+check(
+  'reading pulls the deadline in to three hours from now',
+  Math.abs(read.expires_at - (readSentAt + READ_TTL_MS)) < SLACK_MS,
+  { expires_at: read.expires_at, expected: readSentAt + READ_TTL_MS },
+)
+check(
+  'and that is very much earlier than the seven days it had',
+  read.expires_at < echo.expires_at,
+  { after: read.expires_at, before: echo.expires_at },
+)
+// The reader's own connection is told too — its other tabs did not witness it.
+const onReader = await wsBob.nextNew(
+  'the reader hears its own receipt',
+  (e) => e.type === 'read_receipt' && e.reads.some((r: any) => r.id === echo.id),
+)
+check(
+  'the reader is told the same deadline the sender was',
+  onReader.reads.find((r: any) => r.id === echo.id).expires_at === read.expires_at,
+  onReader.reads,
+)
+const tick = await wsAlice.nextNew(
+  'the sender tick still moves',
+  (e) => e.type === 'message_status' && e.id === echo.id,
+)
+check('the sender is told its message was read', tick.status === 'read', tick)
+
+// --- a second report cannot restart a clock -------------------------------
+wsBob.send({ type: 'read_receipt', ids: [echo.id] })
+wsBob.send({ type: 'typing' })
+await wsAlice.nextNew('a round trip after the repeat', (e) => e.type === 'typing')
+const receipts = wsAlice.received.filter(
+  (e) => e.type === 'read_receipt' && e.reads.some((r: any) => r.id === echo.id),
+)
+check(
+  'reporting the same message read twice does not grant it three more hours',
+  receipts.length === 1,
+  receipts.map((r) => r.reads),
+)
+
+// --- the mirror the cron backstop scans -----------------------------------
+const afterRead = await api('/api/admin/conversations', { cookie: owner })
+const afterRow = afterRead.body.conversations.find((c: any) => c.id === conversationId)
+check(
+  'the read moved the deadline D1 mirrors, not just the one in the DO',
+  afterRow !== undefined && afterRow.next_expiry_at <= read.expires_at,
+  { before: beforeRow?.next_expiry_at, after: afterRow?.next_expiry_at, read: read.expires_at },
 )
 
 // --- the scheduled backstop -----------------------------------------------

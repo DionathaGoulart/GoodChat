@@ -10,7 +10,7 @@
 // so proxying costs Worker requests but no bandwidth.
 
 import { AwsClient } from 'aws4fetch'
-import { RETENTION_OPTIONS_MS } from '../protocol'
+import { READ_TTL_MS } from '../protocol'
 
 export const MEDIA_TYPES: Record<string, { kind: 'image' | 'video'; ext: string }> = {
   'image/jpeg': { kind: 'image', ext: 'jpg' },
@@ -59,14 +59,19 @@ export const DOWNLOAD_MAX_AGE_SECONDS = 31_536_000
 /**
  * ...except a message attachment, which is not immutable, it is *temporary*:
  * retention deletes it, and a cached copy that outlives the message is the
- * promise broken (PRD §3.9). The ceiling is the shortest window a conversation
- * can choose, so no cached copy can survive its own message — eviction on
- * delete (lib/mediaGc.ts) is then an optimisation rather than the only defence.
+ * promise broken (PRD §3.9). The ceiling is the shortest life any message can
+ * have, so no cached copy can survive its own message — eviction on delete
+ * (lib/mediaGc.ts) is then an optimisation rather than the only defence.
+ *
+ * That shortest life is `READ_TTL_MS`, and it stayed the same number when the
+ * window became a read-based clock: a message cannot be read before it is sent,
+ * so `read_at + 3h` is never earlier than `created_at + 3h`. Three hours is the
+ * floor on the whole rule, not merely on one of its branches.
  *
  * Stickers and profile pictures keep the year: neither is history, and both are
  * evicted explicitly when they change or go away.
  */
-export const MEDIA_MAX_AGE_SECONDS = Math.floor(Math.min(...RETENTION_OPTIONS_MS) / 1000)
+export const MEDIA_MAX_AGE_SECONDS = Math.floor(READ_TTL_MS / 1000)
 
 /** Path prefix the Worker serves objects from, and the only keys it accepts. */
 export const MEDIA_PATH_PREFIX = '/api/media/'
