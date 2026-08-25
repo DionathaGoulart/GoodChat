@@ -156,7 +156,14 @@ export function ThreadScreen({ userId }: { userId: string }) {
           exists: result.exists,
         }
         setResolved(next)
-        if (myId) writeCachedThread(myId, userId, next)
+        // Merged onto what is already stored, not written over it. The record
+        // has two other fields with a different owner — the peer's last-seen
+        // key fingerprint and the one somebody said they compared — and this
+        // write used to drop both on every open. That is not a stale cache, it
+        // is the two things they exist for: "conferido" never survived leaving
+        // the thread, and the key-changed banner had nothing left to compare
+        // against, so it never fired for anybody.
+        if (myId) writeCachedThread(myId, userId, { ...readCachedThread(myId, userId), ...next })
       })
       .catch((err: unknown) => {
         if (cancelled) return
