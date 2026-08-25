@@ -45,13 +45,23 @@ Isso só se sustenta se a senha **nunca chegar ao servidor de forma utilizável*
    teto do Bitwarden e do Proton. Não invalida o desenho; está aqui para não ser
    descoberto depois como se fosse surpresa.
 
-### Dependência não resolvida
+### A premissa que sustenta a fase 2, e já foi medida
 
-`plan-e2ee-verification.md` fase 1 continua em aberto: **uma `CryptoKey`
-não-extraível sobrevive ao structured clone do IndexedDB?** Era importante; agora
-é bloqueante. `accountKeys.ts` (fase 2) usa exatamente essa técnica, e se a
-resposta for não, a chave de conta não pode ficar não-extraível e o desenho muda.
-**Responder antes de começar a fase 2.**
+`accountKeys.ts` guarda a chave da conta como `CryptoKey` não-extraível no
+IndexedDB — a mesma técnica do `deviceKeys.ts` de hoje. Isso depende de o
+structured clone preservar a não-extratibilidade, o que nenhum teste em Node
+responde.
+
+**Já foi respondido: sim.** `plan-e2ee-verification.md` fase 17, executada em
+2026-08-20 (Chrome 151, macOS): a chave lida de volta é `CryptoKey`,
+`extractable: false`, `type: 'private'`, `algorithm.name: 'ECDH'`; `exportKey`
+rejeita nos três formatos; e o `deriveBits` com a chave **lida do IndexedDB**
+bate com o derivado no sentido inverso — ou seja, a chave guardada é a que o
+diretório anuncia.
+
+Nada a fazer aqui. Está registrado porque é a premissa de que a fase 2 depende, e
+porque quem retomar isto com contexto limpo vai querer saber que ela foi medida e
+não presumida.
 
 ---
 
@@ -346,8 +356,13 @@ docs(e2ee): the account is the unit of read access now
    determinístico é obrigatório, não opcional.
 4. **Perde-se o escopo de comprometimento.** Aparelho roubado passa a vazar a
    conta, não só o que aquele aparelho endereçava.
-5. **A dependência do IndexedDB** (`plan-e2ee-verification.md` fase 1) bloqueia
-   a fase 2 e ninguém respondeu ainda.
+5. **`plan-e2ee-verification.md` fase 18 fica desatualizada.** Ela é a
+   verificação manual em navegador do caminho criptográfico, ainda pendente, e
+   três dos doze passos deixam de fazer sentido depois da fase 3 deste plano: o
+   passo 8 (segundo aparelho vendo `[mensagem de antes deste dispositivo]`) vira
+   o oposto do esperado, o 10 (aviso de troca de chave por dispositivo) perde o
+   gatilho, e o 9 (safety number) passa a ser estável em vez de por conjunto de
+   aparelhos. Reescrever junto com a fase 5 daqui.
 
 ## Fora de escopo
 
