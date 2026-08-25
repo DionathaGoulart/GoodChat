@@ -275,6 +275,13 @@ async function canRead(env: Env, auth: AuthContext, key: string): Promise<boolea
  *   - `Cross-Origin-Resource-Policy: same-origin` — nothing off this origin may
  *     embed the bytes. The session cookie is SameSite=Strict so a cross-site
  *     load already 401s, but this is the header that says so out loud.
+ *
+ * CORP is enforced on *no-cors* loads, which is what a plain `<img src>` makes.
+ * That is why the app's own `<img>` and `<video>` set
+ * `crossOrigin="use-credentials"` (app/src/lib/media.ts): it makes them CORS
+ * loads, which CORP does not police and which this route already answers for an
+ * allow-listed origin. A stranger's page gains nothing from that — it never
+ * gets the header, and its cookie-less request 401s before CORP is consulted.
  */
 const MEDIA_ISOLATION_HEADERS: Record<string, string> = {
   'Content-Security-Policy': "default-src 'none'; sandbox",

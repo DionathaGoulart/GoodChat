@@ -31,7 +31,7 @@ import {
   sealedChunkCount,
 } from '../lib/e2ee'
 import { fromBase64url } from '../lib/kdf'
-import { mediaUrl } from '../lib/media'
+import { MEDIA_CROSS_ORIGIN, mediaUrl } from '../lib/media'
 import { handStreamToWorker, releaseStream } from '../lib/mediaStream'
 import { STICKER_ID_RE } from '../lib/protocol'
 import { stickerAssetUrl, useStickerPack } from '../lib/stickers'
@@ -264,6 +264,7 @@ function MediaContent({ message, onOpened }: {
         playsInline
         preload="metadata"
         src={src}
+        crossOrigin={MEDIA_CROSS_ORIGIN}
         onPlay={onOpened}
         onError={() => setGone(true)}
         className="max-h-64 w-full min-w-48 bg-base-300/20"
@@ -274,6 +275,7 @@ function MediaContent({ message, onOpened }: {
     <>
       <img
         src={src}
+        crossOrigin={MEDIA_CROSS_ORIGIN}
         alt="imagem"
         loading="lazy"
         onError={() => setGone(true)}
@@ -284,6 +286,7 @@ function MediaContent({ message, onOpened }: {
         <div className="modal-box max-w-[92vw] border-0 bg-transparent p-0 shadow-none sm:max-w-3xl">
           <img
             src={src}
+            crossOrigin={MEDIA_CROSS_ORIGIN}
             alt="imagem ampliada"
             className="retro-border mx-auto max-h-[80vh] w-auto bg-base-100 retro-shadow"
           />
@@ -316,6 +319,7 @@ function StickerContent({ stickerId }: { stickerId: string }) {
   return (
     <img
       src={stickerAssetUrl(sticker)}
+      crossOrigin={MEDIA_CROSS_ORIGIN}
       alt={`sticker ${sticker.label}`}
       className="h-32 w-32 retro-shadow-sm"
     />

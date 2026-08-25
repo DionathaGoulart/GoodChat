@@ -30,6 +30,30 @@ export function mediaUrl(key: string): string {
   return `${MEDIA_URL}/${key}`
 }
 
+/**
+ * What every `<img>` and `<video>` pointing at `mediaUrl()` must set as
+ * `crossOrigin`. Not optional, and not cosmetic.
+ *
+ * The media route answers with `Cross-Origin-Resource-Policy: same-origin`
+ * (worker/src/routes/media.ts, and it is right to). CORP is enforced on
+ * *no-cors* loads, which is what a bare `<img src>` makes — so on a split
+ * origin the browser fetches the bytes, gets a 200, and then refuses to paint
+ * them: `ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`, a broken frame, no exception
+ * to catch. In production the Worker serves the app and nothing is
+ * cross-origin, so this was invisible; on the documented development setup
+ * (:5173 talking to :8000) no sticker and no avatar had ever rendered.
+ *
+ * `use-credentials` rather than `anonymous` because the proxy is
+ * session-authenticated: an anonymous CORS load sends no cookie and 401s. It
+ * makes these loads CORS requests, which CORP does not police and which the
+ * route already answers for allow-listed origins — and which a stranger's page
+ * still cannot make, because it will not be handed the header.
+ *
+ * On a same-origin URL the attribute does nothing at all, which is why it is
+ * safe to set unconditionally.
+ */
+export const MEDIA_CROSS_ORIGIN = 'use-credentials' as const
+
 export const IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 export const VIDEO_MIMES = ['video/mp4', 'video/webm']
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024

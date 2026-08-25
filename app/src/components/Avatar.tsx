@@ -13,7 +13,7 @@
 
 import { useRef, useState } from 'react'
 import type { PublicUser } from '../lib/api'
-import { mediaUrl } from '../lib/media'
+import { MEDIA_CROSS_ORIGIN, mediaUrl } from '../lib/media'
 
 /** Two sizes, both squares: the list/header one and the settings preview. */
 const SIZES = {
@@ -63,6 +63,7 @@ export function Avatar({
           <img
             ref={settle}
             src={mediaUrl(user.avatar_key)}
+            crossOrigin={MEDIA_CROSS_ORIGIN}
             alt=""
             // The settings preview is above the fold on the screen that owns
             // it; the small one is mostly list rows, which is what lazy is for.

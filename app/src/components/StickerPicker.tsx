@@ -3,6 +3,7 @@
 // not composer text.
 
 import { stickerAssetUrl, useStickerPack } from '../lib/stickers'
+import { MEDIA_CROSS_ORIGIN } from '../lib/media'
 
 export function StickerPicker({ onPick }: { onPick: (stickerId: string) => void }) {
   const { pack, error } = useStickerPack()
@@ -34,7 +35,12 @@ export function StickerPicker({ onPick }: { onPick: (stickerId: string) => void 
           onClick={() => onPick(sticker.id)}
           className="cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:retro-shadow-sm active:translate-y-0"
         >
-          <img src={stickerAssetUrl(sticker)} alt="" className="aspect-square w-full" />
+          <img
+            src={stickerAssetUrl(sticker)}
+            crossOrigin={MEDIA_CROSS_ORIGIN}
+            alt=""
+            className="aspect-square w-full"
+          />
         </button>
       ))}
     </div>
