@@ -1,5 +1,5 @@
-// REST client for the GoodChat Worker (phases 2–3 shapes, see plan.md
-// handoffs). Cookie-based session: every call rides `credentials: include`.
+// REST client for the GoodChat Worker (endpoints in docs/architecture.md).
+// Cookie-based session: every call rides `credentials: include`.
 
 import type { WrappedAccountKey } from './accountKeys'
 import type { KdfParams } from './kdf'

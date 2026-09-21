@@ -1,5 +1,5 @@
 // Seeds the local D1 database with two test users. Idempotent (OR IGNORE).
-// Credentials are dev-only fixtures, also documented in plan.md (phase 2 handoff).
+// Credentials are dev-only fixtures, also documented in README.md (Quickstart).
 
 import { insertUser } from './lib.ts'
 

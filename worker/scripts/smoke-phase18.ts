@@ -7,9 +7,10 @@
 // media, `<video>` — the parts that only exist inside a browser — were checked
 // by hand, once, and a hand-checked property is not a property, it is a memory.
 //
-// So this file is phase 6 of plan.md, executed by Playwright instead of by a
-// person. It drives the same twelve steps against the same local stack, in
-// three isolated browser contexts:
+// So this file is the twelve-step manual browser pass (phase 6 of the
+// account-key plan — plan.md in git history, `git log --all -- plan.md`),
+// executed by Playwright instead of by a person. It drives the same twelve
+// steps against the same local stack, in three isolated browser contexts:
 //
 //   ALICE   — the first browser
 //   BOB     — the peer
@@ -20,7 +21,7 @@
 // localStorage. "Alice signs in somewhere new" is not something a Node test can
 // state, because there is no *where* for it to be new to.
 //
-// What each step is worth is not equal, and plan.md says so: steps 2, 4, 8 and
+// What each step is worth is not equal, and the plan said so: steps 2, 4, 8 and
 // 9 are the ones that prove what the account key exists for. The rest prove the
 // app still works — which is the other half of a change that touched every
 // message path, and the half that a crypto test cannot see.
@@ -143,7 +144,7 @@ async function openSession(browser: Browser, name: string): Promise<Session> {
   const page = await context.newPage()
   const session: Session = { name, context, page, frames: [], errors: [] }
 
-  // The DevTools "Network → WS" pane of plan.md step 2, as an array. Both
+  // The DevTools "Network → WS" pane of the manual pass's step 2, as an array. Both
   // directions: what the browser sends is as interesting as what it is told,
   // and a client that leaked the plaintext would leak it on the way out.
   page.on('websocket', (ws) => {
@@ -357,8 +358,8 @@ try {
   // ---------------------------------------------------------------- step 2
   step('2 · o que trafega é ciphertext')
 
-  // Every frame both browsers have seen, including the `history` frame plan.md
-  // names. The claim is about what left the browser and what the server sent
+  // Every frame both browsers have seen, including the `history` frame the
+  // manual pass names. The claim is about what left the browser and what the server sent
   // back, so it is checked over all of them rather than over one.
   const allFrames = [...alice.frames, ...bob.frames]
   check('there are websocket frames to inspect', allFrames.length > 0, allFrames.length)
