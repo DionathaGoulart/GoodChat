@@ -30,7 +30,7 @@ TUI.
 (`hover:-translate-y-1` é neutralizado com `transform: none`) — nada flutua numa
 tela de fósforo; a sombra dura; o fill `base-200`; o display itálico gordo.
 
-Origem: skin `terminal` do Portfolio (`/dev`, `/dev/cv`) — ver §7.
+Origem: adaptado do site-portfólio do autor.
 
 ---
 
@@ -181,8 +181,8 @@ recortar) e ganha halo `0 0 8px` de `success` **só quando online**
 sombra, 80% de largura ou `self-end`) e cada mensagem vira uma linha de log:
 
 ```
-[14:22] <rafael> oi
-[14:23] <dionatha> e aí ✓✓
+[14:22] <alice> oi
+[14:23] <bob> e aí ✓✓
 ```
 
 O prefixo é `::before` montado de `attr(data-time)` e `attr(data-sender)` —
@@ -216,19 +216,7 @@ scanlines, e a prévia da retro reivindica a face limpa de volta
 
 ## 7. Origem e decisões
 
-Portada da skin `terminal` do Portfolio (`src/styles/terminal.css` e
-`components/terminal/*` lá), rotas `/dev` e `/dev/cv`. Valores lidos do código
-original — molduras de 1px, `terminal-glow` de `0 0 10px`, botão `btn-terminal`,
-WindowDots em accent decrescente, `chrome: "bar"` do `TermWindow`, wash
-`bg-accent/5` dos módulos de HUD.
-
-Divergências deliberadas do original:
-
-1. O glow lê `currentColor` em vez do token de accent, para não continuar
-   brilhando na cor que o elemento acabou de deixar de ser durante um hover.
-2. A inundação de accent no hover dos botões mora na skin, não em cada call
-   site — no Portfolio ela é escrita inline em cada `btn-terminal`.
-3. Prefixos e colchetes são pseudo-elementos: o markup não muda entre skins.
+Adaptada do site-portfólio do autor; as decisões que continuam valendo estão nas seções acima.
 
 Histórico: a `terminal` nasceu **sem style guide**, como um bloco de três tokens
 em `skins.css`. Ganhou este arquivo quando virou uma tomada de conta do app

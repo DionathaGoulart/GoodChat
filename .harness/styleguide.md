@@ -45,7 +45,7 @@ Duas coisas que **não** são skin:
 
 ### 2.1 Paleta bruta (`app/src/styles/palettes.css`)
 
-Regra herdada do Portfolio: **uma cor existe uma única vez**, como token
+Regra herdada do site-portfólio do autor: **uma cor existe uma única vez**, como token
 `--palette-*` em `:root`. Nenhum hex em qualquer outro arquivo do repositório —
 temas, skins e componentes só referenciam `var(--palette-*)` ou os tokens
 daisyUI derivados deles.

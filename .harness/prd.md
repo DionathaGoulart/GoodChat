@@ -2,16 +2,18 @@
 ## Private Real-Time 1:1 Chat Application ("GoodChat")
 
 **Version:** 1.1
-**Status:** Draft
-**Author:** Product/Engineering (drafted with Claude)
-**Last updated:** August 17, 2026
+**Status:** Implemented (v0.9.0)
+**Author:** Dionatha Goulart
+**Last updated:** September 21, 2026
+
+> This PRD records the original product intent. Where it and the code differ, [docs/architecture.md](../docs/architecture.md) is authoritative.
 
 ---
 
 ## 1. Overview
 
 ### 1.1 Summary
-A private, invite-only, real-time messaging application designed for direct (1:1) conversations between a small, trusted group of friends. The product intentionally rejects the "grow to millions of users" model in favor of **maximum responsiveness, strong privacy, and zero/near-zero infrastructure cost**, by running entirely on free tiers of best-in-class edge infrastructure (Cloudflare Workers/Agents SDK, Cloudflare D1, Backblaze B2).
+A private, invite-only (plus short-lived guest accounts, §3.1), real-time messaging application designed for direct (1:1) conversations between a small, trusted group of friends. The product intentionally rejects the "grow to millions of users" model in favor of **maximum responsiveness, strong privacy, and zero/near-zero infrastructure cost**, by running entirely on free tiers of best-in-class edge infrastructure (Cloudflare Workers/Agents SDK, Cloudflare D1, Backblaze B2).
 
 The product is explicitly **not** a general-purpose messaging platform: no public discovery, no group chats, no virality mechanics. It is a personal tool that borrows the best UX ideas from WhatsApp/Telegram/Discord (stickers, emoji, rich media, instant delivery) while staying small, fast, and cheap to run indefinitely.
 
@@ -30,7 +32,7 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
 1. Deliver messages between two connected users with **perceived-instant delivery** (target latency band: **50–300ms** end-to-end under normal network conditions).
 2. Support rich conversational features: text, emoji, stickers, images, video, and file attachments.
 3. Keep the entire stack inside free infrastructure tiers for as long as technically feasible (target: $0/month at the group's expected scale of ~5–50 users, low-hundreds of conversations).
-4. Provide strong, simple privacy guarantees: no public profile discovery beyond exact `@username` lookup, secure session handling, and an optional end-to-end encryption (E2EE) path for message bodies.
+4. Provide strong, simple privacy guarantees: no public profile discovery beyond exact `@username` lookup, secure session handling, and end-to-end encryption (E2EE) for message bodies and media (§3.6).
 5. **Keep nothing longer than it has to be kept:** every message — text, image, video, audio, file — deletes itself from the database and the object store three hours after it is read, and in at most seven days if it never is (§3.9).
 6. Ship a functional MVP quickly, then iterate.
 
@@ -69,10 +71,11 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
 ## 3. Product Requirements
 
 ### 3.1 Authentication & Account Management
-- **No public sign-up.** Accounts are created by the app owner/admin (invite-based) or via a signed invite link, consistent with the "closed friend group" model.
-- Each account has: `id`, `username` (unique, immutable or rarely changeable, used for `@lookup`), `display_name`, `avatar_url`, `password_hash`, `created_at`.
-- Passwords hashed with a modern algorithm (Argon2id or scrypt via Web Crypto-compatible library suitable for the Workers runtime).
-- **Session model:** opaque session token (random 256-bit value) stored server-side (D1) with expiry, mapped to a cookie:
+- **No public sign-up for permanent accounts.** They are created by the owner — from the admin console (`POST /api/admin/users`) or the `user:create` script — consistent with the "closed friend group" model. The signed invite link was never built.
+- **Guest accounts are the one public way in** (`POST /api/auth/temp`): no password, deleted on sign-out and in any case after 3 hours (`TEMP_ACCOUNT_TTL_HOURS`), rate-limited per IP, capped in number, limited to exact `@username` lookup, and switched off entirely with `TEMP_ACCOUNTS_ENABLED=false`.
+- Each account has: `id`, `username` (unique, immutable or rarely changeable, used for `@lookup`), `display_name`, `avatar_key` (an object key in the private bucket, not a URL), `password_hash`, `created_at`.
+- **The password never reaches the server.** The browser derives a master key with PBKDF2-SHA-256 at 600k iterations (per-account salt from `POST /api/auth/kdf`) and posts only a derived token; the server stores a PBKDF2-SHA-256 hash of that token at 100k iterations. Argon2id/scrypt were ruled out: they do not fit the Workers free-plan CPU budget, and `crypto.subtle` PBKDF2 there is capped at 100k.
+- **Session model:** opaque session token (random 256-bit value) stored server-side (D1, as its SHA-256 hash) with expiry, mapped to a cookie:
   - `Set-Cookie: session=<token>; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=<N>`
   - No sensitive data in the cookie itself (no JWT payload with claims client-readable) — token is opaque and validated server-side on every request. This avoids JWT revocation problems entirely.
   - Sessions are revocable (logout invalidates the D1 row immediately).
@@ -96,20 +99,20 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
 
 ### 3.4 Real-Time Messaging
 - **Transport:** persistent WebSocket connection per active client, routed to the Durable Object (Agent) that owns that conversation.
-- **Delivery guarantee:** at-least-once delivery with client-side de-duplication via message `client_generated_id` (UUID generated on send, echoed back by server).
+- **Delivery guarantee:** at-least-once delivery with de-duplication via message `client_id` (UUID generated on send, echoed back by server; the server keeps one row per `(sender_id, client_id)`).
 - **Message states:** `sending → sent → delivered → read`, reflected via lightweight status events pushed back to the sender.
-- **Typing indicators:** ephemeral event (`user_typing`) broadcast to the other participant, not persisted.
+- **Typing indicators:** ephemeral event (`typing`) broadcast to the other participant, not persisted.
 - **Offline delivery:** if the recipient is not connected, the message is persisted and delivered via WebSocket push the moment they reconnect (no polling); optionally triggers a push notification (P2, see 3.8).
 - **Message types supported:** `text`, `emoji` (rendered inline, no special handling needed beyond Unicode/emoji-picker UI), `sticker` (reference to a sticker asset ID), `image`, `video`, `file` (generic attachment, stretch).
-- **Message editing/deletion (P1):** soft-delete and edit with a visible "edited" marker; deletions propagate in real time to the other participant.
+- **Message editing/deletion:** not implemented, and out of scope. Retention (§3.9) deletes every message on its own, and a per-message "delete for both" is explicitly excluded there.
 
 ### 3.5 Media Handling (Images, Video, Stickers)
 - **Upload flow:**
-  1. Client requests a signed/pre-authorized upload URL from the Worker (validates session, file type, size limit).
-  2. Client uploads directly to Backblaze B2 (bypasses the Worker/DO for the actual bytes, keeping compute cost near zero).
+  1. Client requests a presigned upload URL from the Worker (validates session, file type, size limit).
+  2. Client encrypts the file in the browser and PUTs the ciphertext directly to Backblaze B2 (bypasses the Worker/DO for the actual bytes, keeping compute cost near zero).
   3. Client sends a `message` of type `image`/`video` referencing the resulting object key once upload completes.
   4. The Durable Object persists the message with the media reference and broadcasts it to the other participant.
-- **Download/serving flow:** media is served through a Cloudflare-fronted custom domain in front of the B2 bucket (Bandwidth Alliance) so egress remains free regardless of volume, while storage stays capped at the B2 free allowance.
+- **Download/serving flow:** the bucket is private. Reads go through the Worker at `/api/media/<key>`, which checks that the caller is a participant of the conversation the object belongs to, signs the GET, streams the object back and caches it at the edge. B2 → Cloudflare egress is free (Bandwidth Alliance), and what is served is ciphertext, decrypted in the browser.
 - **Client-side compression:** images and videos are compressed/resized in-browser before upload to conserve the storage quota (target: images ≤ 1–2MB after compression, video clips capped at a short duration, e.g., 60s, and constrained bitrate).
 - **Stickers:** a curated, versioned sticker pack (static assets in B2), referenced by ID in messages — no per-message upload cost.
 - **Size/type limits:** enforced both client-side (UX) and server-side (Worker validates before issuing upload URL) — reject disallowed MIME types and oversized files.
@@ -125,16 +128,16 @@ There is room for a **minimal, self-controlled, privacy-first 1:1 chat app** tha
   - **The password stops arriving**, and that is the load-bearing part rather than a login hardening measure: the browser runs 600k PBKDF2 iterations locally and posts only a derived token, so the same derivation that authenticates cannot be walked backwards into the key that unwraps a message.
   - **Media too**, sealed in the browser before the presigned PUT, in independently authenticated chunks so a video can play before it has finished arriving. The bucket, the read proxy and the edge cache hold ciphertext only.
   - **The costs, which are real and are product decisions, not oversights:** lose the password and lose the history — there is nothing on the server that could perform a recovery; a weak password is attackable offline by whoever holds a database dump, hence a twelve-character minimum and a meter; and an owner's password reset discards the account key, so it hands over an account and empties it in the same action, which the console says before the click.
-- **Retention as the primary privacy mechanism (§3.9):** a message lives three hours past being read, and seven days at the outside. This is the guarantee that holds without any cryptography: what is not stored cannot be breached, subpoenaed or read by the operator. E2EE, if it ships, narrows *who* can read a live message; retention narrows *how long anyone* can. Tying the clock to the read rather than to the send is what makes the usual case hours instead of days — the week is the fallback for a message that never found its reader, not the normal life of one.
-- **Admin/operator transparency:** since this is a small trusted-operator deployment, the PRD assumes the operator (you) has infrastructure-level access to the database regardless of E2EE status for operational reasons (backups, debugging) — E2EE protects against external breach/subpoena/third-party exposure, not against the operator themselves, and this should be disclosed to users. Retention is what bounds that access in time: the operator can read what exists, and within a week nothing does — usually within hours. The owner console can see when a conversation's next message expires and how much of it is still unread, but cannot extend either.
+- **Retention as the primary privacy mechanism (§3.9):** a message lives three hours past being read, and seven days at the outside. This is the guarantee that holds without any cryptography: what is not stored cannot be breached, subpoenaed or read by the operator. E2EE narrows *who* can read a live message; retention narrows *how long anyone* can. Tying the clock to the read rather than to the send is what makes the usual case hours instead of days — the week is the fallback for a message that never found its reader, not the normal life of one.
+- **Admin/operator transparency:** the operator has infrastructure-level access to the database and the bucket, and with E2EE on (`E2EE_REQUIRED=true` in the shipped config) that access reaches ciphertext, not message bodies or media. It does not hide metadata — who talks to whom, when, how often, ciphertext sizes and message types; usernames, display names and avatars are plaintext. There is no forward secrecy: each account has one static key pair, so a leaked account key opens every message still stored for it. And the operator serves the app code, so E2EE is no defence against an operator willing to ship a hostile build (full list in docs/architecture.md, "End-to-end encryption"). Retention is what bounds all of this in time: within a week nothing is left to expose — usually within hours. The owner console can see when a conversation's next message expires and how much of it is still unread, but cannot extend either.
 
 ### 3.7 UI/UX
-- **Frontend framework:** React (Vite or Next.js) styled with **Tailwind CSS + DaisyUI** component classes for rapid, consistent, themeable UI (DaisyUI ships light/dark themes out of the box, which is a good fit for a chat app).
-- **Visual style reference:** the UI must follow the **retro skin/theme** already established in the sibling project `~/desktop/good/Portfolio` (same author's existing portfolio site). That project's retro aesthetic (color palette, typography, borders/shadows, iconography, motion/animation feel) is the canonical style reference for this app — GoodChat should feel like a sibling product to the Portfolio site, not a generic DaisyUI default theme.
-  - **Skins, not one site-wide look:** the visual system is split per skin. `.harness/styleguide.md` holds only the shared foundation (palettes, type family, motion rules, the skin contract, the CSS recipe); each skin has its own file under `.harness/styleguides/` — `retro.md` (the Portfolio-derived default) and `terminal.md` (CRT/shell). A skin is not a variant of one screen: switching it repaints the whole app, so a skin's style guide describes the whole app under that skin.
-  - The shared tokens were extracted by directly analyzing the Portfolio project's source (its Tailwind config / CSS variables / component markup) — see `inicial.md` for the exact process the coding agent follows to produce it.
+- **Frontend framework:** React (Vite) styled with **Tailwind CSS + DaisyUI** component classes for rapid, consistent, themeable UI (DaisyUI ships light/dark themes out of the box, which is a good fit for a chat app).
+- **Visual style reference:** the UI follows the **retro skin/theme** of the author's portfolio site. Its retro aesthetic (color palette, typography, borders/shadows, iconography, motion/animation feel) is the canonical style reference for this app — GoodChat should feel like a sibling product to that site, not a generic DaisyUI default theme.
+  - **Skins, not one site-wide look:** the visual system is split per skin. `.harness/styleguide.md` holds only the shared foundation (palettes, type family, motion rules, the skin contract, the CSS recipe); each skin has its own file under `.harness/styleguides/` — `retro.md` (the portfolio-derived default) and `terminal.md` (CRT/shell). A skin is not a variant of one screen: switching it repaints the whole app, so a skin's style guide describes the whole app under that skin.
+  - The shared tokens were extracted from the portfolio site's source (its CSS variables and component markup), not invented.
   - New skins may be added at any time, with a new style guide of their own or with none at all when they only re-set the frame tokens (criteria in `.harness/styleguide.md` §5).
-  - Implementation should map the retro theme onto a custom DaisyUI theme (via `daisyui.themes` config) rather than hand-rolling one-off CSS, so the whole component library (buttons, inputs, modals, chat bubbles) inherits the retro look consistently.
+  - Implementation should map the retro theme onto custom DaisyUI themes (`@plugin "daisyui/theme"` blocks in CSS — there is no Tailwind config file) rather than hand-rolling one-off CSS, so the whole component library (buttons, inputs, modals, chat bubbles) inherits the retro look consistently.
 
 ### 3.8 Notifications (P2 — stretch)
 - Web Push API (works with PWAs) to notify users of new messages when the tab/app is not focused, subject to browser support and user opt-in.
@@ -172,6 +175,7 @@ The defining privacy behavior of the product. Every message carries its own cloc
         |  WebSocket (real-time messages)
         v
 [Cloudflare Worker: edge router]
+   - Serves the SPA build itself (same origin as the API)
    - Validates session cookie against D1
    - Resolves conversation_id for a user pair
    - Upgrades WebSocket, forwards to the correct Durable Object
@@ -184,12 +188,12 @@ The defining privacy behavior of the product. Every message carries its own cloc
    - Hibernates when idle (zero compute cost when inactive)
         |
         v (media references only, not bytes)
-[Cloudflare D1: users, sessions, conversation metadata]
+[Cloudflare D1: users, sessions, conversation metadata, media index]
 
-[Backblaze B2: image/video/sticker object storage]
-        ^
-        | fronted by a Cloudflare custom domain (Bandwidth Alliance = free egress)
-[Client uploads/downloads media directly to/from B2 via signed URLs]
+[Backblaze B2: private bucket — encrypted media, avatars, stickers]
+   ^ upload: presigned PUT straight from the browser (ciphertext)
+   v read:   Worker signs the GET and streams it at /api/media/<key>
+             (membership check, then edge cache; B2 -> Cloudflare egress is free)
 ```
 
 ### 4.2 Component Responsibilities
@@ -207,12 +211,12 @@ users
   id            TEXT PK
   username      TEXT UNIQUE NOT NULL
   display_name  TEXT
-  avatar_url    TEXT
-  password_hash TEXT
+  avatar_key    TEXT              -- bucket object key, served via /api/media/<key>
+  password_hash TEXT              -- hash of the client-derived token, never the password
   created_at    INTEGER
 
 sessions
-  token         TEXT PK
+  token         TEXT PK           -- SHA-256 hex of the cookie token, never the raw token
   user_id       TEXT FK -> users.id
   created_at    INTEGER
   expires_at    INTEGER
@@ -228,6 +232,8 @@ conversations
   swept_at      INTEGER NULL      -- last time the cleanup backstop ran on it
 ```
 
+Later migrations add columns to `users` (role, guest expiry, client KDF salt, the account key pair, settings) and further tables (`media_objects`, `push_subscriptions`, `login_attempts`, `admin_audit`). `worker/migrations/` is the source of truth.
+
 ### 4.4 Data Model (Durable Object internal SQLite — per conversation)
 ```
 messages
@@ -235,14 +241,15 @@ messages
   client_id         TEXT         -- for de-dup, generated by sender client
   sender_id         TEXT
   type              TEXT         -- text | emoji | sticker | image | video | file
-  body              TEXT         -- text content or sticker ID
+  body              TEXT         -- text or sticker ID; base64 ciphertext when enc is set
   media_key         TEXT NULL    -- B2 object key, if applicable
+  enc               TEXT NULL    -- E2EE envelope (JSON): IV + content key wrapped per account
   created_at        INTEGER
   status            TEXT         -- sent | delivered | read
   read_at           INTEGER NULL -- §3.9; when the recipient read it
   expires_at        INTEGER      -- §3.9; min(created+7d, read+3h)
-  edited_at         INTEGER NULL
-  deleted_at        INTEGER NULL
+  edited_at         INTEGER NULL -- reserved, never written (editing not implemented)
+  deleted_at        INTEGER NULL -- reserved, never written (deletion is retention's job)
 
 participants
   user_id           TEXT PK      -- the pinned pair; outsiders are refused
@@ -255,16 +262,16 @@ settings
 
 The clock lives here rather than in D1 because this is where the messages are: the object that deletes them is the object that owns their deadlines. D1 mirrors one number — the earliest of them — so the scheduled cleanup can find a conversation with something to delete without waking every conversation in the instance.
 
-### 4.5 Real-Time Protocol (WebSocket message shapes — illustrative)
+### 4.5 Real-Time Protocol (WebSocket message shapes — illustrative; `worker/src/protocol.ts` is authoritative)
 ```jsonc
 // Client -> Server
-{ "type": "send_message", "client_id": "uuid", "msg_type": "text", "body": "oi!" }
+{ "type": "send_message", "client_id": "uuid", "msg_type": "text", "body": "<ciphertext>", "enc": { "v": 3, "iv": "...", "keys": { "...": { "iv": "...", "ct": "..." } } } }
 { "type": "typing" }
 { "type": "read_receipt", "ids": ["...", "..."] }                  // §3.9, named, never a watermark
 
 // Server -> Client
-{ "type": "message", "id": "...", "sender_id": "...", "msg_type": "text", "body": "oi!", "created_at": 172839... }
-{ "type": "message_status", "client_id": "uuid", "status": "delivered" }
+{ "type": "message", "id": "...", "client_id": "uuid", "sender_id": "...", "msg_type": "text", "body": "<ciphertext>", "enc": { ... }, "created_at": 172839..., "read_at": null, "expires_at": 172840... }
+{ "type": "message_status", "id": "...", "client_id": "uuid", "status": "delivered" }
 { "type": "typing", "user_id": "..." }
 { "type": "read_receipt", "user_id": "...", "reads": [{ "id": "...", "read_at": 172839..., "expires_at": 172840... }] }
 { "type": "messages_expired", "ids": ["...", "..."] }                    // just deleted
@@ -294,7 +301,7 @@ This is consistent with the requested band and is achievable without exotic infr
 | Backblaze B2 storage | 10GB permanent free | Depends on media volume — the main constraint to monitor | Medium — plan for client-side compression and a future storage-cleanup policy |
 | Backblaze B2 egress via Cloudflare | Free (Bandwidth Alliance) | N/A | High |
 
-**Primary scaling constraint to watch:** B2's 10GB storage ceiling, driven by images/videos. Mitigations: aggressive client-side compression, optional auto-expiry of old media (configurable retention), and a manual "upgrade to paid B2 tier" fallback (~$0.006/GB/month) if ever needed — trivially cheap even if exceeded.
+**Primary scaling constraint to watch:** B2's 10GB storage ceiling, driven by images/videos. Mitigations: retention (§3.9) deletes every media object with its message within seven days at most, aggressive client-side compression, and a manual "upgrade to paid B2 tier" fallback (~$0.006/GB/month) if ever needed — trivially cheap even if exceeded.
 
 ---
 
@@ -312,7 +319,7 @@ Since this is not a growth product, success is defined operationally rather than
 
 ### Phase 0 — Foundation (Week 1)
 - Cloudflare account, Workers + D1 + Durable Objects (Agents SDK) project scaffolding.
-- Backblaze B2 bucket + Cloudflare custom domain fronting it.
+- Backblaze B2 private bucket, read through the Worker.
 - Auth: login, session cookie, D1 users/sessions schema.
 
 ### Phase 1 — MVP Chat (Weeks 2–3)
@@ -332,9 +339,9 @@ Since this is not a growth product, success is defined operationally rather than
 - PWA installability, basic Web Push notifications.
 
 ### Phase 4 — Privacy Hardening (Stretch, post-MVP)
-- E2EE for message bodies (and optionally media).
+- E2EE for message bodies and media (shipped).
 - Rate limiting hardening, audit logging for the operator.
-- Message edit/delete, retention policy tooling.
+- Retention (shipped as §3.9). Message edit/delete was dropped (§3.4).
 
 ---
 
@@ -344,28 +351,28 @@ Since this is not a growth product, success is defined operationally rather than
 | B2 10GB storage fills up | Media uploads start failing | Client-side compression, retention/cleanup policy, cheap paid fallback |
 | Durable Object cold start on a long-idle conversation | Slight first-message delay after hibernation | Acceptable trade-off given cost savings; typically low tens of ms, not user-perceptible |
 | Single operator dependency (you run/maintain everything) | App becomes unavailable if you don't maintain it | Acceptable for a personal-scale project; document setup for future portability |
-| No E2EE at launch | Operator/provider could technically read messages | Explicitly disclosed to users in-app; E2EE planned as Phase 4 |
+| Limits of the shipped E2EE: no forward secrecy, metadata visible to the server, app code served by the operator | A leaked account key opens what is still stored for that account; the server sees who talks to whom and when | Retention caps what exists at seven days (usually hours); limits stated in docs/architecture.md |
 | Free tier policy changes at any provider | Could introduce unexpected cost | Low user count keeps absolute cost trivial even off free tier; monitor provider changelogs |
 
 ---
 
 ## 9. Design Reference / Style Guide
 
-The definitive visual reference for this project is the retro theme/skin used in the sibling **Portfolio** project (`~/desktop/good/Portfolio`). GoodChat should visually read as part of the same "product family" as that portfolio — same retro sensibility, not a generic UI kit look.
+The definitive visual reference for this project is the retro theme/skin of the author's portfolio site. GoodChat should visually read as part of the same "product family" as that portfolio — same retro sensibility, not a generic UI kit look.
 
 - Canonical entry point: **`.harness/styleguide.md`** — the shared foundation (palettes, type family, motion, the skin contract, the CSS recipe) plus the index of skins.
-- **One style guide per skin**, under `.harness/styleguides/`: `retro.md` (default, the Portfolio-derived neobrutalist look) and `terminal.md` (CRT/shell). There is deliberately no single style guide for "the site": a rule like "hard 6px offset shadow" is law under `retro` and forbidden under `terminal`.
+- **One style guide per skin**, under `.harness/styleguides/`: `retro.md` (default, the portfolio-derived neobrutalist look) and `terminal.md` (CRT/shell). There is deliberately no single style guide for "the site": a rule like "hard 6px offset shadow" is law under `retro` and forbidden under `terminal`.
 - Each skin nevertheless applies to the **entire app** — login, list, thread, composer, admin console, dialogs. Skins are chosen by the user in the appearance screen and are independent of the palette (`data-theme`), so ten palettes × N skins.
-- The retro file was **not written by hand in advance** — it was generated by the coding agent at project kickoff by directly reading the Portfolio project's source (colors, fonts, spacing, retro effects, component treatments). The exact process is specified in `inicial.md`, the first prompt the agent receives.
-- Any implementation work on UI **must read `.harness/styleguide.md` plus the style guide of every skin it touches before writing component code**, and must treat them as authoritative constraints equal in weight to the functional requirements in this PRD. A new screen is only done when it is right under *every* skin.
+- The retro file was derived from the portfolio site's source (colors, fonts, spacing, retro effects, component treatments) rather than invented.
+- **Note for contributors:** before changing UI components, read `.harness/styleguide.md` plus the style guide of every skin the change touches; they carry the same weight as the functional requirements in this PRD. A new screen is only done when it is right under *every* skin.
 - Adding a skin is allowed and cheap: it may ship with a new style guide of its own, or with none when it only re-sets the frame tokens (§5 of `.harness/styleguide.md`).
 
 ## 10. Open Questions
-1. **User visibility model** (3.2.1): fully open `@username` lookup within the instance, or gated by an explicit connection/approval step?
-2. **Message retention:** keep forever, or auto-expire media after N days to protect the B2 quota?
-3. **E2EE scope for v1.5:** message text only, or also media files?
+1. ~~**User visibility model** (3.2.1): fully open `@username` lookup within the instance, or gated by an explicit connection/approval step?~~ **Answered: Option A**, open lookup within the instance, except that a guest account gets exact match only, so it cannot enumerate the directory by prefix.
+2. ~~**Message retention:** keep forever, or auto-expire media after N days to protect the B2 quota?~~ **Answered: neither — everything expires**, text and media alike, three hours after it is read and seven days at most (§3.9).
+3. ~~**E2EE scope for v1.5:** message text only, or also media files?~~ **Answered: both.** Media is encrypted in the browser before the presigned PUT, under the same per-message content key as the text (§3.6).
 4. ~~**Multi-device:** is simultaneous login from phone + desktop required for v1, or is "one active session" acceptable initially?~~ **Answered: simultaneous, with the full history everywhere.** The first encryption design made identity per browser, which made this question expensive — a new device started blind and needed a handover from an old one. The account key removed the question rather than answering it: the key belongs to the person, so every browser they sign into holds the same one.
-5. **Invite mechanism:** admin manually creates accounts, or a signed one-time invite link flow?
+5. ~~**Invite mechanism:** admin manually creates accounts, or a signed one-time invite link flow?~~ **Answered: the owner creates accounts**; the invite link was never built. Short-lived guest accounts are the one public way in (§3.1).
 
 ---
 
@@ -375,9 +382,11 @@ Frontend:        React (Vite) + Tailwind CSS + DaisyUI, PWA (manifest + service 
 Edge compute:     Cloudflare Workers
 Real-time layer:  Cloudflare Agents SDK (Durable Objects), 1 instance per conversation
 Relational data:  Cloudflare D1 (users, sessions, conversation index)
-Object storage:   Backblaze B2 (images, video, stickers), fronted by Cloudflare (free egress)
+Object storage:   Backblaze B2 private bucket (images, video, stickers), read through the Worker (free egress)
 Auth:             Opaque session tokens in HttpOnly/Secure/SameSite=Strict cookies, validated against D1
-Deployment:       Cloudflare Pages (frontend) + Wrangler (Workers/Durable Objects)
+Encryption:       E2EE per message (ECDH P-256 account keys, AES-GCM), password-derived keys stay in the browser
+Deployment:       Wrangler — one Worker serves the SPA and the API from a single origin
+                  (required by the SameSite=Strict session cookie)
 Target cost:      $0/month at expected scale (5–50 users)
 Target latency:   50–300ms end-to-end message delivery
 ```

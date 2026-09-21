@@ -24,7 +24,7 @@ A frase que resolve dúvida de implementação: *o retro preenche, o terminal
 risca.* Aqui a cor vive no **fill** (avatar accent sólido, balão enviado accent,
 tile que inunda de accent no hover) e a borda é uma linha neutra de `base-300`.
 
-Origem: skin `retro` do projeto irmão Portfolio (`/`, `/ti`) — ver §7.
+Origem: adaptado do site-portfólio do autor.
 
 ---
 
@@ -64,7 +64,7 @@ títulos grandes e `tracking-widest`/`[0.2em]` nos micro-labels, itálico como
 recurso de display, `font-black`/`font-bold` dominantes.
 
 > `font-black` é 900 e a face mais pesada carregada é 800 — o browser resolve
-> para 800. Comportamento herdado do Portfolio e **aprovado**; não "corrigir".
+> para 800. Comportamento herdado do site-portfólio e **aprovado**; não "corrigir".
 
 ---
 
@@ -173,21 +173,6 @@ warning / muted), `usage-track`/`usage-fill` como barra sólida.
 
 ---
 
-## 7. Origem e decisões herdadas
+## 7. Origem
 
-Extraída da skin `retro` do Portfolio (Next.js 16 + Tailwind v4 + daisyUI 5),
-rotas `/` e `/ti`, lida direto do código-fonte — nenhum valor foi inventado.
-O par de cores original (`retro-hub-light`/`retro-hub-dark`: cream/crimson ·
-noir/rose) virou as paletas `goodchat-crimson` e `goodchat-rose`, hoje duas das
-dez.
-
-Decisões tomadas na implementação e que continuam valendo:
-
-1. Par **hub** (cream/crimson · noir/rose) como default.
-2. `font-black` mantido apesar da face máxima 800 (§3).
-3. Scanline incluída, na força base (§4.4).
-4. Componente `input` do daisyUI **incluído** (o Portfolio o excluía) — o
-   GoodChat tem formulários de verdade; radius 0 e borda 2px já vêm do tema.
-5. Do Portfolio **não** foram portados: anéis decorativos girando, quadrado
-   rotacionado 45° no canto do card, `tooltip-retro` e o `animate-bounce`
-   pontual (bounce é proibido por regra de time).
+Adaptada do site-portfólio do autor; as decisões que continuam valendo estão nas seções acima.
