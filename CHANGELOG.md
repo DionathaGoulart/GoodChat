@@ -8,6 +8,12 @@ does so is listed under **Breaking**.
 
 ## [Unreleased]
 
+### Changed
+
+- The license is now CC BY-NC-SA 4.0, replacing the GoodChat Attribution
+  License v1.0. Non-commercial use only; credit to the author and share-alike
+  are required. See LICENSE.
+
 ## [0.9.0] - 2026-09-21
 
 First public release. It covers everything built so far, and the reference

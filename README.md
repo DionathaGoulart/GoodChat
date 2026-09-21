@@ -243,24 +243,25 @@ with the reference instance's domain, database id and keys.
 
 ## License
 
-Licensed under the GoodChat Attribution License v1.0 (see [LICENSE](LICENSE)).
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) —
+see [LICENSE](LICENSE). In short:
 
-Free to use, modify and deploy, including commercially, as long as credit
-is given. In short:
+- **Free for non-commercial use.** Clone it, run it for yourself, your
+  friends or your community, change it and share it. No need to ask.
+- **No commercial use.** Selling it, running it as a paid or ad-funded
+  service, or building it into a commercial product is not covered. For
+  commercial terms, write to dionatha.work@gmail.com.
+- **Credit the author.** Keep the LICENSE and copyright notice. A public
+  fork's README says "Based on GoodChat by Dionatha Goulart" with a link to
+  this repository. A running instance other people use shows
+  "Built with GoodChat by Dionatha Goulart", linking here, somewhere visible
+  (a footer, the sign-in screen or the settings screen):
 
-- Keep the copyright notice and license in the source code.
-- Public repositories of forks must credit "Based on GoodChat by
-  Dionatha Goulart" in their README.
-- Deployed products must show "Built with GoodChat by Dionatha Goulart" in
-  a persistent footer, at 12px minimum, legible, linking to
-  https://dionatha.com.br:
-
-```html
-<footer>
-  <a href="https://dionatha.com.br">
+  ```html
+  <a href="https://github.com/DionathaGoulart/GoodChat">
     Built with GoodChat by Dionatha Goulart
   </a>
-</footer>
-```
+  ```
 
-See the [LICENSE](LICENSE) file for the exact requirements.
+- **Share alike.** Modified versions you share go out under the same
+  license.
