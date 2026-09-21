@@ -47,8 +47,12 @@
   "triggers": {
     "crons": ["17 * * * *"]
   },
-  // Non-secret production config. Secrets (B2 keys, VAPID private key) go in
-  // via `wrangler secret put`. These do NOT apply to local dev — .dev.vars does.
+  // Non-secret production config. Secrets (B2 keys, VAPID private key, the
+  // two salts) go in via `wrangler secret put`. For local dev, worker/.dev.vars
+  // takes precedence (cp .env.example .dev.vars).
+  //
+  // Forking? routes, database_id, PUBLIC_ORIGIN, the B2 and VAPID values below
+  // are the reference instance's — docs/deployment.md, "Make it yours".
   "vars": {
     // The one origin this Worker serves from (see `routes` above). Deleting a
     // media object has to evict its edge-cached copy, and the two places that
@@ -79,24 +83,23 @@
     // whenever the peer has no key in the directory, and before this flag the
     // message went out in the clear with nothing but a banner about it.
     //
-    // The cost is real and worth stating: an account with no registered device
+    // The cost is real and worth stating: an account with no account key
     // cannot be written to at all. Its sends are refused with
     // `encryption_required` until it opens the app somewhere that can keep an
     // identity — which a private window cannot, because it has no IndexedDB.
     // Before deploying a change to this value, check who is not ready:
     //
     //   wrangler d1 execute goodchat --remote --command \
-    //     "SELECT u.username FROM users u
-    //        LEFT JOIN devices d ON d.user_id = u.id
-    //       WHERE d.id IS NULL"
+    //     "SELECT username FROM users WHERE account_public_key IS NULL"
     //
     // Nothing has to be migrated either way — retention deletes every plaintext
     // message within seven days on its own, so the instance ends up fully
     // encrypted a week after the deploy regardless. This flag is what stops it
     // going back.
     "E2EE_REQUIRED": "true",
-    // Delete claimed media older than this many days. "0" = keep forever.
-    // Turning it on makes old bubbles render the "mídia expirada" placeholder.
+    // Optional extra cap: delete claimed media older than this many days, read
+    // or not. Attachments already go with their message (7 days at most), so
+    // only a value below 7 changes anything. "0" = no extra cap.
     "MEDIA_RETENTION_DAYS": "0",
     // Guest accounts (POST /api/auth/temp, lib/accounts.ts). "false" closes the
     // instance back down: no public way in, invite-only again.
