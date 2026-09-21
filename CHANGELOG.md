@@ -8,12 +8,6 @@ does so is listed under **Breaking**.
 
 ## [Unreleased]
 
-### Changed
-
-- The license is now CC BY-NC-SA 4.0, replacing the GoodChat Attribution
-  License v1.0. Non-commercial use only; credit to the author and share-alike
-  are required. See LICENSE.
-
 ## [0.9.0] - 2026-09-21
 
 First public release. It covers everything built so far, and the reference
@@ -73,6 +67,12 @@ instance at https://goodchat.dionatha.com.br already runs it.
 - Salted rate-limit digests, a login with no timing oracle, and upload
   quotas.
 - An hourly cleanup cron.
+
+### License
+
+- CC BY-NC-SA 4.0: free for non-commercial use, with credit to the author;
+  commercial use needs separate terms, and shared modifications keep the
+  same license. See LICENSE.
 
 ### Tooling
 
