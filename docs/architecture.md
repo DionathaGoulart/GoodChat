@@ -42,7 +42,6 @@ All endpoints return JSON. Errors always use the shape
 | POST   | `/api/presence`               | yes  | Heartbeat: marks the caller online and answers for the ids in the body it shares a conversation with |
 | PATCH  | `/api/profile`                | yes  | Own display name and/or picture (`display_name`, `avatar_key` — both optional, `null` clears) |
 | GET    | `/api/users/lookup?q=`        | yes  | Search by username — prefix, or exact for a guest account |
-| POST   | `/api/devices`                | yes  | Register this browser's encryption key, or refresh it |
 | POST   | `/api/auth/kdf`               | no   | The salt and cost a password is stretched with, for any username |
 | POST   | `/api/auth/rotate`            | yes  | The one-time move off a server-known password (migration 0013) |
 | POST   | `/api/auth/password/challenge`| yes  | The wrapped account key, in exchange for the current token |
@@ -230,7 +229,7 @@ Wire protocol (Zod-validated in both directions):
 
 | Direction | Frame            | Notes                                              |
 | --------- | ---------------- | -------------------------------------------------- |
-| client    | `send_message`   | `client_id` (UUID), `msg_type`, `body`, `media_key` |
+| client    | `send_message`   | `client_id` (UUID), `msg_type`, `body`, `media_key`, `enc` (the envelope — see "End-to-end encryption") |
 | client    | `typing`         | Ephemeral, never persisted                          |
 | client    | `read_receipt`   | Named message ids — reading is what starts a message's last three hours, so it is never a watermark |
 | server    | `history`        | On connect: last 50 plus anything undelivered       |
@@ -238,6 +237,7 @@ Wire protocol (Zod-validated in both directions):
 | server    | `message_status` | `sent -> delivered -> read` transitions             |
 | server    | `typing`         | Forwarded to the peer only (not your own tabs)      |
 | server    | `read_receipt`   | Which messages were read, and the new deadline each one now carries. Sent to every connection, the reader's own tabs included |
+| server    | `policy`         | On connect: whether this instance refuses a message without an envelope (`e2ee_required`) |
 | server    | `messages_expired` | Ids just deleted by the retention sweep           |
 | server    | `error`          | Validation errors; the socket stays open            |
 
@@ -531,8 +531,10 @@ audit entry records it.
   server's, so it can reorder or withhold without leaving a trace.
 - **Avatars, display names and usernames stay plaintext**, because they are
   rendered to accounts you have never talked to.
-- **Metadata stays visible**: who talks to whom, when, how often, ciphertext
-  sizes, `msg_type`, and image-versus-video.
+- **Metadata stays visible**: who talks to whom, when, how often, when each
+  message was read, ciphertext sizes, `msg_type`, and image-versus-video.
+  Whoever controls the Cloudflare account sees all of it; TLS and the
+  platform's disk encryption do not change that.
 - **Local storage stays plaintext.** `threadCache` keeps decrypted text in
   `localStorage`, scoped to one account and wiped on logout. This is about the
   server, not about device access.
@@ -541,10 +543,12 @@ The transition is a cut rather than a silent migration, and there is exactly one
 of them: every account that existed before this holds a password the server
 knows, so it carries `must_rotate`, signs in the old way once, and the app puts
 a rotation screen in front of everything until a new password replaces it. That
-is also where its first account key is minted. `E2EE_REQUIRED=true` is the
-default and makes the Durable Object refuse a message that arrives without an
-envelope. It has a price, and `docs/deployment.md` carries it: an account that
-has published no key cannot be written to at all.
+is also where its first account key is minted. `E2EE_REQUIRED=true` makes the
+Durable Object refuse a message that arrives without an envelope. The Worker
+only turns it on for the literal string `"true"` — unset is off — and the
+shipped `worker/wrangler.jsonc` sets it. It has a price, and
+`docs/deployment.md` carries it: an account that has published no key cannot be
+written to at all.
 
 ### Media pipeline
 
@@ -676,9 +680,11 @@ environment variables.
 
 A curated pack of retro SVGs lives in `worker/assets/stickers/v1` with a
 versioned JSON manifest, published to the media store under `stickers/v1/`.
-Sticker messages carry the asset id in `body`; the DO validates the id
-against a strict slug regex (the client builds URLs from it). The client
-fetches the manifest once and renders stickers without bubble chrome.
+Sticker messages carry the asset id — inside the encrypted payload (`{s}`), or
+in `body` for a plaintext message. The id is checked against a strict slug
+regex before it becomes a URL: by the recipient, always (`MessageBubble.tsx`),
+and additionally by the DO for a plaintext one, the only kind it can read. The
+client fetches the manifest once and renders stickers without bubble chrome.
 
 ### Web push
 
@@ -700,17 +706,20 @@ fetches the manifest once and renders stickers without bubble chrome.
 - Trigger: when a message is persisted and the recipient has no live
   connection, the DO schedules delivery with `waitUntil`, off the
   frame-processing path. Payload: sender username as title, a localized
-  preview as body, the thread URL, and the conversation id as both the
-  notification tag (device-side collapse) and the push topic (queue-side
-  collapse while the device is offline).
-- How much of the message goes in that body is the *recipient's* choice
+  preview as body (always the generic line for an encrypted message), the
+  thread URL, and the conversation id as both the notification tag
+  (device-side collapse) and the push topic (queue-side collapse while the
+  device is offline).
+- How much of the message the notification shows is the *recipient's* choice
   (`users.push_preview`, set from the settings screen), and the default is
-  `generic` — "@alice te mandou uma mensagem". The transport is encrypted end
-  to end and the push service reads nothing, but the notification's
-  destination is the device's notification centre, which has no retention
-  window: a preview shown there outlives the message it previews. For the
-  same reason the page tells the service worker to close a thread's
-  notifications the moment `messages_expired` arrives.
+  `generic` — "@alice te mandou uma mensagem". With `full`, an encrypted
+  message adds only a pointer (conversation id, message id) and the service
+  worker decrypts the text on the device — see "End-to-end encryption". The
+  transport is encrypted end to end and the push service reads nothing, but
+  the notification's destination is the device's notification centre, which
+  has no retention window: a preview shown there outlives the message it
+  previews. For the same reason the page tells the service worker to close a
+  thread's notifications the moment `messages_expired` arrives.
 - Gone subscriptions (404/410 from the push service) are pruned; transient
   errors are logged and the row is kept.
 - The service worker displays the notification and focuses or opens the
@@ -720,8 +729,10 @@ fetches the manifest once and renders stickers without bubble chrome.
 
 - `src/lib`: REST client (cookie credentials, uniform `ApiError`), a
   literal copy of the worker's `protocol.ts` (kept in sync by hand), hash
-  router (`#/` list, `#/t/<userId>` thread, `#/config`, `#/admin`), media
-  compression and transcoding, push opt-in flow, sticker manifest client.
+  router (`#/` list, `#/t/<userId>` thread, `#/config`,
+  `#/config/aparencia`, `#/admin`), the encryption layer (`kdf.ts`,
+  `accountKeys.ts`, `keyDirectory.ts`, `e2ee.ts`), media compression and
+  transcoding, push opt-in flow, sticker manifest client.
 - `src/hooks`: `useSession` (context provider, `me` on load, owns the
   account theme and profile, and boots stale-while-revalidate from the local
   account copy in `lib/accountCache.ts` so a reload paints the app instead of
@@ -732,8 +743,9 @@ fetches the manifest once and renders stickers without bubble chrome.
   `usePush`.
 - `src/screens`: Login, Conversations (search, previews, unread badges,
   visible-only 15s poll), Thread (bubbles, receipts, typing line, composer
-  with attach, emoji and sticker pickers), Settings (profile, theme, push,
-  session), Admin (owner only).
+  with attach, emoji and sticker pickers), Settings (profile, password, push,
+  session), Appearance (skins and palettes), RotatePassword (the one-time
+  move off a server-known password), Admin (owner only).
 - Loading feedback: every wait that has a known shape renders a skeleton of
   that shape (`src/components/Skeleton.tsx`) instead of a line of text — the
   conversation list, the thread being resolved, the owner console's totals
@@ -758,10 +770,11 @@ fetches the manifest once and renders stickers without bubble chrome.
   geometry the palette is painted on, `data-skin` on `<html>`, catalogued in
   `src/lib/skins.ts` and defined in `src/styles/skins.css`. `retro` is the
   neobrutalist look the app shipped with (2px frames, hard offset shadow);
-  `terminal` is the Portfolio terminal skin's geometry (1px frames, CRT glow,
-  block caret, 4px scanline). A skin only redefines the tokens the `retro-*`
-  utilities read, so no component knows which one is active, and the two axes
-  multiply instead of adding: ten palettes × two skins. The rules are
+  `terminal` is a terminal geometry adapted from the author's portfolio site
+  (1px frames, CRT glow, block caret, 4px scanline). A skin only redefines
+  the tokens the `retro-*` utilities read, so no component knows which one is
+  active, and the two axes multiply instead of adding: ten palettes × two
+  skins. The rules are
   deliberately unlayered so they outrank Tailwind's utility layer — which is
   also why they must never touch a class a component pairs with a variant.
 - Palettes: the preference is a mode (`light` / `dark` / null = follow the
@@ -769,11 +782,10 @@ fetches the manifest once and renders stickers without bubble chrome.
   in `src/lib/themes.ts` and offered by the appearance screen, which shows the
   shelf of the mode that is on screen — flipping the mode shows the other
   shelf, applied instead of previewed. The header button only moves the mode;
-  each mode keeps its own palette. Ids are the
-  Portfolio terminal palettes, so a palette means the same thing in both
-  apps. It resolves in order account → local copy → catalog default: the
-  account value is the source of truth and the local copy only exists so the
-  first paint has no flash while `/api/auth/me` is in flight. "System" is a
+  each mode keeps its own palette. It resolves in order account → local
+  copy → catalog default: the account value is the source of truth and the
+  local copy only exists so the first paint has no flash while
+  `/api/auth/me` is in flight. "System" is a
   real state, not an alias for light, but it can no longer mean "pin
   nothing" — the OS says light or dark and does not know which of the four
   light palettes was picked, so the attribute is always pinned and a
@@ -801,7 +813,7 @@ Durable Object SQLite (per conversation):
 
 | Table          | Purpose                                                  |
 | -------------- | -------------------------------------------------------- |
-| `messages`     | id, client_id, sender, type, body, media_key, status     |
+| `messages`     | id, client_id, sender, type, body, media_key, status, `enc` (the envelope), `read_at`, `expires_at` |
 | `participants` | The pinned user pair, defense in depth for connections   |
 | `settings`     | The id of the expiry alarm and the moment it is armed for, plus what the D1 mirror was last known to hold |
 
@@ -868,28 +880,16 @@ Setting either to `0` drops the total and shows plain usage again.
 - The WebSocket handshake checks `Origin` against the same allowlist CORS
   uses. `SameSite=Strict` already covers it in every current browser; this
   removes the trap armed for the day that has to change.
-- Presence timestamps are published rounded down to the minute: the endpoint
-  answers for any account id, and the raw value would let anyone poll an
-  activity graph of anyone.
+- Presence is scoped and coarse: `POST /api/presence` answers only for
+  accounts the caller shares a conversation with, and every surface that
+  publishes `last_seen_at` (presence, search, the conversation list,
+  `resolve`) rounds it down to the minute, so polling it does not yield an
+  activity graph.
 - An address that has signed in successfully to an account is exempt from
   that account's failure lockout (its own per-IP limit still applies), so a
   discoverable username cannot be used to keep its owner locked out.
 - Session tokens and push endpoints are treated as secrets: hashed at rest
   or excluded from logs.
-
-### What this is not
-
-There is no end-to-end encryption. Messages are stored as plain text in each
-conversation's Durable Object, and media is stored unencrypted in the
-bucket. Transport is TLS and the platform encrypts its disks, but whoever
-controls the Cloudflare account can read every conversation. That is a
-deliberate trade — the push preview, the owner console's storage accounting
-and history purges all depend on the server being able to read content —
-and it is written down here so "private chat" is not mistaken for E2EE.
-
-Adding it later is tractable for fixed 1:1 threads (X25519 per account,
-ECDH to a conversation key, AES-256-GCM per message, all WebCrypto), and
-the costs are the interesting part: push previews become generic, history
-is unrecoverable without a password-wrapped key backup, multi-device needs
-key sync or per-device fan-out, and media has to be encrypted client-side
-before upload. Forward secrecy would additionally require a ratchet.
+- What end-to-end encryption does not cover — forward secrecy, recovery,
+  metadata, a hostile operator serving hostile code — is listed under
+  "End-to-end encryption" above.

@@ -17,6 +17,7 @@ generate.
 # Backend
 cd worker
 npm install
+cp .env.example .dev.vars   # local config: fake-B2 stub, CORS for :5173
 npm run db:migrate      # apply migrations to the local D1 database
 npm run db:seed         # create test users (idempotent)
 
@@ -25,10 +26,15 @@ cd ../app
 npm install
 ```
 
+`worker/.dev.vars` (gitignored) overrides the `vars` in `wrangler.jsonc` for
+`wrangler dev`; without it the local Worker runs with the production values —
+no CORS for the Vite server on :5173, and the real B2 endpoint instead of the
+stub on :9000.
+
 Seed users: `alice` / `alice-goodchat` and `bob` / `bob-goodchat`.
 
-Web push needs VAPID keys in `worker/.dev.vars` (gitignored). Generate a
-pair once and paste the output:
+Web push needs VAPID keys in that same `worker/.dev.vars`. Generate a pair
+once and paste the output:
 
 ```bash
 cd worker
@@ -62,7 +68,7 @@ seed users. The backend always runs on port 8000; the frontend reads
 
 | File               | Tracked | Purpose                                        |
 | ------------------ | ------- | ---------------------------------------------- |
-| `worker/.dev.vars` | no      | Local secrets: fake-B2 config, dev VAPID keys  |
+| `worker/.dev.vars` | no      | Local config, copied from `worker/.env.example`: fake-B2 stub, CORS for :5173, dev VAPID keys |
 | `worker/.env.example` | yes  | Documentation of every backend variable        |
 | `app/.env.example` | yes     | Documentation of frontend variables            |
 | `app/.env.production` | yes  | Production build config (no secrets)           |
@@ -80,7 +86,7 @@ npm run user:create -- [--owner] <username> <password> [display name]
 npm run user:role -- <username> <owner|user>    # promote or demote
 ```
 
-Usernames match `^[a-z0-9_]{3,20}$`; passwords need at least 8 characters.
+Usernames match `^[a-z0-9_]{3,20}$`; passwords need at least 12 characters.
 
 Migration 0003 grants the owner role to the `good` account if it exists.
 For a local database, create it and sign in to reach `#/admin`:
@@ -94,22 +100,21 @@ non-owner account from the UI, and see how much each one is storing.
 
 ## Testing
 
-Smoke suites are plain Node scripts, no test framework. They need the dev
-server on port 8000 with a seeded database:
+Smoke suites are plain Node scripts, no test framework, one per phase from
+`smoke:phase3` to `smoke:phase18`. The [Testing table in the
+README](../README.md#testing) says what each one covers. Every suite except
+`smoke:phase16` (pure crypto, no server) needs the dev server on port 8000
+with a seeded database:
 
 ```bash
 cd worker
-npm run smoke:phase3   # lookup + conversation resolution
-npm run smoke:phase4   # realtime: delivery, dedup, receipts, typing
-npm run smoke:phase6   # media pipeline (starts its own stub if needed)
-npm run smoke:phase7   # stickers, emoji, typing broadcast
-npm run smoke:phase8   # web push: crypto roundtrip, REST, DO trigger
-npm run smoke:phase9   # headers, CORS, login timing, settings, owner console
-npm run smoke:phase10  # guest accounts: quotas, expiry, deletion rules
-npm run smoke:phase13  # retention: the shared window, its mirror, its deadline
-npm run smoke:phase14  # the copies of a message, and the powers that reach them
-npm run smoke:phase18  # the app itself, in three browsers (needs Playwright)
+npm run smoke:phase<N>   # e.g. npm run smoke:phase15
 ```
+
+Phases 9, 10, 11, 13, 14, 15, 17 and 18 also sign in as the `good` owner
+account (see above). Phases 6, 7, 9, 10, 11 and 14 start the fake-B2 stub
+in-process when port 9000 is free and reuse a running one otherwise; phases 15
+and 18 expect `npm run media:dev` to be running already.
 
 `smoke:phase13` also needs the owner account: the deadline it checks is read
 from the owner console. It cannot assert an actual expiry — the shortest
@@ -128,18 +133,19 @@ authorization, so a cached object is unreachable by any request the test can
 make once the row is gone. That one is confirmed against production, with a GET
 on a key that expired minutes ago.
 
-`smoke:phase9`, `smoke:phase10` and `smoke:phase14` need the `good` owner account (see above)
-and the media stub. Both create and delete their own throwaway accounts, and
-phase 9 keeps its WebSocket flood inside the owner's own thread so the other
-suites' fixtures stay clean. Phase 10 talks to D1 directly to force guest
-expiry (five hours is a long wait) and to clear its own per-IP signup quota,
-so it is rerunnable.
+`smoke:phase9`, `smoke:phase10` and `smoke:phase14` need the `good` owner
+account and the media stub. All three create and delete their own throwaway
+accounts, and phase 9 keeps its WebSocket flood inside the owner's own thread
+so the other suites' fixtures stay clean. Phase 10 talks to D1 directly to
+force guest expiry (three hours is a long wait) and to clear its own per-IP
+signup quota, so it is rerunnable.
 `smoke:phase18` is the only one that opens a browser, and the only one that
 needs the app running as well — `cd app && npm run dev` on :5173, plus the
 media stub and a published sticker pack. It drives three Playwright contexts
 (two people and a third browser signing in as one of them), which is what makes
 it able to state the thing no Node script can: that an account's history opens
-somewhere it has never been. `npx playwright install chromium` once, then
+somewhere it has never been. `npx playwright install chromium` once (in
+`worker/`, where Playwright is a dev dependency), then
 `HEADED=1` to watch it and `SLOWMO=250` to watch it slowly. On a failure it
 writes `/tmp/phase18-<context>.png` and prints whatever the screen was saying.
 
@@ -153,10 +159,12 @@ migrate and seed again).
 
 Each script prints per-check results and exits non-zero on failure. Type
 checks: `npm run typecheck` in both packages. Lint (app): `npm run lint`.
+The app's expiry display rules have a check of their own that needs no server:
+`npm run check:expiry` in `app/`.
 
 ## Database changes
 
-1. Add a numbered file in `worker/migrations/` (e.g. `0003_thing.sql`).
+1. Add the next numbered file in `worker/migrations/` (e.g. `0016_thing.sql`).
 2. Apply locally: `npm run db:migrate`.
 3. In production: `npx wrangler d1 migrations apply goodchat --remote`.
 
