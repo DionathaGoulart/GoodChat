@@ -104,7 +104,9 @@ jobs:
           command: deploy
 
       # Reads the deployed index.html and prints the hashed bundle it points
-      # at, so the run log records exactly what is live.
+      # at, so the run log records exactly what is live. The URL is the
+      # PUBLIC_ORIGIN var in wrangler.jsonc — the one origin the Worker serves
+      # from — so a fork checks its own deployment without editing this file.
       #
       # Polled, not single-shot: `wrangler deploy` returns before the new
       # version has reached every colo, and the document is edge-cached
@@ -122,9 +124,14 @@ jobs:
             echo "::error::no hashed bundle in app/dist/index.html — did the build step run?"
             exit 1
           fi
+          origin=$(grep -o '"PUBLIC_ORIGIN": *"[^"]*"' worker/wrangler.jsonc | sed 's/.*: *"\(.*\)"/\1/')
+          if [ -z "$origin" ]; then
+            echo "::error::no PUBLIC_ORIGIN in worker/wrangler.jsonc — nothing to verify against"
+            exit 1
+          fi
           for attempt in $(seq 1 10); do
             bundle=$(curl -fsS -H 'Cache-Control: no-cache' --retry 3 --retry-delay 5 \
-              "https://goodchat.dionatha.com.br/?deploy-check=${GITHUB_RUN_ID}-${attempt}" \
+              "${origin}/?deploy-check=${GITHUB_RUN_ID}-${attempt}" \
               | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1)
             echo "attempt ${attempt}: live bundle ${bundle:-<none>}, expected ${expected}"
             if [ "$bundle" = "$expected" ]; then
