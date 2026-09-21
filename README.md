@@ -5,9 +5,18 @@ Workers, Durable Objects, D1 and Backblaze B2. Ships as an installable PWA
 with native web push notifications, all within free tiers.
 
 It is not built to keep conversations. Every message deletes itself — from the
-database and from the bucket — within at most seven days, and a conversation
-can choose as little as three hours. Messages and their attachments are
+database and from the bucket — three hours after it is read, and within seven
+days if it never is. Messages and their attachments are
 end-to-end encrypted: the server routes and expires what it cannot read.
+
+Live instance: **[goodchat.dionatha.com.br](https://goodchat.dionatha.com.br)**
+— a guest account (no password, gone in three hours) is enough to try it.
+The interface is in Brazilian Portuguese; code and docs are in English.
+
+> **Status: v0.9.0.** In daily use and feature-complete for its scope, but the
+> encryption is a custom protocol built on WebCrypto that has not been
+> audited, and its wire format may still change before 1.0. See
+> [SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 
@@ -132,6 +141,7 @@ Requirements: Node.js 24 or newer.
 # Terminal 1: backend (port 8000)
 cd worker
 npm install
+cp .env.example .dev.vars   # local config: fake-B2 stub, localhost origins
 npm run db:migrate    # apply D1 migrations locally
 npm run db:seed       # create test users alice and bob
 npm run dev
@@ -183,7 +193,7 @@ App (`cd app`):
 | `npm run build`     | Production build           |
 | `npm run typecheck` | TypeScript check           |
 | `npm run lint`      | Oxlint                     |
-| `npm run check:expiry` | The expiry display rules (§3.9), against a fixed clock — no server, no browser |
+| `npm run check:expiry` | The expiry display rules ([PRD](.harness/prd.md) §3.9), against a fixed clock — no server, no browser |
 
 ## Testing
 
@@ -214,10 +224,12 @@ Smoke suites run against a live dev server (port 8000, seeded database):
 | [docs/architecture.md](docs/architecture.md)   | System design, data model, protocol      |
 | [docs/development.md](docs/development.md)     | Local setup, workflows, conventions      |
 | [docs/deployment.md](docs/deployment.md)       | Full production deployment guide         |
-| [.harness/prd.md](.harness/prd.md)             | Product requirements                     |
-| [.harness/styleguide.md](.harness/styleguide.md) | Shared visual foundation + how skins work |
-| [.harness/styleguides/retro.md](.harness/styleguides/retro.md) | Style guide of the `retro` skin (default) |
-| [.harness/styleguides/terminal.md](.harness/styleguides/terminal.md) | Style guide of the `terminal` skin |
+| [.harness/prd.md](.harness/prd.md)             | Product requirements (original intent)   |
+| [.harness/styleguide.md](.harness/styleguide.md) | Shared visual foundation + how skins work (pt-BR) |
+| [.harness/styleguides/retro.md](.harness/styleguides/retro.md) | Style guide of the `retro` skin, the default (pt-BR) |
+| [.harness/styleguides/terminal.md](.harness/styleguides/terminal.md) | Style guide of the `terminal` skin (pt-BR) |
+| [SECURITY.md](SECURITY.md)                     | Reporting a vulnerability, threat model in short |
+| [CHANGELOG.md](CHANGELOG.md)                   | Release notes                            |
 
 ## Deployment
 
@@ -225,7 +237,9 @@ Everything runs within Cloudflare and Backblaze free tiers. The SPA is
 served by the Worker itself on a single origin (required by the strict
 session cookie). Pushes to `main` are typechecked, linted and built by
 `.github/workflows/deploy.yml` before `wrangler deploy` runs. See
-[docs/deployment.md](docs/deployment.md) for the step-by-step guide.
+[docs/deployment.md](docs/deployment.md) for the step-by-step guide — a fork
+starts at its "Make it yours" checklist, since `worker/wrangler.jsonc` ships
+with the reference instance's domain, database id and keys.
 
 ## License
 
